@@ -217,7 +217,7 @@
                                 Obligated: {{ \Carbon\Carbon::parse($fund->obligation_date)->format('M d, Y') }}
                             @elseif($fund->status_date)
                                 <i class="far fa-clock text-muted mr-1"></i> 
-                                As of: {{ \Carbon\Carbon::parse($fund->status_date)->format('M d, Y') }}
+                                As of: {{ \Carbon\Carbon::parse($fund->dtrack_update_date)->format('M d, Y') }}
                             @endif
                         </div>
 

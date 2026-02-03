@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use App\Models\Fund;
 use App\Services\DTrackService;
+use Carbon\Carbon;
 
 class SyncDTrackStatuses extends Command
 {
@@ -38,6 +39,16 @@ class SyncDTrackStatuses extends Command
                 $dtrackStatus = $latestLog['actreq_desc'] ?? '';
                 $office = $latestLog['dest_office'] ?? 'Unknown Office';
                 $actionRemarks = $latestLog['acttaken_desc'] ?? '';
+                $dtrackUpdateDate = $latestLog['docdet_rlsd_dateupdated'] ?? null;
+
+                // --- SHARED RULE: Update doc_update_date for anything not Disbursed ---
+                if ($dtrackUpdateDate) {
+                    try {
+                        $fund->dtrack_update_date = Carbon::parse($dtrackUpdateDate);
+                    } catch (\Exception $e) {
+                        \Log::warning("Date parse failed for {$fund->dtrack_no}: " . $dtrackUpdateDate);
+                    }
+                }
 
                 // --- RULE: If status is 'Obligated', only update remarks ---
                 if ($fund->status === 'Obligated') {
