@@ -5,25 +5,23 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use App\Models\Fund;
 use App\Services\DTrackService;
-use Carbon\Carbon;
 
 class SyncDTrackStatuses extends Command
 {
     protected $signature = 'sync:dtrack';
-    protected $description = 'Automatically update fund statuses and document update dates from DTrack';
+    protected $description = 'Automatically update fund statuses from DTrack';
 
     public function handle()
     {
         \Log::info("DTrack Sync Started at: " . now());
 
         $updatedCount = 0;
-        $dtrackService = new DTrackService();
 
         // 1. Fetch transactions excluding 'Disbursed'
         $syncableFunds = Fund::where('status', '!=', 'Disbursed')->get();
+        $dtrackService = new DTrackService();
 
         foreach ($syncableFunds as $fund) {
-            
             // --- RULE: If status is 'Disbursed', do absolutely nothing ---
             if ($fund->status === 'Disbursed') {
                 continue;
@@ -40,25 +38,32 @@ class SyncDTrackStatuses extends Command
                 $dtrackStatus = $latestLog['actreq_desc'] ?? '';
                 $office = $latestLog['dest_office'] ?? 'Unknown Office';
                 $actionRemarks = $latestLog['acttaken_desc'] ?? '';
-                
-                // NEW: Get the DTrack update date from system
-                $dtrackUpdateDate = $latestLog['docdet_rlsd_dateupdated'] ?? null;
 
-                // --- SHARED RULE: Update doc_update_date for anything not Disbursed ---
-                if ($dtrackUpdateDate) {
-                    try {
-                        $fund->doc_update_date = Carbon::parse($dtrackUpdateDate);
-                    } catch (\Exception $e) {
-                        \Log::warning("Date parse failed for {$fund->dtrack_no}: " . $dtrackUpdateDate);
-                    }
-                }
-
-                // --- RULE: If status is 'Obligated', only update remarks (and date above) ---
+                // --- RULE: If status is 'Obligated', only update remarks ---
                 if ($fund->status === 'Obligated') {
+                    // Use dest_office and actreq_desc for remarks as requested
                     $fund->remarks = "Currently at: " . $office . " (" . $dtrackStatus . ")";
                 } else {
-                    // --- RULE: For all other statuses, update Status, Remarks, and Date ---
-                    $fund->status = $this->mapStatus($dtrackStatus);
+                    // --- RULE: For all other statuses, update both Status and Remarks ---
+                    
+                    // Update Status based on actreq_desc
+                    switch ($dtrackStatus) {
+                        case 'For Signature':
+                            $fund->status = 'For Signature';
+                            break;
+                        case 'For CAF/Obligation (Budget)':
+                            $fund->status = 'Obligated';
+                            break;
+                        case 'For Processing':
+                        case 'For Processing (Accounting)':
+                            $fund->status = 'Processing';
+                            break;
+                        default:
+                            $fund->status = $dtrackStatus; 
+                            break;
+                    }
+
+                    // Update Remarks with dest_office and taken_remarks
                     $fund->remarks = "Currently at: " . $office . ($actionRemarks ? " (" . $actionRemarks . ")" : "");
                 }
 
@@ -67,19 +72,16 @@ class SyncDTrackStatuses extends Command
                 $updatedCount++;
             }
         }
+        $this->info('DTrack sync completed successfully.');
 
-        $this->info("DTrack sync completed. Updated $updatedCount records.");
         \Log::info("DTrack Sync Finished. Updated $updatedCount records.");
     }
 
-    /**
-     * Helper to map DTrack internal descriptions to System Statuses
-     */
     private function mapStatus($dtrackStatus) {
         return match ($dtrackStatus) {
             'For Signature' => 'For Signature',
             'For CAF/Obligation (Budget)' => 'Obligated',
-            'For Processing', 'For Processing (Accounting)' => 'Processing',
+            'For Processing', 'For Processing (Accounting)' => 'For Processing',
             default => $dtrackStatus,
         };
     }
