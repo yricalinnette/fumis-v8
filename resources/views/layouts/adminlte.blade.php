@@ -96,9 +96,15 @@
                         </a>
                         <ul class="nav nav-treeview">
                             <li class="nav-item">
-                                <a href="#" class="nav-link">
+                                <a href="{{ route('reports.by_source') }}" class="nav-link {{ request()->is('reports/budget-by-source*') ? 'active' : '' }}">
                                     <i class="far fa-circle nav-icon text-info"></i>
                                     <p>By Source</p>
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="{{ route('reports.by_line_item') }}" class="nav-link {{ request()->is('reports/budget-by-line-item*') ? 'active' : '' }}">
+                                    <i class="far fa-circle nav-icon text-primary"></i>
+                                    <p>By Line Item</p>
                                 </a>
                             </li>
                             <li class="nav-item">

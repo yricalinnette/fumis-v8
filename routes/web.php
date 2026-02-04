@@ -7,6 +7,7 @@ use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\ActivityController;
 
 // Route::get('/', function () {
 //     return view('welcome');
@@ -33,7 +34,11 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::post('/settings/employee', [SettingsController::class, 'storeEmployee'])->name('settings.employee.store');
     // Ensure these match your form actions and controller methods
     Route::post('/settings/activity', [SettingsController::class, 'storeActivity'])->name('settings.activity.store');
+    // Route to update the Excel mapping settings
+    // Using match allows both GET (to view) and POST (to save/update)
+    Route::match(['get', 'post', 'put'], '/settings/template/{id}', [SettingsController::class, 'updateTemplate'])->name('settings.template.update');
     Route::delete('/settings/activity/{id}', [SettingsController::class, 'destroyActivity'])->name('settings.activity.destroy');
+    Route::post('/settings/activities/import', [ActivityController::class, 'import'])->name('settings.activity.import');
     Route::patch('/funds/{id}/status', [FundController::class, 'updateStatus'])->name('funds.updateStatus');
     // Route for syncing a specific fund with Google Sheets
     Route::get('funds/{id}/sync', [App\Http\Controllers\FundController::class, 'syncWithGoogleSheet'])->name('funds.sync');
@@ -58,6 +63,10 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::get('/admin/users/create', [UserController::class, 'create'])->name('admin.users.create');
     Route::post('/admin/users/store', [UserController::class, 'store'])->name('admin.users.store');
     Route::get('/admin/users', [UserController::class, 'index'])->name('admin.users.index');
+
+    //REPORT
+    Route::get('/reports/budget-by-source', [ReportController::class, 'budgetBySource'])->name('reports.by_source');
+    Route::get('/reports/budget-by-line-item', [ReportController::class, 'budgetByLineItem'])->name('reports.by_line_item');
 });
 
 Route::middleware('auth')->group(function () {

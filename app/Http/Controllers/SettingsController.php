@@ -4,6 +4,9 @@ namespace App\Http\Controllers;
 use App\Models\SourceOfFund;
 use App\Models\Employee; 
 use App\Models\Activity; 
+use App\Models\ImportTemplate; 
+use App\Imports\WfpActivitiesImport;
+use Maatwebsite\Excel\Facades\Excel;
 
 use Illuminate\Http\Request;
 
@@ -21,7 +24,10 @@ class SettingsController extends Controller
         // We eager load 'source' to avoid N+1 issues if needed later
         $activities = Activity::with('source')->get();
 
-        return view('admin.settings', compact('sources', 'employees', 'activities'));
+        // Fetch the first template record, or create a blank object if none exists
+        $config = \App\Models\ImportTemplate::first() ?? new \App\Models\ImportTemplate();
+
+        return view('admin.settings', compact('sources', 'employees', 'activities', 'config'));
     }
 
     public function storeSource(Request $request) {
@@ -123,4 +129,19 @@ class SettingsController extends Controller
 
         return back()->with('success', 'Fund source deleted successfully!');
     }
+
+    //for updating the wfp import settings configurations
+    public function updateTemplate(Request $request, $id)
+    {
+        // find the template or create a fresh one if ID 1 doesn't exist yet
+        $template = \App\Models\ImportTemplate::findOrNew($id);
+        
+        $template->fill($request->all());
+        $template->save();
+
+        return back()->with('success', 'Excel mapping updated successfully!');
+    }
+
+    
+    
 }

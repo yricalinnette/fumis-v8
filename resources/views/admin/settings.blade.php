@@ -17,12 +17,26 @@
         </div>
     @endif
 
+    @if($errors->has('import_error'))
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <i class="fas fa-exclamation-triangle mr-2"></i> {{ $errors->first('import_error') }}
+            <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+            </button>
+        </div>
+    @endif
+
     <div class="card card-primary card-outline card-tabs">
         <div class="card-header p-0 pt-1 border-bottom-0">
             <ul class="nav nav-tabs" id="settingsCustomTab" role="tablist">
                 <li class="nav-item">
                     <a class="nav-link active" id="tabs-sources-tab" data-toggle="pill" href="#tabs-sources" role="tab">
                         <i class="fas fa-university mr-1"></i> Fund Sources
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" id="tabs-templates-tab" data-toggle="pill" href="#tabs-templates" role="tab">
+                        <i class="fas fa-file-excel mr-1"></i> Import Settings
                     </a>
                 </li>
                 <li class="nav-item">
@@ -120,6 +134,30 @@
                     <div id="balance_info" class="alert alert-info d-none mb-3">
                         <i class="fas fa-info-circle"></i> <span id="balance_text"></span>
                     </div>
+                    <form action="{{ route('settings.activity.import') }}" method="POST" enctype="multipart/form-data" id="importForm">
+                        @csrf
+                        <div class="card card-outline card-success">
+                            <div class="card-body">
+                                <div class="form-group">
+                                    <label for="wfp_file">Upload WFP Excel File</label>
+                                    <div class="input-group">
+                                        <div class="custom-file">
+                                            <input type="file" name="wfp_file" class="custom-file-input" id="wfp_file" required>
+                                            <label class="custom-file-label" for="wfp_file">Choose WFP Excel file...</label>
+                                        </div>
+                                        <div class="input-group-append">
+                                            <button type="submit" class="btn btn-success">
+                                                <i class="fas fa-file-import mr-1"></i> Import
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <small class="text-info mt-2 d-block">
+                                        <i class="fas fa-cog mr-1"></i> Current mapping uses header row <b>{{ $config->header_row }}</b>.
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
                     <form action="{{ route('settings.activity.store') }}" method="POST" id="activity_form" class="row">
                         @csrf
                         <div class="col-md-4">
@@ -216,6 +254,76 @@
                             </tbody>
                         </table>
                     </div>
+                </div>
+
+                {{-- TAB 4: IMPORT SETTINGS (DYNAMIC TEMPLATE) --}}
+                <div class="tab-pane fade" id="tabs-templates" role="tabpanel">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="text-muted mb-0"><i class="fas fa-sliders-h mr-2"></i>WFP Template Configuration</h5>
+                    </div>
+
+                    <form action="{{ route('settings.template.update', $template->id ?? 1) }}" method="POST">
+                        @csrf
+                        @method('PUT')
+                        
+                        <div class="row">
+                            <div class="col-md-4">
+                                <div class="card card-outline card-info">
+                                    <div class="card-header"><h3 class="card-title">Header Settings</h3></div>
+                                    <div class="card-body">
+                                        <div class="form-group">
+                                            <label>Header Row Index</label>
+                                            <input type="number" name="header_row" class="form-control" value="{{ $template->header_row ?? 15 }}">
+                                            <small class="text-muted">The row number where column titles exist in Excel.</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="col-md-8">
+                                <div class="card card-outline card-primary">
+                                    <div class="card-header"><h3 class="card-title">Column Mapping (Exact Excel Header Names)</h3></div>
+                                    <div class="card-body p-0">
+                                        <table class="table table-sm table-striped mb-0">
+                                            <thead>
+                                                <tr>
+                                                    <th class="pl-3">Database Field</th>
+                                                    <th>Excel Header Name</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr>
+                                                    <td class="pl-3 align-middle">Budget Line Item</td>
+                                                    <td><input type="text" name="budget_line_col" class="form-control form-control-sm" value="{{ $template->budget_line_col ?? 'BUDGET LINE ITEM' }}"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td class="pl-3 align-middle">Objective</td>
+                                                    <td><input type="text" name="objective_col" class="form-control form-control-sm" value="{{ $template->objective_col ?? 'OBJECTIVE' }}"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td class="pl-3 align-middle">Activity Name</td>
+                                                    <td><input type="text" name="activity_col" class="form-control form-control-sm" value="{{ $template->activity_col ?? 'ACTIVITIES TO ATTAIN THE SUCESS INDICATORS' }}"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td class="pl-3 align-middle">Cost / Budget</td>
+                                                    <td><input type="text" name="budget_col" class="form-control form-control-sm" value="{{ $template->budget_col ?? 'COST' }}"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td class="pl-3 align-middle">Source of Fund</td>
+                                                    <td><input type="text" name="source_col" class="form-control form-control-sm" value="{{ $template->source_col ?? 'SOURCE OF FUND' }}"></td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div class="card-footer">
+                                        <button type="submit" class="btn btn-primary float-right">
+                                            <i class="fas fa-save mr-1"></i> Update Mapping
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
                 </div>
 
             </div>
@@ -317,88 +425,107 @@
 
 @section('js')
 <script>
-$(document).ready(function() {
-    
-    // Logic for preserving tab on refresh
-    $('a[data-toggle="pill"]').on('shown.bs.tab', function (e) {
-        localStorage.setItem('activeTab', $(e.target).attr('href'));
-    });
-    var activeTab = localStorage.getItem('activeTab');
-    if(activeTab){
-        $('#settingsCustomTab a[href="' + activeTab + '"]').tab('show');
-    }
-
-    // Reuse your existing JS logic for Currency Masking and Budget Validation below
-    function formatNumber(n) {
-        return n.replace(/\D/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    }
-
-    $(document).on('input', '.amount-mask-display', function() {
-        let displayInput = $(this);
-        let rawInput = displayInput.siblings('.amount-mask-raw');
-        let inputVal = displayInput.val();
-        let numericVal = inputVal.replace(/[^0-9.]/g, ''); 
-        if (numericVal.indexOf(".") >= 0) {
-            let decimalPos = numericVal.indexOf(".");
-            let leftSide = numericVal.substring(0, decimalPos);
-            let rightSide = numericVal.substring(decimalPos);
-            leftSide = formatNumber(leftSide);
-            rightSide = rightSide.substring(0, 3);
-            displayInput.val(leftSide + rightSide);
-            rawInput.val(leftSide.replace(/,/g, '') + rightSide);
-        } else {
-            let formatted = formatNumber(numericVal);
-            displayInput.val(formatted);
-            rawInput.val(numericVal);
+    $(document).ready(function() {
+        
+        // Logic for preserving tab on refresh
+        $('a[data-toggle="pill"]').on('shown.bs.tab', function (e) {
+            localStorage.setItem('activeTab', $(e.target).attr('href'));
+        });
+        var activeTab = localStorage.getItem('activeTab');
+        if(activeTab){
+            $('#settingsCustomTab a[href="' + activeTab + '"]').tab('show');
         }
+
+        // Reuse your existing JS logic for Currency Masking and Budget Validation below
+        function formatNumber(n) {
+            return n.replace(/\D/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        }
+
+        $(document).on('input', '.amount-mask-display', function() {
+            let displayInput = $(this);
+            let rawInput = displayInput.siblings('.amount-mask-raw');
+            let inputVal = displayInput.val();
+            let numericVal = inputVal.replace(/[^0-9.]/g, ''); 
+            if (numericVal.indexOf(".") >= 0) {
+                let decimalPos = numericVal.indexOf(".");
+                let leftSide = numericVal.substring(0, decimalPos);
+                let rightSide = numericVal.substring(decimalPos);
+                leftSide = formatNumber(leftSide);
+                rightSide = rightSide.substring(0, 3);
+                displayInput.val(leftSide + rightSide);
+                rawInput.val(leftSide.replace(/,/g, '') + rightSide);
+            } else {
+                let formatted = formatNumber(numericVal);
+                displayInput.val(formatted);
+                rawInput.val(numericVal);
+            }
+        });
+
+        $(document).on('blur', '.amount-mask-display', function() {
+            let displayInput = $(this);
+            let rawInput = displayInput.siblings('.amount-mask-raw');
+            let val = parseFloat(rawInput.val());
+            if(!isNaN(val)) {
+                rawInput.val(val.toFixed(2));
+                displayInput.val(val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+            }
+            checkBalance();
+        });
+
+        function checkBalance() {
+            let selected = $('#source_selector').find(":selected");
+            if (!$('#source_selector').val()) {
+                $('#balance_info').addClass('d-none');
+                return;
+            }
+            let remaining = parseFloat(selected.data('remaining')) || 0;
+            let sourceName = selected.data('name');
+            let inputAmount = parseFloat($('#activity_form .amount-mask-raw').val()) || 0;
+            $('#balance_info').removeClass('d-none');
+            if (inputAmount > remaining) {
+                $('#balance_info').removeClass('alert-info').addClass('alert-danger');
+                $('#balance_text').html(`<strong><i class="fas fa-exclamation-triangle"></i> Over Budget!</strong> ${sourceName} only has ₱${remaining.toLocaleString(undefined, {minimumFractionDigits: 2})} remaining.`);
+                $('#btn-save-activity').prop('disabled', true);
+            } else {
+                $('#balance_info').removeClass('alert-danger').addClass('alert-info');
+                $('#balance_text').html(`<strong>Available:</strong> ₱${remaining.toLocaleString(undefined, {minimumFractionDigits: 2})} for ${sourceName}.`);
+                $('#btn-save-activity').prop('disabled', false);
+            }
+        }
+
+        $('#source_selector').on('change', checkBalance);
+
+        $('.edit-source-btn').on('click', function() {
+            let btn = $(this);
+            let id = btn.data('id');
+            let amount = parseFloat(btn.data('amount')) || 0;
+            $('#edit-source-form').attr('action', `/settings/source/${id}`);
+            $('#edit_name').val(btn.data('name'));
+            $('#edit_raw_amount').val(amount.toFixed(2));
+            $('#edit_spreadsheet_id').val(btn.data('sheetid'));
+            $('#edit_sheet_name').val(btn.data('sheetname'));
+            $('#edit_display_amount').val(amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+            $('#modal-edit-source').modal('show');
+        });
     });
 
-    $(document).on('blur', '.amount-mask-display', function() {
-        let displayInput = $(this);
-        let rawInput = displayInput.siblings('.amount-mask-raw');
-        let val = parseFloat(rawInput.val());
-        if(!isNaN(val)) {
-            rawInput.val(val.toFixed(2));
-            displayInput.val(val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}));
-        }
-        checkBalance();
+    $(document).ready(function () {
+        // 1. Fix the file label name update
+        $('.custom-file-input').on('change', function() {
+            let fileName = $(this).val().split('\\').pop();
+            $(this).next('.custom-file-label').addClass("selected").html(fileName);
+        });
+
+        // 2. Add spinner logic to the Import form
+        $('#importForm').on('submit', function() {
+            let btn = $(this).find('button[type="submit"]');
+            
+            // Change button text and add spinner icon
+            btn.prop('disabled', true);
+            btn.html('<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...');
+            
+            return true; // allow form to submit
+        });
     });
-
-    function checkBalance() {
-        let selected = $('#source_selector').find(":selected");
-        if (!$('#source_selector').val()) {
-            $('#balance_info').addClass('d-none');
-            return;
-        }
-        let remaining = parseFloat(selected.data('remaining')) || 0;
-        let sourceName = selected.data('name');
-        let inputAmount = parseFloat($('#activity_form .amount-mask-raw').val()) || 0;
-        $('#balance_info').removeClass('d-none');
-        if (inputAmount > remaining) {
-            $('#balance_info').removeClass('alert-info').addClass('alert-danger');
-            $('#balance_text').html(`<strong><i class="fas fa-exclamation-triangle"></i> Over Budget!</strong> ${sourceName} only has ₱${remaining.toLocaleString(undefined, {minimumFractionDigits: 2})} remaining.`);
-            $('#btn-save-activity').prop('disabled', true);
-        } else {
-            $('#balance_info').removeClass('alert-danger').addClass('alert-info');
-            $('#balance_text').html(`<strong>Available:</strong> ₱${remaining.toLocaleString(undefined, {minimumFractionDigits: 2})} for ${sourceName}.`);
-            $('#btn-save-activity').prop('disabled', false);
-        }
-    }
-
-    $('#source_selector').on('change', checkBalance);
-
-    $('.edit-source-btn').on('click', function() {
-        let btn = $(this);
-        let id = btn.data('id');
-        let amount = parseFloat(btn.data('amount')) || 0;
-        $('#edit-source-form').attr('action', `/settings/source/${id}`);
-        $('#edit_name').val(btn.data('name'));
-        $('#edit_raw_amount').val(amount.toFixed(2));
-        $('#edit_spreadsheet_id').val(btn.data('sheetid'));
-        $('#edit_sheet_name').val(btn.data('sheetname'));
-        $('#edit_display_amount').val(amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}));
-        $('#modal-edit-source').modal('show');
-    });
-});
 </script>
 @endsection

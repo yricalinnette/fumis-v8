@@ -22,6 +22,6 @@ class SourceOfFund extends Model
     public function funds()
     {
         // This assumes your 'funds' table has a 'source_of_fund_id' column
-        return $this->hasMany(Fund::class, 'source_of_fund');
+        return $this->hasMany(Fund::class, 'source_of_fund_id');
     }
 }

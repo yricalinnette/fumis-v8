@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Activity;
 use App\Models\SourceOfFund;
 use Illuminate\Http\Request;
+use App\Imports\WfpActivitiesImport;
 
 class ActivityController extends Controller
 {
@@ -40,5 +41,28 @@ class ActivityController extends Controller
         $activity = Activity::findOrFail($id);
         $activity->delete();
         return redirect()->back()->with('success', 'Activity removed successfully.');
+    }
+
+    public function import(Request $request)
+    {
+        $request->validate(['wfp_file' => 'required|mimes:xlsx,xls,csv']);
+
+        try {
+            \DB::beginTransaction();
+
+            // Use the instance directly to ensure the constructor runs properly
+            $import = new \App\Imports\WfpActivitiesImport();
+            \Excel::import($import, $request->file('wfp_file'));
+
+            \DB::commit();
+            
+            // Add a check here: if nothing was saved, it's not really a "success"
+            return back()->with('success', 'Import process finished!');
+
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error('Import Error: ' . $e->getMessage());
+            return back()->withErrors(['import_error' => $e->getMessage()])->withInput();
+        }
     }
 }
