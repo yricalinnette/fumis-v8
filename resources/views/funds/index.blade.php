@@ -108,6 +108,10 @@
 
 <div class="row mb-3">
     <div class="col-12 text-right">
+        <div class="text-muted small mb-2">
+            <i class="fas fa-sync-alt fa-spin text-success mr-1"></i> 
+            DTrack Auto-Sync: <span id="sync-status">Active</span>
+        </div>
         <button type="button" class="btn shadow-sm">
                 <i class="fas fa-sync-alt mr-1"></i> Awaiting OBRN
                 @if(isset($awaitingOBRN) && $awaitingOBRN > 0)
@@ -394,44 +398,75 @@
 
 <div class="modal fade" id="viewTransactionModal" tabindex="-1" role="dialog">
     <div class="modal-dialog modal-lg" role="document">
-        <div class="modal-content">
-            <div class="modal-header bg-dark">
-                <h5 class="modal-title" id="viewModalLabel">
-                    <i class="fas fa-info-circle mr-2"></i> Transaction Details: <span id="view_dtrack"></span>
+        <div class="modal-content shadow-lg border-0">
+            <div class="modal-header bg-dark text-white py-3">
+                <h5 class="modal-title font-weight-bold" id="viewModalLabel">
+                    <i class="fas fa-info-circle mr-2 text-warning"></i> Transaction Details: 
+                    <span id="view_dtrack" class="text-warning ml-1"></span>
                 </h5>
+                <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
             </div>
-            <div class="modal-body">
-                <div class="row">
-                    <div class="col-md-6">
-                        <table class="table table-sm table-borderless">
-                            <tr><th><i class="fas fa-calendar mr-2"></i> Date:</th> <td id="v_date"></td></tr>
-                            <tr><th><i class="fas fa-user-tie mr-2"></i> Creditors:</th> <td id="v_creditors"></td></tr>
-                            <tr><th><i class="fas fa-wallet mr-2"></i> Source:</th> <td id="v_source"></td></tr>
-                            <tr><th><i class="fas fa-tag mr-2"></i> Activity:</th> <td id="v_activity"></td></tr>
+            
+            <div class="modal-body px-4 py-4">
+                <div class="row mb-4">
+                    <div class="col-md-6 pr-md-4">
+                        <table class="table table-sm table-borderless mb-0">
+                            <tr class="py-1">
+                                <th width="35%"><i class="fas fa-calendar mr-2 text-muted"></i> Date:</th> 
+                                <td id="v_date" class="text-dark"></td>
+                            </tr>
+                            <tr class="py-1">
+                                <th><i class="fas fa-user-tie mr-2 text-muted"></i> Creditors:</th> 
+                                <td id="v_creditors"></td>
+                            </tr>
+                            <tr class="py-1">
+                                <th><i class="fas fa-wallet mr-2 text-muted"></i> Source:</th> 
+                                <td id="v_source" class="text-dark"></td>
+                            </tr>
+                            <tr class="py-1">
+                                <th><i class="fas fa-tag mr-2 text-muted"></i> Activity:</th> 
+                                <td id="v_activity" class="text-dark"></td>
+                            </tr>
                         </table>
                     </div>
-                    <div class="col-md-6 border-left">
-                        <table class="table table-sm table-borderless">
-                            <tr><th><i class="fas fa-money-bill-wave mr-2"></i> Amount:</th> <td id="v_amount" class="font-weight-bold"></td></tr>
-                            <tr><th><i class="fas fa-check-circle mr-2"></i> Status:</th> <td id="v_status"></td></tr>
-                            <tr><th><i class="fas fa-barcode mr-2"></i> Serial No:</th> <td id="v_serial"></td></tr>
+                    
+                    <div class="col-md-6 pl-md-4 border-left">
+                        <table class="table table-sm table-borderless mb-0">
+                            <tr class="py-1">
+                                <th width="35%"><i class="fas fa-money-bill-wave mr-2 text-muted"></i> Amount:</th> 
+                                <td id="v_amount" class="h5 mb-0 text-success font-weight-bold"></td>
+                            </tr>
+                            <tr class="py-1">
+                                <th><i class="fas fa-check-circle mr-2 text-muted"></i> Status:</th> 
+                                <td id="v_status"></td>
+                            </tr>
+                            <tr class="py-1">
+                                <th><i class="fas fa-barcode mr-2 text-muted"></i> Serial No:</th> 
+                                <td id="v_serial" class="text-dark"></td>
+                            </tr>
                         </table>
                     </div>
                 </div>
-                <hr>
-                 <div class="form-group">
-                    <h5><i class="fas fa-file-alt mr-2"></i> Particulars</h5>
-                    <div id="v_particulars" class="p-2 bg-light border rounded" style="min-height: 50px;"></div>
+
+                <div class="mb-4">
+                    <h6 class="font-weight-bold text-uppercase small text-muted mb-2">
+                        <i class="fas fa-file-alt mr-1"></i> Particulars
+                    </h6>
+                    <div id="v_particulars" class="p-3 bg-light border rounded-lg text-dark" style="min-height: 60px; line-height: 1.6;"></div>
                 </div>
-                
-                <hr>
-                <div class="form-group">
-                    <label class="font-weight-bold"><i class="fas fa-comment-alt mr-2"></i> Remarks/Notes:</label>
-                    <div id="v_remarks" class="p-2 bg-light border rounded" style="min-height: 50px;"></div>
+
+                <div>
+                    <h6 class="font-weight-bold text-uppercase small text-muted mb-2">
+                        <i class="fas fa-comment-alt mr-1"></i> Remarks/Notes
+                    </h6>
+                    <div id="v_remarks" class="p-3 bg-light border rounded-lg text-dark" style="min-height: 60px; line-height: 1.6;"></div>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+
+            <div class="modal-footer bg-light border-0 px-4">
+                <button type="button" class="btn btn-outline-secondary px-4" data-dismiss="modal">Close</button>
             </div>
         </div>
     </div>
@@ -1483,9 +1518,43 @@
             // Essential for Select2 to update its visual "disabled" look
             $creditorSelect.trigger('change');
         });
+    });
 
-        
+    $(document).ready(function() {
+        function startDTrackAutoSync() {
+            console.log('Starting background DTrack sync...');
+            
+            $.ajax({
+                url: '/funds/sync-all-dtrack',
+                method: 'GET',
+                success: function(response) {
+                    if (response.success && response.data.length > 0) {
+                        response.data.forEach(fund => {
+                            // 1. Update the table row visuals
+                            let row = $(`.fund-row[data-id="${fund.id}"]`);
+                            if (row.length) {
+                                row.find('.status-cell').text(fund.status);
+                                row.find('.remarks-cell').text(fund.remarks);
+                                
+                                // 2. Update data-attributes for the View Modal
+                                row.attr('data-remarks', fund.remarks);
+                                row.attr('data-doc-update', fund.updated_at);
+                            }
+                        });
+                        console.log('DTrack sync completed successfully.');
+                    }
+                },
+                error: function() {
+                    console.error('DTrack background sync failed.');
+                }
+            });
+        }
 
+        // Trigger on page load
+        startDTrackAutoSync();
+
+        // Repeat every 5 minutes (300,000 milliseconds)
+        setInterval(startDTrackAutoSync, 300000);
     });
 </script>
 @endsection

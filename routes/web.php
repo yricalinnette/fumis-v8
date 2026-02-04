@@ -6,6 +6,7 @@ use App\Http\Controllers\FundController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\UserController;
 
 // Route::get('/', function () {
 //     return view('welcome');
@@ -51,6 +52,12 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::get('/settings/source/{id}/test-connection', [SettingsController::class, 'testConnection'])->name('settings.source.test');
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
     Route::post('/funds/sync-all', [FundController::class, 'syncAllRouted'])->name('funds.sync_all');
+    Route::get('/funds/sync-all-dtrack', [FundController::class, 'syncAllDTrack']);
+
+    //for user registration or access
+    Route::get('/admin/users/create', [UserController::class, 'create'])->name('admin.users.create');
+    Route::post('/admin/users/store', [UserController::class, 'store'])->name('admin.users.store');
+    Route::get('/admin/users', [UserController::class, 'index'])->name('admin.users.index');
 });
 
 Route::middleware('auth')->group(function () {

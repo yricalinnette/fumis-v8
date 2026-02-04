@@ -525,72 +525,62 @@ class FundController extends Controller
         }
     }
 
-    // //sync to DTRACK System
-    // public function syncAllRouted()
-    // {
-    //     // 1. Fetch transactions EXCEPT those that are 'Disbursed' (Finalized)
-    //     $syncableFunds = Fund::where('status', '!=', 'Disbursed')->get();
-        
-    //     $dtrackService = new \App\Services\DTrackService();
-    //     $updatedCount = 0;
+    public function syncAllDTrack()
+    {
+        try {
+            $funds = Fund::where('status', '!=', 'Disbursed')->get();
+            $dtrackService = new \App\Services\DTrackService();
+            $updatedData = [];
 
-    //     foreach ($syncableFunds as $fund) {
-    //         // --- RULE: If status is 'Disbursed', do absolutely nothing ---
-    //         if ($fund->status === 'Disbursed') {
-    //             continue;
-    //         }
+            foreach ($funds as $fund) {
+                $externalData = $dtrackService->getDTrackStatus($fund->dtrack_no);
+                $latestLog = $externalData['doc_register_destination'][0] ?? null;
 
-    //         $externalData = $dtrackService->getDTrackStatus($fund->dtrack_no);
+                if ($latestLog) {
+                    $dtrackStatus = $latestLog['actreq_desc'] ?? '';
+                    $office = $latestLog['dest_office'] ?? 'Unknown Office';
+                    $dtrackUpdateDate = $latestLog['docdet_rlsd_dateupdated'] ?? null;
 
-    //         if ($externalData && 
-    //             isset($externalData['doc_register_destination']) && 
-    //             is_array($externalData['doc_register_destination']) && 
-    //             count($externalData['doc_register_destination']) > 0) {
+                    // Apply logic
+                    if ($fund->status === 'Obligated') {
+                        $fund->remarks = "Currently at: {$office} ({$dtrackStatus})";
+                    } else {
+                        $fund->status = $this->mapStatus($dtrackStatus); // Now this method exists!
+                        $fund->remarks = "Currently at: {$office}";
+                    }
 
-    //             $latestLog = $externalData['doc_register_destination'][0];
-    //             $dtrackStatus = $latestLog['actreq_desc'] ?? '';
-    //             $office = $latestLog['dest_office'] ?? 'Unknown Office';
-    //             $actionRemarks = $latestLog['acttaken_desc'] ?? '';
+                    if ($dtrackUpdateDate) {
+                        $fund->dtrack_update_date = \Carbon\Carbon::parse($dtrackUpdateDate);
+                    }
 
-    //             // --- RULE: If status is 'Obligated', only update remarks ---
-    //             if ($fund->status === 'Obligated') {
-    //                 // Use dest_office and actreq_desc for remarks as requested
-    //                 $fund->remarks = "Currently at: " . $office . " (" . $dtrackStatus . ")";
-    //             } else {
-    //                 // --- RULE: For all other statuses, update both Status and Remarks ---
-                    
-    //                 // Update Status based on actreq_desc
-    //                 switch ($dtrackStatus) {
-    //                     case 'For Signature':
-    //                         $fund->status = 'For Signature';
-    //                         break;
-    //                     case 'For CAF/Obligation (Budget)':
-    //                         $fund->status = 'Obligated';
-    //                         break;
-    //                     case 'For Processing':
-    //                     case 'For Processing (Accounting)':
-    //                         $fund->status = 'Processing';
-    //                         break;
-    //                     default:
-    //                         $fund->status = $dtrackStatus; 
-    //                         break;
-    //                 }
+                    $fund->status_date = now();
+                    $fund->save();
 
-    //                 // Update Remarks with dest_office and taken_remarks
-    //                 $fund->remarks = "Currently at: " . $office . ($actionRemarks ? " (" . $actionRemarks . ")" : "");
-    //             }
+                    $updatedData[] = [
+                        'id' => $fund->id,
+                        'status' => $fund->status,
+                        'remarks' => $fund->remarks,
+                        'doc_update' => $fund->dtrack_update_date ? $fund->dtrack_update_date->format('M d, Y') : 'N/A'
+                    ];
+                }
+            }
 
-    //             $fund->status_date = now();
-    //             $fund->save();
-    //             $updatedCount++;
-    //         }
-    //     }
+            return response()->json(['success' => true, 'data' => $updatedData]);
 
-    //     return response()->json([
-    //         'success' => true,
-    //         'message' => "Sync complete! Updated $updatedCount records. Disbursed records were skipped.",
-    //     ]);
-    // }
+        } catch (\Exception $e) {
+            \Log::error("AJAX Sync Error: " . $e->getMessage());
+            return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
+        }
+    }
+
+    private function mapStatus($dtrackStatus) {
+        return match ($dtrackStatus) {
+            'For Signature' => 'For Signature',
+            'For CAF/Obligation (Budget)' => 'Obligated',
+            'For Processing', 'For Processing (Accounting)' => 'Processing',
+            default => $dtrackStatus,
+        };
+    }
 
 
 }
