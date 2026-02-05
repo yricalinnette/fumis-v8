@@ -7,7 +7,13 @@ use Illuminate\Database\Eloquent\Model;
 class SourceOfFund extends Model
 {
     protected $table = 'source_of_funds';
-    protected $fillable = ['name', 'total_amount', 'spreadsheet_id','sheet_name',];
+    protected $fillable = [
+        'name', 
+        'fiscal_year', // <--- Add this line!
+        'total_amount', 
+        'spreadsheet_id', 
+        'sheet_name'
+    ];
     
 
     /**
@@ -24,4 +30,5 @@ class SourceOfFund extends Model
         // This assumes your 'funds' table has a 'source_of_fund_id' column
         return $this->hasMany(Fund::class, 'source_of_fund_id');
     }
+
 }

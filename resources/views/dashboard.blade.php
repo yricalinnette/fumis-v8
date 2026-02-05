@@ -1,17 +1,41 @@
 @extends('layouts.adminlte')
 
 @section('header')
-    <div class="row mb-3">
-        <div class="col-sm-6">
-            <h1 class="m-0 font-weight-bold text-dark">Financial Overview</h1>
-            <p class="text-muted small">Real-time status of processed, obligated, and disbursed funds.</p>
+    <div class="container-fluid">
+        <div class="row mb-2 align-items-center">
+            {{-- Left Side: Dashboard Titles --}}
+            <div class="col-sm-6">
+                <h1 class="m-0 font-weight-bold text-dark">Financial Overview</h1>
+                <p class="text-muted small mb-0">
+                    Viewing data for Fiscal Year <strong>{{ $selectedYear }}</strong>
+                </p>
+            </div>
+
+            {{-- Right Side: Year Selection Filter --}}
+            <div class="col-sm-6">
+                <form action="{{ route('dashboard') }}" method="GET" class="form-inline justify-content-end">
+                    <div class="form-group mb-0">
+                        <label class="mr-2 small font-weight-bold text-uppercase text-muted">Select Year:</label>
+                        <select name="year" class="form-control form-control-sm border-primary shadow-sm" onchange="this.form.submit()">
+                            @php
+                                $startYear = 2026; 
+                            @endphp
+                            @foreach(range($startYear, $startYear - 4) as $year)
+                                <option value="{{ $year }}" {{ $selectedYear == $year ? 'selected' : '' }}>
+                                    FY {{ $year }}
+                                </option>
+                            @endforeach
+                        </select>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 @endsection
 
 @section('content')
 <div class="container-fluid">
-    <div class="row mb-4">
+    {{-- <div class="row mb-4">
         {{-- <div class="col-md-3">
             <div class="card shadow-sm border-0 h-100">
                 <div class="card-body p-3">
@@ -31,7 +55,7 @@
             </div>
         </div> --}}
 
-        <div class="col-md-3">
+        {{-- <div class="col-md-3">
             <div class="card shadow-sm border-0 h-100">
                 <div class="card-body p-3">
                     <div class="d-flex align-items-center">
@@ -48,103 +72,99 @@
                     View Detailed <i class="fas fa-chevron-right ml-1"></i>
                 </a>
             </div>
-        </div>
-    </div>
+        </div> 
+    </div> --}}
 
     <h6 class="text-uppercase text-muted font-weight-bold mb-3" style="letter-spacing: 1px;">Fund Source Distribution</h6>
 
     <div class="row">
-        @foreach($chartData as $index => $data)
-        <div class="col-xl-6 mb-4 fund-card-container">
-            <div class="card shadow-sm h-100">
-                <div class="card-header bg-white py-3">
-                    <div class="d-flex align-items-center">
-                        <div class="mr-3">
-                            <i class="fas fa-wallet text-primary fa-2x"></i>
-                        </div>
-                        <div>
-                            <h6 class="m-0 font-weight-bold text-primary text-uppercase" style="letter-spacing: 0.5px;">
-                                {{ $data['name'] }}
-                            </h6>
-                            <div class="mt-1">
-                                <span class="text-muted small">Total Allotted:</span>
-                                <span class="text-dark font-weight-bold ml-1">₱{{ number_format($data['total_allotted'], 2) }}</span>
+        @forelse($chartData as $index => $data)
+            <div class="col-xl-6 mb-4 fund-card-container">
+                <div class="card shadow-sm h-100">
+                    <div class="card-header bg-white py-3">
+                        <div class="d-flex align-items-center">
+                            <div class="mr-3">
+                                <i class="fas fa-wallet text-primary fa-2x"></i>
                             </div>
-                        </div>
-                        <div class="ml-auto" data-html2canvas-ignore>
-                            <button class="btn btn-sm btn-outline-secondary copy-card-btn" 
-                                    type="button"
-                                    title="Copy as Image">
-                                <i class="fas fa-copy"></i> Copy
-                            </button>
-                        </div>
-
-                        <div data-html2canvas-ignore>
-                            <button class="btn btn-tool" onclick="syncData()">
-                                <i class="fas fa-sync-alt"></i>
-                            </button>
-                        </div>
-                        
-                        {{-- <div class="ml-auto">
-                            <span class="badge {{ $data['ob_rate'] > 0 ? 'badge-success' : 'badge-light' }} border px-2">
-                                <i class="fas fa-sync-alt mr-1"></i> Active
-                            </span>
-                        </div> --}}
-                    </div>
-                </div>
-                
-                <div class="card-body">
-                    <div class="row">
-                        <div class="col-sm-5 border-right text-center">
-                            <div style="height: 150px; position: relative;">
-                                <canvas id="utilization-{{ $index }}"></canvas>
-                            </div>
-                            <div class="mt-2">
-                                <h4 class="mb-0 font-weight-bold">{{ $data['percent'] }}%</h4>
-                                <small class="text-muted text-uppercase">Utilization</small>
-                            </div>
-                        </div>
-
-                        <div class="col-sm-7">
-                            <div style="height: 150px;">
-                                <canvas id="performance-{{ $index }}"></canvas>
-                            </div>
-                            <div class="row mt-3">
-                                <div class="col-6 text-center">
-                                    <span class="d-block font-weight-bold text-warning">{{ $data['ob_rate'] }}%</span>
-                                    <small class="text-muted">Obligation</small>
+                            <div>
+                                <h6 class="m-0 font-weight-bold text-primary text-uppercase" style="letter-spacing: 0.5px;">
+                                    {{ $data['name'] }}
+                                </h6>
+                                <div class="mt-1">
+                                    <span class="text-muted small">Total Allotted:</span>
+                                    <span class="text-dark font-weight-bold ml-1">₱{{ number_format($data['total_allotted'], 2) }}</span>
                                 </div>
-                                <div class="col-6 text-center">
-                                    <span class="d-block font-weight-bold text-success">{{ $data['disb_rate'] }}%</span>
-                                    <small class="text-muted">Disbursement</small>
+                            </div>
+                            <div class="ml-auto" data-html2canvas-ignore>
+                                <button class="btn btn-sm btn-outline-secondary copy-card-btn" 
+                                        type="button"
+                                        title="Copy as Image">
+                                    <i class="fas fa-copy"></i> Copy
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-sm-5 border-right text-center">
+                                <div style="height: 150px; position: relative;">
+                                    <canvas id="utilization-{{ $index }}"></canvas>
+                                </div>
+                                <div class="mt-2">
+                                    <h4 class="mb-0 font-weight-bold">{{ $data['percent'] }}%</h4>
+                                    <small class="text-muted text-uppercase">Utilization</small>
+                                </div>
+                            </div>
+
+                            <div class="col-sm-7">
+                                <div style="height: 150px;">
+                                    <canvas id="performance-{{ $index }}"></canvas>
+                                </div>
+                                <div class="row mt-3">
+                                    <div class="col-6 text-center">
+                                        <span class="d-block font-weight-bold text-warning">{{ $data['ob_rate'] }}%</span>
+                                        <small class="text-muted">Obligation</small>
+                                    </div>
+                                    <div class="col-6 text-center">
+                                        <span class="d-block font-weight-bold text-success">{{ $data['disb_rate'] }}%</span>
+                                        <small class="text-muted">Disbursement</small>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <div class="card-footer bg-light py-2">
-                    <div class="row text-center small">
-                        <div class="col-4">
-                            <span class="text-muted">Processed by the unit</span><br>
-                            <div class="text-bold">₱{{ number_format($data['processed_total'], 2) }}</div>
-                        </div>
-                        <div class="col-4 border-left">
-                            <span class="text-muted">Remaining</span><br>
-                            <div class="text-danger" style="font-weight: 700;">
-                                ₱{{ number_format($data['remaining_budget'], 2) }}
+                    <div class="card-footer bg-light py-2">
+                        <div class="row text-center small">
+                            <div class="col-4">
+                                <span class="text-muted">Processed by the unit</span><br>
+                                <div class="text-bold">₱{{ number_format($data['processed_total'], 2) }}</div>
                             </div>
-                        </div>
-                        <div class="col-4 border-left">
-                            <span class="text-muted">Last Updated</span><br>
-                            {{-- Display the dynamic date from our controller --}}
-                            <strong class="text-dark">{{ $data['last_updated'] }}</strong>
+                            <div class="col-4 border-left">
+                                <span class="text-muted">Remaining</span><br>
+                                <div class="text-danger" style="font-weight: 700;">
+                                    ₱{{ number_format($data['remaining_budget'], 2) }}
+                                </div>
+                            </div>
+                            <div class="col-4 border-left">
+                                <span class="text-muted">Last Updated</span><br>
+                                <strong class="text-dark">{{ $data['last_updated'] }}</strong>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
-        @endforeach
+        @empty
+            {{-- This displays if $chartData is empty --}}
+            <div class="col-12 text-center mt-5">
+                <div class="p-5 bg-white shadow-sm rounded">
+                    <i class="fas fa-folder-open fa-3x text-muted mb-3"></i>
+                    <h4 class="text-muted">No transactions found for Fiscal Year {{ $selectedYear }}</h4>
+                    <p class="text-secondary small">Please select a different year or update your fund records.</p>
+                </div>
+            </div>
+        @endforelse
     </div>
 </div>
 @endsection

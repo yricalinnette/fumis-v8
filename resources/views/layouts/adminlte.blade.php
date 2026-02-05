@@ -86,8 +86,8 @@
 
                     <li class="nav-header">REPORTS & ANALYTICS</li>
 
-                    <li class="nav-item">
-                        <a href="#" class="nav-link">
+                    <li class="nav-item {{ request()->is('reports*') ? 'menu-open' : '' }}">
+                        <a href="#" class="nav-link {{ request()->is('reports*') ? 'active' : '' }}">
                             <i class="nav-icon fas fa-chart-pie"></i>
                             <p>
                                 Budget Tracking
@@ -102,7 +102,8 @@
                                 </a>
                             </li>
                             <li class="nav-item">
-                                <a href="{{ route('reports.by_line_item') }}" class="nav-link {{ request()->is('reports/budget-by-line-item*') ? 'active' : '' }}">
+                                <a href="{{ route('reports.by_line_item') }}" 
+                                class="nav-link {{ request()->routeIs('reports.by_line_item') ? 'active' : '' }}">
                                     <i class="far fa-circle nav-icon text-primary"></i>
                                     <p>By Line Item</p>
                                 </a>
@@ -151,6 +152,11 @@
     </aside>
 
     <div class="content-wrapper">
+        <div class="content-header">
+            <div class="container-fluid">
+                @yield('header') {{-- Add this line here --}}
+            </div>
+        </div>
         <div class="content-header"></div>
         <section class="content">
             <div class="container-fluid">

@@ -66,11 +66,12 @@
                         <table class="table table-hover table-striped bg-white border">
                             <thead class="bg-light">
                                 <tr>
-                                    <th style="width: 20%">Source Name</th>
-                                    <th style="width: 10%">Sync</th>
-                                    <th style="width: 25%">Spreadsheet ID</th>
+                                    <th style="width: 15%">Source Name</th>
+                                    <th style="width: 20%">Spreadsheet ID</th>
                                     <th style="width: 15%">Tab Name</th>
-                                    <th style="width: 15%" class="text-right">Allocation</th>
+                                    <th style="width: 15%" class="text-center">Allocation</th>
+                                    <th style="width: 10%" class="text-center">Sync</th>
+                                    <th style="width: 10%" class="text-center">FY</th> 
                                     <th style="width: 15%" class="text-center">Action</th>
                                 </tr>
                             </thead>
@@ -78,16 +79,10 @@
                                 @foreach($sources as $source)
                                 <tr>
                                     <td class="align-middle"><strong>{{ $source->name }}</strong></td>
-                                    <td class="align-middle ">
-                                        @if($source->spreadsheet_id)
-                                            <span class="badge badge-success"><i class="fas fa-sync-alt mr-1"></i> Linked</span>
-                                        @else
-                                            <span class="badge badge-secondary">Manual</span>
-                                        @endif
-                                    </td>
+                                    
                                     <td class="align-middle">
                                         @if($source->spreadsheet_id)
-                                            <code class="text-truncate d-inline-block" style="max-width: 200px;" title="{{ $source->spreadsheet_id }}">
+                                            <code class="text-truncate d-inline-block"  title="{{ $source->spreadsheet_id }}">
                                                 {{ $source->spreadsheet_id }}
                                             </code>
                                         @else
@@ -101,22 +96,34 @@
                                             <span class="text-muted small">N/A</span>
                                         @endif
                                     </td>
-                                    <td class="align-middle text-right font-weight-bold">
+                                    <td class="align-middle text-center font-weight-bold">
                                         ₱{{ number_format($source->total_amount, 2) }}
                                     </td>
-                                    <td class="align-middle text-center">
+                                    <td class="align-middle text-center ">
+                                        @if($source->spreadsheet_id)
+                                            <span class="badge badge-success"><i class="fas fa-sync-alt mr-1"></i> Linked</span>
+                                        @else
+                                            <span class="badge badge-secondary">Manual</span>
+                                        @endif
+                                    </td>
+                                    <td class="align-middle text-center"><span class="badge badge-info">{{ $source->fiscal_year }}</span>
+                                    </td> <td class="align-middle text-center">
                                         <div class="btn-group">
                                             <button type="button" class="btn btn-sm btn-outline-info edit-source-btn" 
                                                 data-id="{{ $source->id }}" 
                                                 data-name="{{ $source->name }}" 
+                                                data-fiscal_year="{{ $source->fiscal_year }}" {{-- Added Data Attribute --}}
                                                 data-amount="{{ $source->total_amount }}" 
                                                 data-sheetid="{{ $source->spreadsheet_id }}" 
                                                 data-sheetname="{{ $source->sheet_name }}">
                                                 <i class="fas fa-edit"></i>
                                             </button>
-                                            <form action="{{ route('settings.source.destroy', $source->id) }}" method="POST" class="d-inline" onsubmit="return confirm('Delete source?')">
-                                                @csrf @method('DELETE')
-                                                <button type="submit" class="btn btn-sm btn-outline-danger ml-1">
+
+                                            <form action="{{ route('settings.source.destroy', $source->id) }}" method="POST" class="d-inline" 
+                                                onsubmit="return confirm('Are you sure you want to delete this source? This action cannot be undone.')">
+                                                @csrf
+                                                @method('DELETE')
+                                                <button type="submit" class="btn btn-sm btn-outline-danger ml-1" title="Delete Source">
                                                     <i class="fas fa-trash"></i>
                                                 </button>
                                             </form>
@@ -152,7 +159,7 @@
                                         </div>
                                     </div>
                                     <small class="text-info mt-2 d-block">
-                                        <i class="fas fa-cog mr-1"></i> Current mapping uses header row <b>{{ $config->header_row }}</b>.
+                                        <i class="fas fa-cog mr-1"></i> Current mapping uses header row <b>{{ $template->header_row }}</b>.
                                     </small>
                                 </div>
                             </div>
@@ -194,7 +201,7 @@
                             <thead>
                                 <tr class="bg-dark text-white">
                                     <th>Activity Name</th>
-                                    <th class="text-right">Budget Limit</th>
+                                    <th class="text-right">Alloted Budget</th>
                                     <th class="text-center">Action</th>
                                 </tr>
                             </thead>
@@ -262,61 +269,82 @@
                         <h5 class="text-muted mb-0"><i class="fas fa-sliders-h mr-2"></i>WFP Template Configuration</h5>
                     </div>
 
+                    {{-- Use the ID from the database, or default to 1 for the first-time setup --}}
                     <form action="{{ route('settings.template.update', $template->id ?? 1) }}" method="POST">
                         @csrf
                         @method('PUT')
-                        
                         <div class="row">
+                            {{-- Header Settings --}}
                             <div class="col-md-4">
-                                <div class="card card-outline card-info">
-                                    <div class="card-header"><h3 class="card-title">Header Settings</h3></div>
+                                <div class="card card-outline card-info shadow-sm">
+                                    <div class="card-header"><h3 class="card-title font-weight-bold">Header Settings</h3></div>
                                     <div class="card-body">
                                         <div class="form-group">
                                             <label>Header Row Index</label>
-                                            <input type="number" name="header_row" class="form-control" value="{{ $template->header_row ?? 15 }}">
+                                            {{-- Logic: Old Input > Database Value > Default (15) --}}
+                                            <input type="number" name="header_row" class="form-control" 
+                                                value="{{ old('header_row', $template->header_row ?? 15) }}">
                                             <small class="text-muted">The row number where column titles exist in Excel.</small>
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
+                            {{-- Column Mapping --}}
                             <div class="col-md-8">
-                                <div class="card card-outline card-primary">
-                                    <div class="card-header"><h3 class="card-title">Column Mapping (Exact Excel Header Names)</h3></div>
+                                <div class="card card-outline card-primary shadow-sm">
+                                    <div class="card-header">
+                                        <h3 class="card-title font-weight-bold">Column Mapping (Exact Excel Header Names)</h3>
+                                    </div>
                                     <div class="card-body p-0">
                                         <table class="table table-sm table-striped mb-0">
-                                            <thead>
+                                            <thead class="bg-light">
                                                 <tr>
-                                                    <th class="pl-3">Database Field</th>
-                                                    <th>Excel Header Name</th>
+                                                    <th class="pl-3 py-2">Database Field</th>
+                                                    <th class="py-2">Excel Header Name</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 <tr>
-                                                    <td class="pl-3 align-middle">Budget Line Item</td>
-                                                    <td><input type="text" name="budget_line_col" class="form-control form-control-sm" value="{{ $template->budget_line_col ?? 'BUDGET LINE ITEM' }}"></td>
+                                                    <td class="pl-3 align-middle font-weight-bold">Budget Line Item</td>
+                                                    <td>
+                                                        <input type="text" name="budget_line_col" class="form-control form-control-sm" 
+                                                            value="{{ old('budget_line_col', $template->budget_line_col ?? 'BUDGET LINE ITEM') }}">
+                                                    </td>
                                                 </tr>
                                                 <tr>
-                                                    <td class="pl-3 align-middle">Objective</td>
-                                                    <td><input type="text" name="objective_col" class="form-control form-control-sm" value="{{ $template->objective_col ?? 'OBJECTIVE' }}"></td>
+                                                    <td class="pl-3 align-middle font-weight-bold">Objective</td>
+                                                    <td>
+                                                        <input type="text" name="objective_col" class="form-control form-control-sm" 
+                                                            value="{{ old('objective_col', $template->objective_col ?? 'OBJECTIVE') }}">
+                                                    </td>
                                                 </tr>
                                                 <tr>
-                                                    <td class="pl-3 align-middle">Activity Name</td>
-                                                    <td><input type="text" name="activity_col" class="form-control form-control-sm" value="{{ $template->activity_col ?? 'ACTIVITIES TO ATTAIN THE SUCESS INDICATORS' }}"></td>
+                                                    <td class="pl-3 align-middle font-weight-bold">Activity Name</td>
+                                                    <td>
+                                                        <input type="text" name="activity_col" class="form-control form-control-sm" 
+                                                            value="{{ old('activity_col', $template->activity_col ?? 'ACTIVITIES TO ATTAIN THE SUCESS INDICATORS') }}">
+                                                    </td>
                                                 </tr>
                                                 <tr>
-                                                    <td class="pl-3 align-middle">Cost / Budget</td>
-                                                    <td><input type="text" name="budget_col" class="form-control form-control-sm" value="{{ $template->budget_col ?? 'COST' }}"></td>
+                                                    <td class="pl-3 align-middle font-weight-bold">Cost / Budget</td>
+                                                    <td>
+                                                        <input type="text" name="budget_col" class="form-control form-control-sm" 
+                                                            value="{{ old('budget_col', $template->budget_col ?? 'COST') }}">
+                                                    </td>
                                                 </tr>
                                                 <tr>
-                                                    <td class="pl-3 align-middle">Source of Fund</td>
-                                                    <td><input type="text" name="source_col" class="form-control form-control-sm" value="{{ $template->source_col ?? 'SOURCE OF FUND' }}"></td>
+                                                    <td class="pl-3 align-middle font-weight-bold">Source of Fund</td>
+                                                    <td>
+                                                        <input type="text" name="source_col" class="form-control form-control-sm" 
+                                                            value="{{ old('source_col', $template->source_col ?? 'SOURCE OF FUND') }}">
+                                                    </td>
                                                 </tr>
                                             </tbody>
                                         </table>
                                     </div>
-                                    <div class="card-footer">
-                                        <button type="submit" class="btn btn-primary float-right">
+                                    <div class="card-footer bg-white border-top">
+                                        <button type="submit" class="btn btn-primary float-right shadow-sm">
                                             <i class="fas fa-save mr-1"></i> Update Mapping
                                         </button>
                                     </div>
@@ -342,10 +370,27 @@
                     <button type="button" class="close text-white" data-dismiss="modal">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <div class="form-group">
-                        <label>Source Name</label>
-                        <input type="text" name="name" id="edit_name" class="form-control" required>
+                    <div class="row">
+                        <div class="col-md-8">
+                            <div class="form-group">
+                                <label>Source Name</label>
+                                <input type="text" name="name" id="edit_name" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-group">
+                                <label>Fiscal Year</label>
+                                <select name="fiscal_year" class="form-control" required>
+                                    <option value="">-- Select Year --</option>
+                                    <option value="2025">2025</option>
+                                    <option value="2026">2026</option>
+                                    <option value="2027">2027</option>
+                                    <option value="2024">2028</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
+
                     <div class="form-group">
                         <label>Allocated Amount</label>
                         <div class="input-group">
@@ -354,8 +399,9 @@
                             <input type="hidden" name="total_amount" id="edit_raw_amount" class="amount-mask-raw">
                         </div>
                     </div>
+                    
                     <div class="bg-light p-3 border rounded">
-                        <h6 class="font-weight-bold">Google Sheet Config</h6>
+                        <h6 class="font-weight-bold"><i class="fab fa-google-drive mr-1"></i> Google Sheet Config</h6>
                         <div class="form-group">
                             <label class="small">Spreadsheet ID</label>
                             <input type="text" name="spreadsheet_id" id="edit_spreadsheet_id" class="form-control form-control-sm">
@@ -386,28 +432,48 @@
                     <button type="button" class="close text-white" data-dismiss="modal">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <div class="form-group">
-                        <label>Source Name</label>
-                        <input type="text" name="name" class="form-control" placeholder="e.g. SAA2025-04" required>
+                    <div class="row">
+                        <div class="col-md-8">
+                            <div class="form-group">
+                                <label>Source Name <span class="text-danger">*</span></label>
+                                <input type="text" name="name" class="form-control" placeholder="e.g., General Fund" required>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-group">
+                                <label>Fiscal Year</label>
+                                <select name="fiscal_year" class="form-control" required>
+                                    <option value="">-- Select Year --</option>
+                                    <option value="2025">2025</option>
+                                    <option value="2026">2026</option>
+                                    <option value="2027">2027</option>
+                                    <option value="2024">2028</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
+
                     <div class="form-group">
-                        <label>Total Allocated Amount</label>
+                        <label>Initial Allocated Amount <span class="text-danger">*</span></label>
                         <div class="input-group">
                             <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
+                            {{-- Using your existing mask logic classes --}}
                             <input type="text" class="form-control amount-mask-display" placeholder="0.00" required>
                             <input type="hidden" name="total_amount" class="amount-mask-raw">
                         </div>
                     </div>
-                    <hr>
+
                     <div class="bg-light p-3 border rounded">
-                        <h6 class="font-weight-bold"><i class="fab fa-google mr-1"></i> Google Sheets Integration</h6>
+                        <h6 class="font-weight-bold text-muted small uppercase mb-3">
+                            <i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration
+                        </h6>
                         <div class="form-group">
                             <label class="small">Spreadsheet ID</label>
                             <input type="text" name="spreadsheet_id" class="form-control form-control-sm" placeholder="Paste ID from URL">
                         </div>
                         <div class="form-group mb-0">
                             <label class="small">Sheet/Tab Name</label>
-                            <input type="text" name="sheet_name" class="form-control form-control-sm" placeholder="e.g. Data Entry">
+                            <input type="text" name="sheet_name" class="form-control form-control-sm" placeholder="e.g., Sheet1">
                         </div>
                     </div>
                 </div>
@@ -496,15 +562,24 @@
         $('#source_selector').on('change', checkBalance);
 
         $('.edit-source-btn').on('click', function() {
-            let btn = $(this);
-            let id = btn.data('id');
-            let amount = parseFloat(btn.data('amount')) || 0;
+            const id = $(this).data('id');
+            const name = $(this).data('name');
+            const year = $(this).data('fiscal_year'); // New
+            const amount = $(this).data('amount');
+            const sheetId = $(this).data('sheetid');
+            const sheetName = $(this).data('sheetname');
+
+            // Set form action
             $('#edit-source-form').attr('action', `/settings/source/${id}`);
-            $('#edit_name').val(btn.data('name'));
-            $('#edit_raw_amount').val(amount.toFixed(2));
-            $('#edit_spreadsheet_id').val(btn.data('sheetid'));
-            $('#edit_sheet_name').val(btn.data('sheetname'));
-            $('#edit_display_amount').val(amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+
+            // Fill fields
+            $('#edit_name').val(name);
+            $('#edit_fiscal_year').val(year);
+            $('#edit_display_amount').val(Number(amount).toLocaleString('en-US', {minimumFractionDigits: 2}));
+            $('#edit_raw_amount').val(amount);
+            $('#edit_spreadsheet_id').val(sheetId);
+            $('#edit_sheet_name').val(sheetName);
+
             $('#modal-edit-source').modal('show');
         });
     });

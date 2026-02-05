@@ -7,6 +7,8 @@ use App\Models\Activity;
 use App\Models\ImportTemplate; 
 use App\Imports\WfpActivitiesImport;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Log;
 
 use Illuminate\Http\Request;
 
@@ -25,21 +27,43 @@ class SettingsController extends Controller
         $activities = Activity::with('source')->get();
 
         // Fetch the first template record, or create a blank object if none exists
-        $config = \App\Models\ImportTemplate::first() ?? new \App\Models\ImportTemplate();
+        $template = \App\Models\ImportTemplate::first();
 
-        return view('admin.settings', compact('sources', 'employees', 'activities', 'config'));
+        return view('admin.settings', compact('sources', 'employees', 'activities', 'template'));
     }
 
-    public function storeSource(Request $request) {
-        $request->validate([
-            'name' => 'required|string|unique:source_of_funds,name',
-            'total_amount' => 'required|numeric',
-            'spreadsheet_id' => 'nullable|string', // Not required
-            'sheet_name' => 'nullable|string',    // Not required
+    public function storeSource(Request $request) 
+    {
+        // 1. Validation with composite unique check
+        $validated = $request->validate([
+            'name' => [
+                'required',
+                'string',
+                'max:255',
+                // This checks if the 'name' + 'fiscal_year' combination already exists
+                Rule::unique('source_of_funds')->where(function ($query) use ($request) {
+                    return $query->where('fiscal_year', $request->fiscal_year);
+                }),
+            ],
+            'fiscal_year'    => 'required|integer',
+            'total_amount'   => 'required|numeric',
+            'spreadsheet_id' => 'nullable|string',
+            'sheet_name'     => 'nullable|string',
+        ], [
+            // Custom error message for the unique constraint
+            'name.unique' => "The fund source '{$request->name}' already exists for the year {$request->fiscal_year}."
         ]);
 
-        \App\Models\SourceOfFund::create($request->all());
-        return redirect()->back()->with('success', 'New fund source added successfully!');
+        try {
+            // 2. Simple creation (Validation already handled the duplicate check)
+            SourceOfFund::create($validated);
+            return back()->with('success', 'Fund source added successfully!');
+
+        } catch (\Exception $e) {
+            // 3. Catch only genuine system failures (DB down, etc.)
+            Log::error("Fund Source Storage Error: " . $e->getMessage());
+            return back()->withErrors(['error' => "A system error occurred while saving. Please try again."]);
+        }
     }
 
     public function updateSource(Request $request, $id)
@@ -47,10 +71,16 @@ class SettingsController extends Controller
         $source = SourceOfFund::findOrFail($id);
         
         $validated = $request->validate([
-            'name' => 'required|string|unique:source_of_funds,name,' . $id,
-            'total_amount' => 'required|numeric',
+            'name' => [
+                'required', 'string',
+                Rule::unique('source_of_funds')->where(function ($query) use ($request) {
+                    return $query->where('fiscal_year', $request->fiscal_year);
+                })->ignore($id), // IMPORTANT: Ignore the current record
+            ],
+            'fiscal_year' => 'required|integer',
+            'total_amount'   => 'required|numeric',
             'spreadsheet_id' => 'nullable|string',
-            'sheet_name' => 'nullable|string',
+            'sheet_name'     => 'nullable|string',
         ]);
 
         $source->update($validated);
@@ -113,18 +143,27 @@ class SettingsController extends Controller
 
     public function destroySource($id)
     {
-        // 1. Find the source or fail with 404
+        // 1. Find the source or fail
         $source = SourceOfFund::findOrFail($id);
 
-        // 2. Prevent deletion if there are activities linked to it
-        // This prevents database integrity issues (orphaned records)
-        if ($source->activities()->exists()) {
+        // 2. Check for transactions in the funds table
+        // Replace 'Fund' with your actual Transaction model name
+        $hasTransactions = \App\Models\Fund::where('source_of_fund_id', $id)->exists();
+
+        if ($hasTransactions) {
             return back()->withErrors([
-                'error' => "Cannot delete '{$source->name}'. You must delete or move its linked activities first."
+                'error' => "Cannot delete '{$source->name}'. There are already transactions/funds recorded under this source."
             ]);
         }
 
-        // 3. Delete the source
+        // 3. Optional: Check for linked activities as well
+        if ($source->activities()->exists()) {
+            return back()->withErrors([
+                'error' => "Cannot delete '{$source->name}'. Please delete its linked activities first."
+            ]);
+        }
+
+        // 4. If clean, delete
         $source->delete();
 
         return back()->with('success', 'Fund source deleted successfully!');
@@ -133,13 +172,24 @@ class SettingsController extends Controller
     //for updating the wfp import settings configurations
     public function updateTemplate(Request $request, $id)
     {
-        // find the template or create a fresh one if ID 1 doesn't exist yet
-        $template = \App\Models\ImportTemplate::findOrNew($id);
-        
-        $template->fill($request->all());
-        $template->save();
+        // 1. Validate the input to ensure mapping names are provided
+        $validated = $request->validate([
+            'header_row'      => 'required|integer|min:1',
+            'budget_line_col' => 'required|string',
+            'objective_col'   => 'required|string',
+            'activity_col'    => 'required|string',
+            'budget_col'      => 'required|string',
+            'source_col'      => 'required|string',
+        ]);
 
-        return back()->with('success', 'Excel mapping updated successfully!');
+        // 2. Use updateOrCreate to handle both fresh installs and existing data
+        // This looks for ID 1. If it doesn't exist, it creates it.
+        \App\Models\ImportTemplate::updateOrCreate(
+            ['id' => 1], 
+            $validated
+        );
+
+        return redirect()->back()->with('success', 'WFP Template mapping updated successfully!');
     }
 
     

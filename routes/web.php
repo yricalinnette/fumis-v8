@@ -65,8 +65,9 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::get('/admin/users', [UserController::class, 'index'])->name('admin.users.index');
 
     //REPORT
-    Route::get('/reports/budget-by-source', [ReportController::class, 'budgetBySource'])->name('reports.by_source');
-    Route::get('/reports/budget-by-line-item', [ReportController::class, 'budgetByLineItem'])->name('reports.by_line_item');
+    Route::get('reports/budget-by-source', [ReportController::class, 'budgetBySource'])->name('reports.by_source');
+    Route::get('reports/budget-by-line-item', [App\Http\Controllers\ReportController::class, 'budgetByLineItem'])
+    ->name('reports.by_line_item');
 });
 
 Route::middleware('auth')->group(function () {
