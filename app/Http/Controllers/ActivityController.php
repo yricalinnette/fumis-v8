@@ -6,6 +6,9 @@ use App\Models\Activity;
 use App\Models\SourceOfFund;
 use Illuminate\Http\Request;
 use App\Imports\WfpActivitiesImport;
+use Maatwebsite\Excel\Facades\Excel;
+use App\Exports\WfpTemplateExport;
+
 
 class ActivityController extends Controller
 {
@@ -43,26 +46,42 @@ class ActivityController extends Controller
         return redirect()->back()->with('success', 'Activity removed successfully.');
     }
 
-    public function import(Request $request)
+    //for import of wfp template
+    public function importWFP(Request $request)
     {
-        $request->validate(['wfp_file' => 'required|mimes:xlsx,xls,csv']);
+        $request->validate([
+            'fund_source_id' => 'required|exists:source_of_funds,id',
+            'wfp_file'       => 'required|mimes:xlsx,xls,csv'
+        ]);
 
         try {
-            \DB::beginTransaction();
-
-            // Use the instance directly to ensure the constructor runs properly
-            $import = new \App\Imports\WfpActivitiesImport();
-            \Excel::import($import, $request->file('wfp_file'));
-
-            \DB::commit();
+            $import = new \App\Imports\WfpActivitiesImport($request->fund_source_id);
             
-            // Add a check here: if nothing was saved, it's not really a "success"
-            return back()->with('success', 'Import process finished!');
+            // This will now throw the Exception if headers are wrong
+            \Maatwebsite\Excel\Facades\Excel::import($import, $request->file('wfp_file'));
 
+            // Check if anything actually happened
+            if (($import->createdCount + $import->updatedCount + count($import->failures)) === 0) {
+                return back()->withErrors(['error' => 'No rows were processed. Please ensure to use the Downloadable WFP Template.']);
+            }
+
+            // Now failures will definitely have data because the importer caught them row-by-row
+            return back()->with('import_summary', [
+                'created'  => $import->createdCount,
+                'updated'  => $import->updatedCount,
+                'failures' => $import->failures,
+                'total'    => $import->createdCount + $import->updatedCount + count($import->failures),
+            ]);
         } catch (\Exception $e) {
-            \DB::rollBack();
-            \Log::error('Import Error: ' . $e->getMessage());
-            return back()->withErrors(['import_error' => $e->getMessage()])->withInput();
+            // This catches the "Header Mismatch" exception
+            return back()->withErrors(['error' => $e->getMessage()]);
         }
     }
+
+    public function downloadTemplate()
+    {
+        $fileName = 'WFP_Template_' . now()->format('Y-m-d') . '.xlsx';
+        return Excel::download(new WfpTemplateExport, $fileName);
+    }
+
 }

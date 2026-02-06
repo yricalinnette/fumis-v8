@@ -180,6 +180,7 @@ class SettingsController extends Controller
             'activity_col'    => 'required|string',
             'budget_col'      => 'required|string',
             'source_col'      => 'required|string',
+            'uacs_col'        => 'required|string',
         ]);
 
         // 2. Use updateOrCreate to handle both fresh installs and existing data
@@ -191,6 +192,8 @@ class SettingsController extends Controller
 
         return redirect()->back()->with('success', 'WFP Template mapping updated successfully!');
     }
+
+    
 
     
     

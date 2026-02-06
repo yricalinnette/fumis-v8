@@ -9,7 +9,7 @@ class Fund extends Model
     protected $fillable = [
         'dtrack_no',
         'source_of_fund_id',
-        'transaction_type',
+        'transaction_type_id', // Now properly mapped to the activities table
         'particulars',
         'transaction_date',
         'amount',
@@ -25,24 +25,6 @@ class Fund extends Model
         'disbursement_amount',
     ];
 
-    // Relationship: A fund belongs to the user who created it
-    public function user()
-    {
-        return $this->belongsTo(User::class);
-    }
-
-    public function creditors() {
-        return $this->belongsToMany(Employee::class, 'employee_fund');
-    }
-    public function activities() {
-        return $this->hasMany(Activity::class);
-    }
-
-    // Accessor to get total spent
-    public function getTotalAllocatedAttribute() {
-        return $this->activities()->sum('allocated_amount');
-    }
-
     protected $casts = [
         'transaction_date' => 'date',
         'status_date' => 'date',
@@ -50,9 +32,38 @@ class Fund extends Model
         'disbursement_date' => 'date',
     ];
 
+    /**
+     * Relationship: The specific Activity/Transaction Type linked to this fund record
+     */
+    public function activity()
+    {
+        // This links transaction_type_id to the id on the activities table
+        return $this->belongsTo(Activity::class, 'transaction_type_id');
+    }
+
+    /**
+     * Relationship: The Library source of the fund (GAA, HIT, etc.)
+     */
     public function fundSource()
     {
-        // Points to the source_of_fund_id foreign key
         return $this->belongsTo(SourceOfFund::class, 'source_of_fund_id');
     }
+
+    /**
+     * Relationship: A fund belongs to the user who created it
+     */
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Relationship: Many-to-Many with Employees (Creditors)
+     */
+    public function creditors() 
+    {
+        return $this->belongsToMany(Employee::class, 'employee_fund');
+    }
+
+    // --- Cleaned up the incorrect hasMany relationship ---
 }

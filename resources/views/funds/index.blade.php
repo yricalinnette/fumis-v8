@@ -179,7 +179,7 @@
                         @endif
                     </td>
                     <td>{{ $fund->fundSource->name ?? 'N/A' }}</td>
-                    <td>{{ $fund->transaction_type }}</td>
+                    <td>{{ $fund->activity->name ?? 'N/A' }}</td>
                     
                     <td class="text-right font-weight-bold">
                         @if($fund->status == 'Disbursed')

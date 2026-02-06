@@ -15,10 +15,29 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
 
-class MyReadFilter implements IReadFilter {
-    public function readCell(string $columnAddress, int $row, string $worksheetName = ''): bool {
-        // Updated range to include 'Q'
-        return in_array($columnAddress, range('A', 'Q'));
+class MyReadFilter implements \PhpOffice\PhpSpreadsheet\Reader\IReadFilter
+{
+    private $startRow = 0;
+    private $endRow   = 0;
+    private $columns  = [];
+
+    public function __construct($startRow, $endRow, $columns) {
+        $this->startRow = $startRow;
+        $this->endRow   = $endRow;
+        $this->columns  = $columns;
+    }
+
+    // REMOVE 'string' and 'int' from the parameters here:
+    public function readCell($columnAddress, $row, $worksheetName = ''): bool
+    {
+        // Check if row is within the range
+        if ($row >= $this->startRow && $row <= $this->endRow) {
+            // Check if column is in the list of columns to read
+            if (in_array($columnAddress, $this->columns)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
 

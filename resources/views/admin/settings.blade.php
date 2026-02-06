@@ -138,33 +138,71 @@
 
                 {{-- TAB 2: ACTIVITY ALLOCATION --}}
                 <div class="tab-pane fade" id="tabs-activities" role="tabpanel">
+                    
                     <div id="balance_info" class="alert alert-info d-none mb-3">
                         <i class="fas fa-info-circle"></i> <span id="balance_text"></span>
                     </div>
+
+                    {{-- IMPORT SECTION --}}
                     <form action="{{ route('settings.activity.import') }}" method="POST" enctype="multipart/form-data" id="importForm">
                         @csrf
-                        <div class="card card-outline card-success">
+                        <div class="card card-outline card-success shadow-sm">
+                            <div class="card-header">
+                                <h3 class="card-title font-weight-bold"><i class="fas fa-file-excel mr-2"></i>Bulk Import WFP</h3>
+                            </div>
                             <div class="card-body">
-                                <div class="form-group">
-                                    <label for="wfp_file">Upload WFP Excel File</label>
-                                    <div class="input-group">
-                                        <div class="custom-file">
-                                            <input type="file" name="wfp_file" class="custom-file-input" id="wfp_file" required>
-                                            <label class="custom-file-label" for="wfp_file">Choose WFP Excel file...</label>
-                                        </div>
-                                        <div class="input-group-append">
-                                            <button type="submit" class="btn btn-success">
-                                                <i class="fas fa-file-import mr-1"></i> Import
-                                            </button>
+                                <div class="row">
+                                    <div class="col-md-12 mb-3">
+                                        <a href="{{ route('settings.template.download') }}" class="btn btn-info btn-sm">
+                                            <i class="fas fa-download"></i> Download Sample WFP Template
+                                        </a>
+                                        <small class="text-muted d-block mt-1">
+                                            * Use this template to ensure your Fund Source names match our records.
+                                        </small>
+                                    </div>
+                                    
+                                    {{-- Added the required Fund Source Selector for the Import --}}
+                                    <div class="col-md-5">
+                                        <div class="form-group">
+                                            <label>Default Fund Source (Backup)</label>
+                                            <select name="fund_source_id" class="form-control select2" required>
+                                                <option value="">-- Select Source --</option>
+                                                @foreach($sources as $source)
+                                                    <option value="{{ $source->id }}">{{ $source->name }}</option>
+                                                @endforeach
+                                            </select>
                                         </div>
                                     </div>
-                                    <small class="text-info mt-2 d-block">
-                                        <i class="fas fa-cog mr-1"></i> Current mapping uses header row <b>{{ $template->header_row }}</b>.
-                                    </small>
+
+                                    <div class="col-md-7">
+                                        <div class="form-group">
+                                            <label for="wfp_file">Choose WFP Excel File</label>
+                                            <div class="input-group">
+                                                <div class="custom-file">
+                                                    <input type="file" name="wfp_file" class="custom-file-input" id="wfp_file" required>
+                                                    <label class="custom-file-label" for="wfp_file">Choose file...</label>
+                                                </div>
+                                                <div class="input-group-append">
+                                                    <button type="submit" class="btn btn-success">
+                                                        <i class="fas fa-file-import mr-1"></i> Import Data
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
+
+                                <small class="text-info d-block">
+                                    <i class="fas fa-cog mr-1"></i> Current mapping expects headers on row <b>{{ $template->header_row ?? 1 }}</b>.
+                                </small>
                             </div>
                         </div>
                     </form>
+
+                    <hr class="my-4">
+
+                    {{-- MANUAL ENTRY FORM (Existing) --}}
+                    {{-- <h5 class="text-muted mb-3"><i class="fas fa-keyboard mr-2"></i>Manual Activity Entry</h5>
                     <form action="{{ route('settings.activity.store') }}" method="POST" id="activity_form" class="row">
                         @csrf
                         <div class="col-md-4">
@@ -195,7 +233,7 @@
                             <label>&nbsp;</label>
                             <button type="submit" id="btn-save-activity" class="btn btn-success btn-block"><i class="fas fa-plus"></i></button>
                         </div>
-                    </form>
+                    </form> --}}
                     <div class="mt-4">
                         <table class="table table-bordered table-striped">
                             <thead>
@@ -269,7 +307,6 @@
                         <h5 class="text-muted mb-0"><i class="fas fa-sliders-h mr-2"></i>WFP Template Configuration</h5>
                     </div>
 
-                    {{-- Use the ID from the database, or default to 1 for the first-time setup --}}
                     <form action="{{ route('settings.template.update', $template->id ?? 1) }}" method="POST">
                         @csrf
                         @method('PUT')
@@ -281,7 +318,6 @@
                                     <div class="card-body">
                                         <div class="form-group">
                                             <label>Header Row Index</label>
-                                            {{-- Logic: Old Input > Database Value > Default (15) --}}
                                             <input type="number" name="header_row" class="form-control" 
                                                 value="{{ old('header_row', $template->header_row ?? 15) }}">
                                             <small class="text-muted">The row number where column titles exist in Excel.</small>
@@ -306,13 +342,6 @@
                                             </thead>
                                             <tbody>
                                                 <tr>
-                                                    <td class="pl-3 align-middle font-weight-bold">Budget Line Item</td>
-                                                    <td>
-                                                        <input type="text" name="budget_line_col" class="form-control form-control-sm" 
-                                                            value="{{ old('budget_line_col', $template->budget_line_col ?? 'BUDGET LINE ITEM') }}">
-                                                    </td>
-                                                </tr>
-                                                <tr>
                                                     <td class="pl-3 align-middle font-weight-bold">Objective</td>
                                                     <td>
                                                         <input type="text" name="objective_col" class="form-control form-control-sm" 
@@ -320,10 +349,27 @@
                                                     </td>
                                                 </tr>
                                                 <tr>
+                                                    <td class="pl-3 align-middle font-weight-bold">Budget Line Item</td>
+                                                    <td>
+                                                        <input type="text" name="budget_line_col" class="form-control form-control-sm" 
+                                                            value="{{ old('budget_line_col', $template->budget_line_col ?? 'BUDGET LINE ITEM') }}">
+                                                    </td>
+                                                </tr>
+                                                {{-- NEW UACS CODE ROW --}}
+                                                <tr>
+                                                    <td class="pl-3 align-middle font-weight-bold">
+                                                        UACS Code <i class="fas fa-info-circle text-xs text-muted" title="Unified Accounts Code Structure"></i>
+                                                    </td>
+                                                    <td>
+                                                        <input type="text" name="uacs_col" class="form-control form-control-sm" 
+                                                            value="{{ old('uacs_col', $template->uacs_col ?? 'UACS CODE') }}">
+                                                    </td>
+                                                </tr>
+                                                <tr>
                                                     <td class="pl-3 align-middle font-weight-bold">Activity Name</td>
                                                     <td>
                                                         <input type="text" name="activity_col" class="form-control form-control-sm" 
-                                                            value="{{ old('activity_col', $template->activity_col ?? 'ACTIVITIES TO ATTAIN THE SUCESS INDICATORS') }}">
+                                                            value="{{ old('activity_col', $template->activity_col ?? 'ACTIVITIES TO ATTAIN THE SUCCESS INDICATORS') }}">
                                                     </td>
                                                 </tr>
                                                 <tr>
@@ -486,6 +532,70 @@
     </div>
 </div>
 
+<div class="modal fade" id="importSummaryModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title"><i class="fas fa-file-import mr-2"></i> Import Results</h5>
+                <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body text-center p-4">
+                <div class="mb-3">
+                    <i class="fas fa-check-circle text-success fa-4x"></i>
+                </div>
+                <h4 class="font-weight-bold">WFP Processed Successfully!</h4>
+                <p class="text-muted">The Excel data has been synchronized with your database.</p>
+                
+                <div class="row mt-4">
+                    <div class="col-4 border-right">
+                        <h3 class="text-primary font-weight-bold">{{ session('import_summary.created') }}</h3>
+                        <span class="text-uppercase small font-weight-bold text-muted">New Activities</span>
+                    </div>
+                    <div class="col-4 border-right">
+                        <h3 class="text-info font-weight-bold">{{ session('import_summary.updated') }}</h3>
+                        <span class="text-uppercase small font-weight-bold text-muted">Updated Records</span>
+                    </div>
+                    <div class="col-4">
+                        <h4 class="text-danger">{{ count(session('import_summary.failures', [])) }}</h4>
+                        <small>FAILED</small>
+                    </div>
+                </div>
+                <hr>
+                @if(session('import_summary.failures') && count(session('import_summary.failures')) > 0)
+                    <div class="alert alert-danger p-0" style="max-height: 200px; overflow-y: auto;">
+                        <table class="table table-sm mb-0">
+                            <thead class="bg-danger text-white">
+                                <tr>
+                                    <th class="pl-2">Activity</th>
+                                    <th>Error Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach(session('import_summary.failures') as $fail)
+                                    <tr>
+                                        <td class="small pl-2">{{ $fail['row'] }}</td>
+                                        <td class="small pl-2">{{ $fail['reason'] }}</td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="small text-muted mt-2 text-center">
+                        <i class="fas fa-exclamation-triangle mr-1"></i> 
+                        Rows listed above were skipped. Please fix them in your Excel and re-upload.
+                    </p>
+                @endif
+                <p class="mb-0 font-weight-bold">Total Rows Processed: {{ session('import_summary.total') }}</p>
+            </div>
+            <div class="modal-footer bg-light">
+                <button type="button" class="btn btn-secondary btn-block" data-dismiss="modal">Close Summary</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 
 @endsection
 
@@ -602,5 +712,13 @@
             return true; // allow form to submit
         });
     });
+
+    $(document).ready(function() {
+        // Check if the import_summary session exists
+        @if(session('import_summary'))
+            $('#importSummaryModal').modal('show');
+        @endif
+    });
+
 </script>
 @endsection

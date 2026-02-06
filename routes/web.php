@@ -23,27 +23,23 @@ Route::get('/dashboard', function () {
 
 // Admin Only Routes
 Route::middleware(['auth', 'can:admin-access'])->group(function () {
-    Route::get('funds/check-balance', [FundController::class, 'checkBalance'])->name('funds.check_balance');
-    Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
-    Route::get('/funds/create', [FundController::class, 'create'])->name('funds.create');
-    Route::post('/funds/store', [FundController::class, 'store'])->name('funds.store');
-    Route::get('/funds', [FundController::class, 'index'])->name('funds.index'); // Table View
+
+    //settings
     Route::get('/settings', [SettingsController::class, 'index'])->name('settings.index');
     Route::post('/settings/source', [SettingsController::class, 'storeSource'])->name('settings.source.store');
     Route::delete('settings/source/{id}', [SettingsController::class, 'destroySource'])->name('settings.source.destroy');
     Route::post('/settings/employee', [SettingsController::class, 'storeEmployee'])->name('settings.employee.store');
-    // Ensure these match your form actions and controller methods
     Route::post('/settings/activity', [SettingsController::class, 'storeActivity'])->name('settings.activity.store');
-    // Route to update the Excel mapping settings
-    // Using match allows both GET (to view) and POST (to save/update)
+    Route::put('/settings/source/{id}', [SettingsController::class, 'updateSource'])->name('settings.source.update');
+    Route::post('settings/import', [ActivityController::class, 'importWFP'])->name('settings.activity.import');
+    Route::get('/settings/source/{id}/test-connection', [SettingsController::class, 'testConnection'])->name('settings.source.test');
     Route::match(['get', 'post', 'put'], '/settings/template/{id}', [SettingsController::class, 'updateTemplate'])->name('settings.template.update');
     Route::delete('/settings/activity/{id}', [SettingsController::class, 'destroyActivity'])->name('settings.activity.destroy');
-    Route::post('/settings/activities/import', [ActivityController::class, 'import'])->name('settings.activity.import');
+    Route::get('settings/download-template', [ActivityController::class, 'downloadTemplate'])->name('settings.template.download');
+
+    //funds transactions
     Route::patch('/funds/{id}/status', [FundController::class, 'updateStatus'])->name('funds.updateStatus');
-    // Route for syncing a specific fund with Google Sheets
     Route::get('funds/{id}/sync', [App\Http\Controllers\FundController::class, 'syncWithGoogleSheet'])->name('funds.sync');
-    Route::put('/settings/source/{id}', [SettingsController::class, 'updateSource'])
-    ->name('settings.source.update');
     Route::post('/funds/bulk-sync', [FundController::class, 'bulkSync'])->name('funds.bulk-sync');
     Route::get('/funds/sync-progress', [FundController::class, 'getSyncProgress'])->name('funds.sync-progress');
     Route::get('/funds/sync-count', function() {
@@ -54,10 +50,15 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
             })->name('funds.sync-count');
     Route::post('/funds/sync-cancel', [FundController::class, 'cancelSync'])->name('funds.sync-cancel');
     Route::delete('/funds/{id}', [FundController::class, 'destroy'])->name('funds.destroy');
-    Route::get('/settings/source/{id}/test-connection', [SettingsController::class, 'testConnection'])->name('settings.source.test');
-    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
     Route::post('/funds/sync-all', [FundController::class, 'syncAllRouted'])->name('funds.sync_all');
     Route::get('/funds/sync-all-dtrack', [FundController::class, 'syncAllDTrack']);
+    Route::get('funds/check-balance', [FundController::class, 'checkBalance'])->name('funds.check_balance');
+    Route::get('/funds/create', [FundController::class, 'create'])->name('funds.create');
+    Route::post('/funds/store', [FundController::class, 'store'])->name('funds.store');
+    Route::get('/funds', [FundController::class, 'index'])->name('funds.index'); // Table View
+
+    //dashboard
+    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
     //for user registration or access
     Route::get('/admin/users/create', [UserController::class, 'create'])->name('admin.users.create');
@@ -65,6 +66,7 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::get('/admin/users', [UserController::class, 'index'])->name('admin.users.index');
 
     //REPORT
+    Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
     Route::get('reports/budget-by-source', [ReportController::class, 'budgetBySource'])->name('reports.by_source');
     Route::get('reports/budget-by-line-item', [App\Http\Controllers\ReportController::class, 'budgetByLineItem'])
     ->name('reports.by_line_item');

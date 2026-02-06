@@ -17,5 +17,6 @@ class ImportTemplate extends Model
         'activity_col',
         'budget_col',
         'source_col',
+        'uacs_col',
     ];
 }
