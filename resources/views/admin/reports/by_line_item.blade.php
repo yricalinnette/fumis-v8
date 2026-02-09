@@ -8,10 +8,12 @@
     .bg-navy-light { background-color: #f4f6f9; color: #001f3f; }
     .border-left-info { border-left: 4px solid #17a2b8 !important; }
     .border-left-success { border-left: 4px solid #28a745 !important; }
+    .border-left-primary { border-left: 4px solid #007bff !important; } {{-- Added for Savings --}}
     @media print { .filter-section { display: none; } }
 </style>
 
 <div class="container-fluid">
+    {{-- ... Header and Filter Section remain the same as your provided code ... --}}
     <div class="row pt-3 mb-2">
         <div class="col-12 d-flex justify-content-between align-items-end">
             <div>
@@ -34,14 +36,11 @@
                 <button class="btn btn-sm btn-default" onclick="$('.card').CardWidget('expand')">
                     <i class="fas fa-expand-alt"></i>
                 </button>
-                {{-- <button class="btn btn-sm btn-navy px-3" onclick="window.print()">
-                    <i class="fas fa-print mr-1"></i> Print
-                </button> --}}
             </div>
         </div>
     </div>
 
-    <div class="collapse {{ request('month') || request('quarter') ? 'show' : '' }} filter-section" id="filterCard">
+    <div class="collapse show filter-section" id="filterCard">
         <div class="card shadow-sm mb-4 border-navy filter-section">
             <div class="card-body py-3">
                 <form action="{{ route('reports.by_line_item') }}" method="GET" class="row align-items-end">
@@ -67,7 +66,6 @@
                         </select>
                     </div>
                     
-                    {{-- NEW YEAR DROPDOWN --}}
                     <div class="col-md-2">
                         <label class="text-xs font-weight-bold text-muted text-uppercase">Fiscal Year</label>
                         <select name="year" class="form-control form-control-sm border-navy">
@@ -123,12 +121,13 @@
                 <table class="table table-sm table-hover table-sticky mb-0">
                     <thead>
                         <tr class="text-muted text-uppercase text-xs">
-                            <th class="pl-4 py-3" style="width: 35%">Activity Details</th>
+                            <th class="pl-4 py-3" style="width: 25%">Activity Details</th>
                             <th class="text-right py-3">Allocated Budget</th>
                             <th class="text-right py-3 bg-light border-left-info">Obligated</th>
-                            <th class="text-center py-3 bg-light">Obligation Rate(%)</th>
+                            <th class="text-center py-3 bg-light">Oblig. Rate(%)</th>
                             <th class="text-right py-3 border-left-success">Disbursed</th>
-                            <th class="text-center py-3">Disbursement Rate(%)</th>
+                            <th class="text-center py-3">Disb. Rate(%)</th>
+                            <th class="text-right py-3 border-left-primary">Unobligated/Savings</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -138,13 +137,21 @@
                                 <span class="font-weight-600 text-dark">{{ $item['name'] }}</span>
                             </td>
                             <td class="text-right align-middle financial-number text-muted">
+                                {{-- Show current working budget --}}
                                 ₱{{ number_format($item['activity_budget'], 2) }}
+
+                                {{-- If there was a realignment, show the original budget as a small note --}}
+                                @if(round($item['original_budget'], 2) != round($item['activity_budget'], 2))
+                                    <div class="text-xs text-primary" title="Original Budget before realignment">
+                                        <i class="fas fa-history mr-1"></i>Orig: ₱{{ number_format($item['original_budget'], 2) }}
+                                    </div>
+                                @endif
                             </td>
-                            <td class="text-right align-middle financial-number text-primary font-weight-bold border-left-info">
+                            <td class="text-right align-middle financial-number text-info font-weight-bold border-left-info">
                                 ₱{{ number_format($item['obligated_amount'], 2) }}
                             </td>
+                            
                             <td class="text-center align-middle bg-light">
-                                {{-- Color coding applied to Obligation Rate --}}
                                 <span class="badge {{ $item['obligation_rate'] >= 90 ? 'badge-success' : ($item['obligation_rate'] > 0 ? 'badge-warning' : 'badge-danger') }} shadow-none" style="width: 50px;">
                                     {{ number_format($item['obligation_rate'], 1) }}%
                                 </span>
@@ -157,11 +164,13 @@
                                     {{ number_format($item['disbursement_rate'], 1) }}%
                                 </span>
                             </td>
+                            <td class="text-right align-middle financial-number text-primary font-weight-bold border-left-primary">
+                                ₱{{ number_format($item['unobligated'], 2) }}
+                            </td>
                         </tr>
                         @empty
-
                         <tr>
-                            <td colspan="6" class="text-center text-muted py-5">
+                            <td colspan="7" class="text-center text-muted py-5">
                                 <i class="fas fa-inbox fa-2x mb-2 d-block opacity-50"></i>
                                 No activities recorded for this source.
                             </td>
@@ -178,9 +187,10 @@
                             <td class="text-right align-middle financial-number">
                                 ₱{{ number_format($source['total_activity_budget'], 2) }}
                             </td>
-                            <td class="text-right text-primary align-middle financial-number border-left-info">
+                            <td class="text-right text-info align-middle financial-number border-left-info">
                                 ₱{{ number_format($source['total_obligated'], 2) }}
                             </td>
+                            
                             <td class="text-center align-middle">
                                 <div class="progress progress-xxs mb-1 mx-auto" style="width: 60px; background: #dee2e6;">
                                     <div class="progress-bar bg-info" style="width: {{ $source['overall_oblig_rate'] }}%"></div>
@@ -195,6 +205,9 @@
                                     <div class="progress-bar bg-success" style="width: {{ $source['overall_disb_rate'] }}%"></div>
                                 </div>
                                 <span class="text-xs text-navy">{{ number_format($source['overall_disb_rate'], 1) }}%</span>
+                            </td>
+                            <td class="text-right text-primary align-middle financial-number border-left-primary">
+                                ₱{{ number_format($source['total_unobligated'], 2) }}
                             </td>
                         </tr>
                     </tfoot>

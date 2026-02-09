@@ -18,9 +18,12 @@
                         <label class="mr-2 small font-weight-bold text-uppercase text-muted">Select Year:</label>
                         <select name="year" class="form-control form-control-sm border-primary shadow-sm" onchange="this.form.submit()">
                             @php
-                                $startYear = 2026; 
+                                // Dynamically get the current system year
+                                $currentYear = date('Y'); 
                             @endphp
-                            @foreach(range($startYear, $startYear - 4) as $year)
+                            
+                            {{-- Range from current year back to 5 years ago --}}
+                            @foreach(range($currentYear, $currentYear - 5) as $year)
                                 <option value="{{ $year }}" {{ $selectedYear == $year ? 'selected' : '' }}>
                                     FY {{ $year }}
                                 </option>

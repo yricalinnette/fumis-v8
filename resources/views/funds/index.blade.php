@@ -168,7 +168,9 @@
                 @foreach($funds as $fund)
                 <tr class="{{ $fund->status == 'Disbursed' ? 'table-light' : '' }}">
                     <td>{{ $fund->dtrack_no }}</td>
-                    <td>{{ \Carbon\Carbon::parse($fund->transaction_date)->format('M d, Y') }}</td>
+                    <td data-order="{{ \Carbon\Carbon::parse($fund->transaction_date)->format('Y-m-d') }}">
+                        {{ \Carbon\Carbon::parse($fund->transaction_date)->format('M d, Y') }}
+                    </td>
                     <td>
                         @if($fund->creditors->count() > 0)
                             @foreach($fund->creditors as $creditor)
@@ -490,6 +492,9 @@
     function formatDate(dateString) {
         if(!dateString) return "";
         const date = new Date(dateString);
+        // Add a check to prevent "Invalid Date" text in the table
+        if (isNaN(date.getTime())) return dateString; 
+        
         return date.toLocaleDateString('en-US', {
             month: 'short',
             day: '2-digit',
@@ -874,22 +879,33 @@
         let table = $('#funds-table').DataTable({
             "responsive": true,
             "lengthChange": false,
-            "autoWidth": false, // Set to false so our CSS/Defs take over
+            "autoWidth": false,
             "ordering": true,
-            "order": [[1, 'desc']], // Default sort by Date
+            "order": [[1, 'desc']], // Keeps latest date at top
             "dom": '<"row"<"col-md-6"B><"col-md-6"f>>rtip',
             "buttons": ["copy", "excel", "pdf", "print", "colvis"],
             "columnDefs": [
                 { 
                     "width": "120px", 
-                    "targets": 0,
-                    "className": "text-center", // Optional: centers the DTrack number
+                    "targets": 0, // DTrack Number
+                    "className": "text-center",
                     "render": function(data, type, row) {
-                        // Wraps the DTrack number in a clickable span with a link style
                         return '<span class="view-dtrack text-primary font-weight-bold" style="cursor:pointer; text-decoration:underline;">' + data + '</span>';
                     }
                 },
-                { "width": "100px", "targets": 1 },
+                { 
+                    "width": "100px", 
+                    "targets": 1, // Date Column
+                    "render": function(data, type, row) {
+                        // If this is for sorting or type checking, use the raw data (YYYY-MM-DD)
+                        if (type === 'sort' || type === 'type') {
+                            // If row is an array (from AJAX), the raw date is at index 1
+                            return (Array.isArray(row)) ? row[1] : data;
+                        }
+                        // For display, use our formatDate helper
+                        return formatDate(data);
+                    }
+                },
                 { "width": "180px", "targets": 2 },
                 { "width": "100px", "targets": 3 },
                 { "width": "150px", "targets": 4 }, 
@@ -1027,34 +1043,27 @@
                 method: "POST",
                 data: $(this).serialize(),
                 success: function(response) {
-                    // 1. Extract the data object first
+                    // 1. Extract the data object consistently
                     const fundData = response.data ? response.data : response;
 
-                    // 2. If it was an Edit, reload to show changes
-                    if ($('#edit_fund_id').val() !== '') {
+                    // 2. If it was an Edit, hide modal and reload to refresh relationships
+                    if (isEdit) {
                         $('#addFundModal').modal('hide');
                         $(document).Toasts('create', { class: 'bg-info', title: 'Updated', autohide: true, delay: 2000, body: 'Transaction updated successfully!' });
                         setTimeout(() => { location.reload(); }, 1000);
                         return;
                     }
 
-                    // 3. Define Status and Delete Logic ONCE at the top to avoid ReferenceErrors
+                    // 3. Define Status and Delete Logic
                     const currentStatus = fundData.status || 'Routed';
                     const isDeleteDisabled = (currentStatus !== 'Routed');
                     
-                    // Status Class Mapping for the Badge
                     let statusClass = 'primary'; 
-                    if (currentStatus === 'Disbursed' || currentStatus === 'Completed') {
-                        statusClass = 'success';
-                    } else if (currentStatus === 'Cancelled') {
-                        statusClass = 'danger';
-                    } else if (currentStatus === 'Obligated') {
-                        statusClass = 'navy';
-                    } else if (currentStatus === 'For Signature') {
-                        statusClass = 'warning';
-                    }
+                    if (currentStatus === 'Disbursed' || currentStatus === 'Completed') statusClass = 'success';
+                    else if (currentStatus === 'Cancelled') statusClass = 'danger';
+                    else if (currentStatus === 'Obligated') statusClass = 'navy';
+                    else if (currentStatus === 'For Signature') statusClass = 'warning';
 
-                    // Button Styling Logic
                     const deleteBtnColor = isDeleteDisabled ? '#6c757d' : '#dc3545';
                     const deleteIconClass = isDeleteDisabled ? 'text-muted' : 'text-danger';
                     let isSyncDisabled = (currentStatus === 'Routed' || !fundData.obligation_serial) ? 'disabled' : '';
@@ -1072,7 +1081,7 @@
                         return text.toString().replace(/"/g, '&quot;').replace(/'/g, '&#39;');
                     };
 
-                    // 5. Build HTML Components
+                    // 5. Build Creditor Badges
                     let creditorHtml = '';
                     if (fundData.creditors && Array.isArray(fundData.creditors) && fundData.creditors.length > 0) {
                         fundData.creditors.forEach(creditor => {
@@ -1082,7 +1091,7 @@
                         creditorHtml = '<span class="text-muted italic">N/A</span>';
                     }
 
-                    // Amount Logic
+                    // 6. Amount Display Logic
                     let amountContent = '';
                     let baseAmount = parseFloat(fundData.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2});
                     if (currentStatus === 'Disbursed') {
@@ -1095,64 +1104,67 @@
                         amountContent = `<span>₱${baseAmount}</span><div class="text-xs text-muted" style="font-size: 0.6rem;">(Processed)</div>`;
                     }
 
-                    // 6. Construct Action Buttons (Using fundData throughout)
+                    // 7. NEW: Use Activity Relationship for the name
+                    // Previously: fundData.transaction_type
+                    let activityName = fundData.activity ? fundData.activity.name : 'N/A';
+                    let sourceName = fundData.fund_source ? fundData.fund_source.name : 'N/A';
+
+                    // 8. Construct Action Buttons (Data attributes updated to match relationship IDs)
                     let actionButtonsHtml = `
                         <div class="text-center">
                             <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
                                 style="border-left: 3px solid #17a2b8;" 
                                 data-id="${fundData.id}" 
-                                data-dtrack="${fundData.dtrack_no}"
                                 data-status="${currentStatus}" 
-                                data-statusdate="${fundData.status_date || ''}" 
-                                data-serial="${fundData.obligation_serial || ''}"
                                 data-remarks="${escapeHtml(fundData.remarks)}"
-                                data-particulars="${escapeHtml(fundData.particulars)}"> <i class="fas fa-history text-info"></i>
+                                data-particulars="${escapeHtml(fundData.particulars)}"> 
+                                <i class="fas fa-history text-info"></i>
                             </button>
                             <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-edit-transaction"
                                 style="border-left: 3px solid #ffc107;" 
                                 data-id="${fundData.id}" 
-                                data-status="${currentStatus}">
+                                data-status="${currentStatus}" 
+                                data-activity-id="${fundData.transaction_type_id}">
                                 <i class="fas fa-edit text-warning"></i>
                             </button>
                             <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-sync-sheet"
                                 style="border-left: 3px solid #28a745;" 
                                 data-id="${fundData.id}" 
-                                ${isSyncDisabled}
-                                data-toggle="tooltip" 
-                                title="${isSyncDisabled ? 'Status must be beyond Routed to sync' : 'Sync with Google Sheet'}">
+                                ${isSyncDisabled}>
                                 <i class="fas fa-sync-alt ${syncIconClass}"></i>
                             </button>
                             <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-delete-transaction"
                                 ${isDeleteDisabled ? 'disabled' : ''}
                                 style="border-left: 3px solid ${deleteBtnColor};"
-                                data-id="${fundData.id}" 
-                                data-dtrack="${fundData.dtrack_no}"
-                                data-toggle="tooltip"
-                                title="${isDeleteDisabled ? 'Only Routed can be deleted' : 'Delete'}">
+                                data-id="${fundData.id}">
                                 <i class="fas fa-trash ${deleteIconClass}"></i>
                             </button>
                         </div>`;
                     
-                    // Ensure we use the ID for any background lookups, but keep the Name for display
-                    let sourceName = fundData.fund_source ? fundData.fund_source.name : 'N/A';
-                    let sourceId = fundData.fund_source_id; // Use this for the API call
-
-                    // 7. ADD TO DATATABLE
+                    // 9. ADD TO DATATABLE
                     let rowNode = table.row.add([
                         `<strong>${fundData.dtrack_no}</strong>`, 
-                        formatDate(fundData.transaction_date), 
+                        // CHANGE THIS: Provide both display and @data-order values
+                        {
+                            display: formatDate(fundData.transaction_date),
+                            '@data-order': fundData.transaction_date // This is the YYYY-MM-DD version
+                        },
                         creditorHtml, 
                         sourceName, 
-                        fundData.transaction_type || 'N/A', 
+                        activityName, // Updated to use relationship-based name
                         `<div class="text-right font-weight-bold">${amountContent}</div>`, 
                         `<span class="badge badge-${statusClass} shadow-sm px-2">${currentStatus}</span>`, 
                         actionButtonsHtml 
                     ]).draw(false).node();
 
-                    // 8. Cleanup and Effects
+                    // Re-sort to ensure it stays at the top
+                    table.order([1, 'desc']).draw();
+
+                    // 10. Effects and Cleanup
                     $('#addFundModal').modal('hide');
                     $('#fund-form')[0].reset();
                     $('.select2').val(null).trigger('change');
+                    
                     $(rowNode).addClass('new-row-highlight').hide();
                     $('#funds-table tbody').prepend(rowNode); 
                     $(rowNode).fadeIn(1000);
@@ -1167,48 +1179,19 @@
                     });
                 },
                 error: function(xhr) {
-                    console.error(xhr.responseText);
-
-                    // 1. Reset previous error states
                     $('.form-control').removeClass('is-invalid');
                     $('.invalid-feedback').remove();
 
                     if (xhr.status === 422 && xhr.responseJSON.errors) {
                         let errors = xhr.responseJSON.errors;
-
-                        // 2. Loop through each field that has an error
                         Object.keys(errors).forEach(key => {
-                            // Find the input/select/textarea by name attribute
                             let field = $(`[name="${key}"], [name="${key}[]"]`);
-                            
-                            // Add the red border
                             field.addClass('is-invalid');
-
-                            // Append the specific error message under the field
                             field.after(`<span class="invalid-feedback d-block">${errors[key][0]}</span>`);
-
-                            // Create a individual toast for the error
-                            $(document).Toasts('create', {
-                                class: 'bg-danger',
-                                title: 'Validation Error',
-                                autohide: true,
-                                delay: 5000,
-                                body: `<i class="fas fa-exclamation-circle mr-2"></i> ${errors[key][0]}`
-                            });
                         });
-
-                        // 3. Focus on the first invalid field found
-                        $('.is-invalid').first().focus();
-
                     } else {
-                        // Handle unexpected system errors (like the SQL null crash)
-                        $(document).Toasts('create', {
-                            class: 'bg-warning',
-                            title: 'System Error',
-                            autohide: true,
-                            delay: 5000,
-                            body: 'An unexpected error occurred. Please check the particulars or DTRACK number.'
-                        });
+                        let msg = xhr.responseJSON ? xhr.responseJSON.message : 'System error occurred.';
+                        $(document).Toasts('create', { class: 'bg-warning', title: 'Error', autohide: true, delay: 5000, body: msg });
                     }
                 }
             });
@@ -1318,7 +1301,8 @@
         });
 
         $(document).on('click', '.btn-edit-transaction', function() {
-            const status = $(this).data('status');
+            const status = $(this).attr('data-status');
+            
             // Safety check
             if ($(this).is(':disabled') || (status !== 'Routed' && status !== 'For Signature')) {
                 $(document).Toasts('create', {
@@ -1343,6 +1327,7 @@
                 // 2. Standard Fields
                 $('#dtrack_input').val(data.dtrack_no);
                 $('#amount_input').val(data.amount);
+                
                 if (data.amount) {
                     let formatted = parseFloat(data.amount).toLocaleString('en-US', {
                         minimumFractionDigits: 2,
@@ -1365,22 +1350,22 @@
                     $('#transaction_date').val(cleanDate);
                 }
 
-                // 4. UPDATED: SOURCE OF FUND (Direct ID assignment)
+                // 4. SOURCE OF FUND (Direct ID assignment)
                 if (data.source_of_fund_id) {
-                    // Simply set the ID value directly since the database now provides it
+                    // 1. Set the Source of Fund first
                     $('#modal_source_select').val(data.source_of_fund_id).trigger('change');
 
-                    // 5. TRANSACTION TYPE (Finding ID by Text)
-                    // Note: If you eventually change Activity to activity_id, you can remove this filter too.
-                    setTimeout(function() {
-                        let activityOption = $('#modal_activity_select option').filter(function() {
-                            return $(this).text().trim() === data.transaction_type;
-                        });
-                        
-                        if (activityOption.length) {
-                            $('#modal_activity_select').val(activityOption.val()).trigger('change');
+                    // 2. Use a more robust interval check or a longer delay
+                    // This waits for the dependent dropdown logic to finish
+                    let checkExist = setInterval(function() {
+                        if ($('#modal_activity_select option[value="' + data.transaction_type_id + '"]').length) {
+                            $('#modal_activity_select').val(data.transaction_type_id).trigger('change');
+                            clearInterval(checkExist); // Stop checking once found
                         }
-                    }, 500); 
+                    }, 100); // Check every 100ms
+
+                    // Safety: Stop checking after 3 seconds so it doesn't loop forever if something is wrong
+                    setTimeout(() => clearInterval(checkExist), 3000);
                 }
 
                 $('#addFundModal').modal('show');
@@ -1403,12 +1388,11 @@
         $('#funds-table tbody').on('click', '.view-dtrack', function (e) {
             e.preventDefault();
 
-            // Find the row containing this specific DTrack number
             const tr = $(this).closest('tr');
             const updateBtn = tr.find('.btn-update-status');
-            const data = table.row(tr).data();
+            const rowData = table.row(tr).data();
 
-            // 1. Set Modal Title (Grabbing DTrack number directly from clicked element)
+            // 1. Set Modal Title
             const dtrackValue = $(this).text().trim();
             $('#viewTransactionModal').find('#view_dtrack').text(dtrackValue);
             $('#viewTransactionModal').find('.modal-title').html(
@@ -1420,27 +1404,37 @@
             const remarks = updateBtn.attr('data-remarks');
             const serial = updateBtn.attr('data-serial');
 
-            // 3. Populate Table Fields
-            $('#v_date').text(data[1]);
-            $('#v_creditors').html(data[2]);
-            $('#v_source').text(data[3]);
-            $('#v_activity').text(data[4]);
-            $('#v_amount').html(data[5]);
-            $('#v_status').html(data[6]);
+            // 3. Populate Table Fields (Handling Orthogonal Data for Date)
+            let dateDisplay = rowData[1];
+            
+            // Logic to handle the new {display, @data-order} object vs raw string
+            if (typeof dateDisplay === 'object' && dateDisplay !== null) {
+                dateDisplay = dateDisplay.display;
+            } else {
+                // Fallback: If it's a raw string, format it using our global helper
+                dateDisplay = formatDate(dateDisplay);
+            }
+
+            $('#v_date').text(dateDisplay);
+            $('#v_creditors').html(rowData[2]);
+            $('#v_source').text(rowData[3]);
+            $('#v_activity').text(rowData[4]);
+            $('#v_amount').html(rowData[5]);
+            $('#v_status').html(rowData[6]);
             $('#v_serial').text(serial || 'N/A');
 
             // 4. Handle Particulars
             if (particulars && particulars.trim() !== "" && particulars !== 'null') {
                 $('#v_particulars').text(particulars).removeClass('text-muted italic');
             } else {
-                $('#v_particulars').html('<span class="text-muted italic">No particulars provided.</span>');
+                $('#v_particulars').html('<span class="text-muted italic">No particulars provided.</span>').addClass('text-muted italic');
             }
 
             // 5. Handle Remarks
             if (remarks && remarks.trim() !== "" && remarks !== 'null') {
                 $('#v_remarks').text(remarks).removeClass('text-muted italic');
             } else {
-                $('#v_remarks').html('<span class="text-muted italic">No remarks provided.</span>');
+                $('#v_remarks').html('<span class="text-muted italic">No remarks provided.</span>').addClass('text-muted italic');
             }
 
             // 6. Launch Modal

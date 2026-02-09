@@ -9,6 +9,7 @@ use App\Imports\WfpActivitiesImport;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 use Illuminate\Http\Request;
 
@@ -194,7 +195,58 @@ class SettingsController extends Controller
     }
 
     
+    public function updateAllocation(Request $request)
+    {
+        $request->validate([
+            'source_id' => 'required|exists:source_of_funds,id',
+            'adjustments' => 'required|array',
+        ]);
 
+        try {
+            DB::beginTransaction();
+
+            $source = SourceOfFund::findOrFail($request->source_id);
+            $adjustments = $request->adjustments;
+            
+            // 1. Validate total sum
+            $newTotal = array_sum($adjustments);
+            if (round($newTotal, 2) > round($source->total_amount, 2)) {
+                return back()->with('error', 'The total adjusted budget exceeds the original Fund Source limit.');
+            }
+
+            // 2. Process each activity
+            foreach ($adjustments as $activityId => $newAmount) {
+                $activity = Activity::findOrFail($activityId);
+                
+                // Safety: Check against obligated amount
+                $obligated = $activity->funds()->sum('obligation_amount');
+                if ($newAmount < $obligated) {
+                    return back()->with('error', "Cannot reduce {$activity->name} below its obligations (₱" . number_format($obligated, 2) . ").");
+                }
+
+                // Update the adjusted column
+                $activity->update([
+                    'budget_adjusted' => $newAmount
+                ]);
+            }
+
+            DB::commit();
+            // Redirect back to the realignment tab
+            return redirect(url()->previous() . '#tabs-realignment')->with('success', 'Budget successfully replanned.');
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return back()->with('error', 'An error occurred: ' . $e->getMessage());
+        }
+    }
+
+    public function getRealignmentTable($id)
+    {
+        $source = SourceOfFund::with(['activities.funds'])->findOrFail($id);
+        
+        // Point this specifically to the small file we created
+        return view('admin.settings.partials._realignment_table', compact('source'))->render();
+    }
     
     
 }

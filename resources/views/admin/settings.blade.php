@@ -41,12 +41,17 @@
                 </li>
                 <li class="nav-item">
                     <a class="nav-link" id="tabs-activities-tab" data-toggle="pill" href="#tabs-activities" role="tab">
-                        <i class="fas fa-tasks mr-1"></i> Activity Allocation
+                        <i class="fas fa-tasks mr-1"></i> Activity Allocation (WFP)
                     </a>
                 </li>
                 <li class="nav-item">
                     <a class="nav-link" id="tabs-employees-tab" data-toggle="pill" href="#tabs-employees" role="tab">
                         <i class="fas fa-users mr-1"></i> Employee/Staff
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" id="tabs-realignment-tab" data-toggle="pill" href="#tabs-realignment" role="tab">
+                        <i class="fas fa-random mr-1"></i> Budget Realignment
                     </a>
                 </li>
             </ul>
@@ -252,7 +257,7 @@
                                     @foreach($groupedActivities as $activity)
                                     <tr>
                                         <td class="pl-5 text-secondary">{{ $activity->name }}</td>
-                                        <td class="text-right text-primary">₱{{ number_format($activity->budget, 2) }}</td>
+                                        <td class="text-right text-primary">₱{{ number_format($activity->budget_adjusted, 2) }}</td>
                                         <td class="text-center">
                                             <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST">
                                                 @csrf @method('DELETE')
@@ -399,6 +404,37 @@
                         </div>
                     </form>
                 </div>
+
+                {{-- TAB 5: BUDGET REALIGNMENT --}}
+                <div class="tab-pane fade" id="tabs-realignment" role="tabpanel">
+                    <div class="mb-4">
+                        <h5 class="text-muted"><i class="fas fa-sync-alt mr-2"></i>Realignment Tool</h5>
+                        <p class="small text-secondary">Select a fund source to view and redistribute its unobligated balances.</p>
+                        
+                        <div class="row">
+                            <div class="col-md-5">
+                                <div class="form-group">
+                                    <label>Select Fund Source to Realign</label>
+                                    <select id="realign_source_selector" class="form-control select2" style="width: 100%;">
+                                        <option value="">-- Choose Source --</option>
+                                        @foreach($sources as $source)
+                                            <option value="{{ $source->id }}">{{ $source->name }} (FY {{ $source->fiscal_year }})</option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {{-- This container will be populated via AJAX based on the selection --}}
+                    <div id="realignment_container">
+                        <div class="text-center py-5 text-muted">
+                            <i class="fas fa-hand-pointer fa-3x mb-3"></i>
+                            <p>Please select a fund source above to start the realignment process.</p>
+                        </div>
+                    </div>
+                </div>
+
 
             </div>
         </div>
@@ -719,6 +755,27 @@
             $('#importSummaryModal').modal('show');
         @endif
     });
+
+    $('#realign_source_selector').on('change', function() {
+        let sourceId = $(this).val();
+        if (!sourceId) return;
+
+        let container = $('#realignment_container');
+        container.html('<div class="text-center py-5"><i class="fas fa-sync fa-spin fa-2x"></i></div>');
+
+        // Use a template-friendly URL structure
+        let fetchUrl = "{{ url('admin/settings/get-realignment-table') }}/" + sourceId;
+
+        $.get(fetchUrl, function(data) {
+            container.html(data);
+        }).fail(function(xhr) {
+            console.log(xhr.responseText); // This will show the actual error in the console
+            container.html('<div class="alert alert-danger">Route not found (404). Check web.php.</div>');
+        });
+    });
+
+    
+
 
 </script>
 @endsection

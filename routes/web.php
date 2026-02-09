@@ -36,6 +36,8 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::match(['get', 'post', 'put'], '/settings/template/{id}', [SettingsController::class, 'updateTemplate'])->name('settings.template.update');
     Route::delete('/settings/activity/{id}', [SettingsController::class, 'destroyActivity'])->name('settings.activity.destroy');
     Route::get('settings/download-template', [ActivityController::class, 'downloadTemplate'])->name('settings.template.download');
+    Route::post('/settings/realign', [SettingsController::class, 'updateAllocation'])->name('settings.realign');
+    Route::get('/admin/settings/get-realignment-table/{id}', [App\Http\Controllers\SettingsController::class, 'getRealignmentTable']);
 
     //funds transactions
     Route::patch('/funds/{id}/status', [FundController::class, 'updateStatus'])->name('funds.updateStatus');

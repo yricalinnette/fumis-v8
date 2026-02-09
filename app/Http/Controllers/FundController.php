@@ -52,7 +52,9 @@ class FundController extends Controller
             ? \App\Models\Fund::with(['fundSource', 'creditors']) 
             : \App\Models\Fund::with(['fundSource', 'creditors'])->where('user_id', auth()->id());
 
-        $funds = $query->latest()->get();
+        $funds = Fund::with(['creditors', 'fundSource', 'activity'])
+                ->latest() // This is shorthand for orderBy('created_at', 'desc')
+                ->get();
         
         $sources = SourceOfFund::all(); 
         $employees = Employee::orderBy('last_name')->get();
@@ -76,7 +78,7 @@ class FundController extends Controller
     {
         $yearPrefix = date('Y') . '-';
         
-        // Check if dtrack_no starts with the correct year
+        // Auto-fix dtrack_no format
         if (!str_starts_with($request->dtrack_no, $yearPrefix)) {
             $cleanNumber = preg_replace('/[^0-9]/', '', $request->dtrack_no);
             $suffix = str_replace(date('Y'), '', $cleanNumber);
@@ -90,17 +92,16 @@ class FundController extends Controller
             'activity_id' => 'required|exists:activities,id',
             'amount' => 'required|numeric|min:0',
             'particulars' => 'required|string',
-            'creditor_ids' => 'nullable|array', // Now nullable
+            'creditor_ids' => 'nullable|array',
             'creditor_ids.*' => 'exists:employees,id',
         ]);
 
         // Fetch related records
-        $source = SourceOfFund::findOrFail($request->source_of_fund_id);
         $activity = Activity::findOrFail($request->activity_id);
 
         // --- START BUDGET CHECK ---
-        // Summing based on the transaction_type name string as per your current schema
-        $totalSpent = Fund::where('transaction_type', $activity->name)->sum('amount');
+        // FIXED: Summing based on transaction_type_id (Foreign Key)
+        $totalSpent = Fund::where('transaction_type_id', $activity->id)->sum('amount');
         $remaining = $activity->budget - $totalSpent;
 
         if ($request->amount > $remaining) {
@@ -118,26 +119,25 @@ class FundController extends Controller
         $fund->particulars = $validated['particulars'];
         $fund->user_id = auth()->id();
         
-        // Storing descriptive names in your flat table structure
-        $fund->source_of_fund_id = $source->id;
-        $fund->transaction_type = $activity->name;
+        // FIXED: Storing the ID instead of the descriptive name
+        $fund->source_of_fund_id = $validated['source_of_fund_id'];
+        $fund->transaction_type_id = $activity->id; 
         
-        // Set default status for new entries
+        // Set default status
         $fund->status = 'Routed';
-        
         $fund->save();
 
-        // Sync the relationships (defaults to empty array if no creditors selected)
+        // Sync the relationships
         $fund->creditors()->sync($request->creditor_ids ?? []);
         
-        // Load relationships for the JSON response
-        $fund->load(['fundSource', 'creditors']);
+        // Load relationships for response (using the 'activity' relationship we added to the model)
+        $fund->load(['fundSource', 'activity', 'creditors']);
 
         return response()->json([
-        'success' => true,
-        'message' => 'Transaction ' . $fund->dtrack_no . ' logged successfully!',
-        'data'    => $fund // Consistently wrap in 'data' key for your JS logic
-    ]);
+            'success' => true,
+            'message' => 'Transaction ' . $fund->dtrack_no . ' logged successfully!',
+            'data'    => $fund 
+        ]);
     }
 
     public function create()
@@ -197,79 +197,94 @@ class FundController extends Controller
             'transaction_date' => 'required|date',
             'source_of_fund_id'=> 'required|exists:source_of_funds,id',
             'activity_id'      => 'required|exists:activities,id',
-            'amount'           => 'required|numeric',
+            'amount'           => 'required|numeric|min:0',
             'particulars'      => 'nullable|string',
             'creditor_ids'     => 'nullable|array', 
             'creditor_ids.*'   => 'exists:employees,id',
         ]);
 
-        // 2. Fetch the activity for the string column (transaction_type)
-        $activity = Activity::find($request->activity_id);
+        // 2. Budget Validation Check
+        $activity = Activity::findOrFail($request->activity_id);
+        
+        // Sum total spent on this activity EXCLUDING the current record's old amount
+        $totalSpent = Fund::where('transaction_type_id', $activity->id)
+                        ->where('id', '!=', $id)
+                        ->sum('amount');
+                        
+        $remaining = $activity->budget - $totalSpent;
+
+        if ($request->amount > $remaining) {
+            return response()->json([
+                'message' => 'Update failed. The new amount exceeds the remaining budget of ₱' . number_format($remaining, 2)
+            ], 422);
+        }
 
         // 3. Update the Record
         $fund->update([
-            'dtrack_no'         => $validated['dtrack_no'],
-            'transaction_date'  => $validated['transaction_date'],
-            'amount'            => $validated['amount'],
-            'particulars'       => $validated['particulars'],
-            'source_of_fund_id' => $validated['source_of_fund_id'],
-            'transaction_type'  => $activity->name,
+            'dtrack_no'           => $validated['dtrack_no'],
+            'transaction_date'    => $validated['transaction_date'],
+            'amount'              => $validated['amount'],
+            'particulars'         => $validated['particulars'],
+            'source_of_fund_id'   => $validated['source_of_fund_id'],
+            'transaction_type_id' => $activity->id, // FIXED: Storing ID, not name
         ]);
 
         // 4. Sync Relationships
         $fund->creditors()->sync($request->input('creditor_ids', []));
 
-        // 5. IMPORTANT: Load the relationship with the exact name from your Model
-        // Based on your Fund.php screenshot, the function is named 'fundSource'
-        $fund->load(['fundSource', 'creditors']);
+        // 5. Load the relationships (including the 'activity' relationship)
+        $fund->load(['fundSource', 'activity', 'creditors']);
 
         return response()->json([
             'success' => true,
-            'message' => 'Transaction updated successfully!',
-            'data'    => $fund // Now JavaScript sees response.data.fund_source.name
+            'message' => 'Transaction ' . $fund->dtrack_no . ' updated successfully!',
+            'data'    => $fund 
         ]);
     }
 
     public function checkBalance(Request $request)
     {
         try {
-            // Use ID if available, otherwise use name
             $activityId = $request->query('activity_id');
-            $activityName = $request->query('activity_name');
-            $inputAmount = (float)$request->query('amount');
+            $inputAmount = (float)$request->query('amount', 0);
 
-            $activity = $activityId 
-                ? Activity::find($activityId) 
-                : Activity::where('name', $activityName)->first();
+            // 1. Find the activity by ID
+            $activity = Activity::find($activityId);
 
             if (!$activity) {
                 return response()->json(['error' => 'Activity not found'], 404);
             }
 
-            // Calculate total spent so far for this activity
-            // Note: Assuming 'transaction_type' stores the activity name in your Funds table
-            $totalSpent = Fund::where('transaction_type', $activity->name)->sum('amount');
-            
-            // If this is an EDIT, subtract the current record's amount so it doesn't double-count
-            if ($request->has('current_fund_id') && $request->current_fund_id != '') {
-                $currentFund = Fund::find($request->current_fund_id);
-                if ($currentFund) {
-                    $totalSpent -= $currentFund->amount;
-                }
-            }
+            // 2. Determine the limit (Use budget_adjusted if available, otherwise original budget)
+            $activeLimit = !is_null($activity->budget_adjusted) 
+                ? (float)$activity->budget_adjusted 
+                : (float)$activity->budget;
 
-            $remainingBalance = $activity->budget - $totalSpent;
+            // 3. Calculate total spent using transaction_type_id
+            // We exclude the current fund ID in one query to be more efficient
+            $currentFundId = $request->query('current_fund_id');
+            
+            $totalSpent = Fund::where('transaction_type_id', $activity->id)
+                ->when($currentFundId, function ($query) use ($currentFundId) {
+                    return $query->where('id', '!=', $currentFundId);
+                })
+                ->sum('amount');
+
+            // 4. Calculate the real-time balance using our activeLimit
+            $remainingBalance = $activeLimit - (float)$totalSpent;
 
             return response()->json([
                 'status' => 'success',
-                'budget' => $activity->budget,
+                'original_budget' => (float)$activity->budget,
+                'adjusted_budget' => $activity->budget_adjusted ? (float)$activity->budget_adjusted : null,
+                'active_limit' => $activeLimit, // This tells the JS which one was used
                 'remaining' => $remainingBalance,
-                'is_sufficient' => $remainingBalance >= $inputAmount,
+                'is_sufficient' => round($remainingBalance, 2) >= round($inputAmount, 2),
                 'formatted_remaining' => number_format($remainingBalance, 2)
             ]);
 
         } catch (\Exception $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['error' => 'Server Error: ' . $e->getMessage()], 500);
         }
     }
 
@@ -310,7 +325,12 @@ class FundController extends Controller
 
             $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReader('Xlsx');
             $reader->setReadDataOnly(true);
-            $reader->setReadFilter(new MyReadFilter());
+            
+            // Define the range you want to read to save memory
+            $startRow = 1;
+            $endRow = 10000; // Adjust based on your typical sheet size
+            $columns = range('B', 'Q'); 
+            $reader->setReadFilter(new MyReadFilter($startRow, $endRow, $columns));
             
             $spreadsheet = $reader->load($tempFile);
             $sheet = $spreadsheet->getSheetByName($sourceConfig->sheet_name);

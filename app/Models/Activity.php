@@ -12,6 +12,7 @@ class Activity extends Model {
     'budget', 
     'source_of_fund_id',
     'uacs_code',
+    'budget_adjusted',
 ];
 
     public function source() {

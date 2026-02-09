@@ -45,37 +45,34 @@ class ReportController extends Controller
 
     public function budgetBySource(Request $request) 
     {
-        // 1. Capture filters - Default year to current (2026)
         $year = $request->get('year', date('Y'));
         $month = $request->get('month');
         $quarter = $request->get('quarter');
 
         $quarterMonths = [
-            1 => [1, 2, 3],
-            2 => [4, 5, 6],
-            3 => [7, 8, 9],
-            4 => [10, 11, 12],
+            1 => [1, 2, 3], 2 => [4, 5, 6],
+            3 => [7, 8, 9], 4 => [10, 11, 12],
         ];
 
-        // 2. Query with the Year filter
-        $sources = \App\Models\SourceOfFund::with(['funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
-            
-            // This ensures previous years' data is pulled when selected
-            $query->whereYear('transaction_date', $year);
+        $sources = \App\Models\SourceOfFund::where('fiscal_year', $year)
+            ->with(['funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
+                
+                // STRICT YEAR FILTER: Only transactions obligated in the selected Fiscal Year
+                $query->whereYear('obligation_date', $year);
 
-            if ($month) {
-                $query->whereMonth('transaction_date', $month);
-            } 
-            elseif ($quarter && isset($quarterMonths[$quarter])) {
-                $query->whereIn(\DB::raw('MONTH(transaction_date)'), $quarterMonths[$quarter]);
-            }
-        }])->get();
+                // STRICT MONTH/QUARTER FILTER: Only based on obligation_date
+                if ($month) {
+                    $query->whereMonth('obligation_date', $month);
+                } 
+                elseif ($quarter && isset($quarterMonths[$quarter])) {
+                    $query->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter]);
+                }
+            }])->get();
 
-        // 3. Transform Data
         $reportData = $sources->map(function ($source) {
-            $allotted = $source->total_amount; 
-            $obligated = $source->funds->sum('obligation_amount');
-            $disbursed = $source->funds->sum('disbursement_amount');
+            $allotted = (float) $source->total_amount; 
+            $obligated = (float) $source->funds->sum('obligation_amount');
+            $disbursed = (float) $source->funds->sum('disbursement_amount');
 
             return [
                 'name'              => $source->name,
@@ -88,71 +85,72 @@ class ReportController extends Controller
             ];
         });
 
-        return view('admin.reports.by_source', compact('reportData'));
+        return view('admin.reports.by_source', compact('reportData', 'year'));
     }
 
     public function budgetByLineItem(Request $request)
     {
-        // 1. Capture filters - Default year to current (2026)
         $year = $request->get('year', date('Y'));
         $month = $request->get('month');
         $quarter = $request->get('quarter');
 
         $quarterMonths = [
-            1 => [1, 2, 3],
-            2 => [4, 5, 6],
-            3 => [7, 8, 9],
-            4 => [10, 11, 12],
+            1 => [1, 2, 3], 2 => [4, 5, 6],
+            3 => [7, 8, 9], 4 => [10, 11, 12],
         ];
 
-        // 2. Fetch sources with eager loaded and FILTERED funds
-        $sources = \App\Models\SourceOfFund::with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
-            
-            // Always filter by Year first
-            $query->whereYear('transaction_date', $year);
+        $sources = \App\Models\SourceOfFund::where('fiscal_year', $year)
+            ->with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
+                $query->whereYear('obligation_date', $year);
+                if ($month) {
+                    $query->whereMonth('obligation_date', $month);
+                } 
+                elseif ($quarter && isset($quarterMonths[$quarter])) {
+                    $query->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter]);
+                }
+            }])->get();
 
-            // Apply Month Filter
-            if ($month) {
-                $query->whereMonth('transaction_date', $month);
-            } 
-            // Apply Quarter Filter (only if specific month isn't selected)
-            elseif ($quarter && isset($quarterMonths[$quarter])) {
-                $query->whereIn(\DB::raw('MONTH(transaction_date)'), $quarterMonths[$quarter]);
-            }
-        }])->get();
-
-        // 3. Transform Data
         $reportData = $sources->map(function ($source) {
             $sourceTotal = (float) $source->total_amount; 
 
-            $lineItems = $source->activities->map(function ($activity) use ($source, $sourceTotal) {
-                // Filter the pre-loaded funds collection by the transaction_type matching activity name
-                $activityFunds = $source->funds->where('transaction_type', $activity->name);
+            $lineItems = $source->activities->map(function ($activity) use ($source) {
+                $activityFunds = $source->funds->where('transaction_type_id', $activity->id);
                 
-                $obligated = $activityFunds->sum('obligation_amount');
-                $disbursed = $activityFunds->sum('disbursement_amount');
+                $obligated = (float) $activityFunds->sum('obligation_amount');
+                $disbursed = (float) $activityFunds->sum('disbursement_amount');
+                
+                // Use budget_adjusted as the primary working budget
+                // Use budget as the original reference
+                $activityBudget = (float) ($activity->budget_adjusted ?? $activity->budget);
+                $originalBudget = (float) $activity->budget;
 
                 return [
                     'name'              => $activity->name,
-                    'activity_budget'   => (float) $activity->budget,
+                    'original_budget'   => $originalBudget, // Add this line to fix the error
+                    'activity_budget'   => $activityBudget,
                     'obligated_amount'  => $obligated,
                     'disbursed_amount'  => $disbursed,
-                    'obligation_rate'   => $sourceTotal > 0 ? ($obligated / $sourceTotal) * 100 : 0,
+                    'unobligated'       => $activityBudget - $obligated,
+                    'obligation_rate'   => $activityBudget > 0 ? ($obligated / $activityBudget) * 100 : 0,
                     'disbursement_rate' => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
                 ];
             });
 
-            $totalActivityBudget = $lineItems->sum('activity_budget');
-            $totalObligated       = $lineItems->sum('obligated_amount');
-            $totalDisbursed       = $lineItems->sum('disbursed_amount');
+            $totalObligated = $lineItems->sum('obligated_amount');
+            $totalDisbursed = $lineItems->sum('disbursed_amount');
+            
+            // Overall Source Unobligated/Savings
+            $overallUnobligated = $sourceTotal - $totalObligated;
 
             return [
                 'source_name'           => $source->name,
                 'source_total'          => $sourceTotal,
                 'line_items'            => $lineItems,
-                'total_activity_budget' => $totalActivityBudget,
+                'total_activity_budget' => $lineItems->sum('activity_budget'),
                 'total_obligated'       => $totalObligated,
                 'total_disbursed'       => $totalDisbursed,
+                'total_unobligated'     => $overallUnobligated,
+                'total_savings'         => $overallUnobligated,
                 'overall_oblig_rate'    => $sourceTotal > 0 ? ($totalObligated / $sourceTotal) * 100 : 0,
                 'overall_disb_rate'     => $totalObligated > 0 ? ($totalDisbursed / $totalObligated) * 100 : 0,
             ];
