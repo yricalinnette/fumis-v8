@@ -128,7 +128,12 @@
                                                 onsubmit="return confirm('Are you sure you want to delete this source? This action cannot be undone.')">
                                                 @csrf
                                                 @method('DELETE')
-                                                <button type="submit" class="btn btn-sm btn-outline-danger ml-1" title="Delete Source">
+                                                <button type="button" 
+                                                    class="btn btn-sm btn-outline-danger delete-source-btn" 
+                                                    data-id="{{ $source->id }}" 
+                                                    data-name="{{ $source->name }}" 
+                                                    data-count="{{ $source->activities->count() }}"
+                                                    title="Delete Source">
                                                     <i class="fas fa-trash"></i>
                                                 </button>
                                             </form>
@@ -259,10 +264,24 @@
                                         <td class="pl-5 text-secondary">{{ $activity->name }}</td>
                                         <td class="text-right text-primary">₱{{ number_format($activity->budget_adjusted, 2) }}</td>
                                         <td class="text-center">
-                                            <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST">
-                                                @csrf @method('DELETE')
-                                                <button class="btn btn-xs btn-outline-danger"><i class="fas fa-trash"></i></button>
-                                            </form>
+                                            @php
+                                                $isLocked = \App\Models\Fund::where('source_of_fund_id', $activity->source_of_fund_id)
+                                                            ->where('transaction_type_id', $activity->id)
+                                                            ->exists();
+                                            @endphp
+
+                                            @if(!$isLocked)
+                                                <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST">
+                                                    @csrf @method('DELETE')
+                                                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Confirm deletion?')">
+                                                        <i class="fas fa-trash"></i>
+                                                    </button>
+                                                </form>
+                                            @else
+                                                <button class="btn btn-sm btn-secondary" title="Locked: Transactions exist for this source" disabled>
+                                                    <i class="fas fa-lock"></i>
+                                                </button>
+                                            @endif
                                         </td>
                                     </tr>
                                     @endforeach
@@ -408,8 +427,15 @@
                 {{-- TAB 5: BUDGET REALIGNMENT --}}
                 <div class="tab-pane fade" id="tabs-realignment" role="tabpanel">
                     <div class="mb-4">
-                        <h5 class="text-muted"><i class="fas fa-sync-alt mr-2"></i>Realignment Tool</h5>
-                        <p class="small text-secondary">Select a fund source to view and redistribute its unobligated balances.</p>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h5 class="text-muted"><i class="fas fa-sync-alt mr-2"></i>Realignment Tool</h5>
+                                <p class="small text-secondary">
+                                    Select a fund source to view and redistribute its unobligated balances for 
+                                    <span class="badge badge-info font-weight-bold">FY {{ date('Y') }}</span>.
+                                </p>
+                            </div>
+                        </div>
                         
                         <div class="row">
                             <div class="col-md-5">
@@ -417,20 +443,34 @@
                                     <label>Select Fund Source to Realign</label>
                                     <select id="realign_source_selector" class="form-control select2" style="width: 100%;">
                                         <option value="">-- Choose Source --</option>
+                                        @php $hasCurrentYearSources = false; @endphp
+                                        
                                         @foreach($sources as $source)
-                                            <option value="{{ $source->id }}">{{ $source->name }} (FY {{ $source->fiscal_year }})</option>
+                                            @if($source->fiscal_year == date('Y'))
+                                                <option value="{{ $source->id }}">
+                                                    {{ $source->name }} (FY {{ $source->fiscal_year }})
+                                                </option>
+                                                @php $hasCurrentYearSources = true; @endphp
+                                            @endif
                                         @endforeach
                                     </select>
+                                    
+                                    @if(!$hasCurrentYearSources)
+                                        <div class="alert alert-light border mt-2 py-2 small text-warning">
+                                            <i class="fas fa-exclamation-circle mr-1"></i> No fund sources found for the current year.
+                                        </div>
+                                    @endif
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     {{-- This container will be populated via AJAX based on the selection --}}
-                    <div id="realignment_container">
+                    <div id="realignment_container" class="border rounded bg-light-alt" style="min-height: 300px; border-style: dashed !important;">
                         <div class="text-center py-5 text-muted">
-                            <i class="fas fa-hand-pointer fa-3x mb-3"></i>
-                            <p>Please select a fund source above to start the realignment process.</p>
+                            <i class="fas fa-hand-pointer fa-3x mb-3 text-secondary opacity-50"></i>
+                            <h5 class="font-weight-bold">Ready to Realign</h5>
+                            <p>Select a current year fund source above to start redistributing balances.</p>
                         </div>
                     </div>
                 </div>
@@ -569,10 +609,10 @@
 </div>
 
 <div class="modal fade" id="importSummaryModal" tabindex="-1" role="dialog" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered" role="document">
+    <div class="modal-dialog modal-dialog-centered modal-lg" role="document"> {{-- Changed to modal-lg for better table visibility --}}
         <div class="modal-content border-0 shadow-lg">
             <div class="modal-header bg-success text-white">
-                <h5 class="modal-title"><i class="fas fa-file-import mr-2"></i> Import Results</h5>
+                <h5 class="modal-title"><i class="fas fa-file-import mr-2"></i> Import Results Summary</h5>
                 <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
                     <span aria-hidden="true">&times;</span>
                 </button>
@@ -586,51 +626,89 @@
                 
                 <div class="row mt-4">
                     <div class="col-4 border-right">
-                        <h3 class="text-primary font-weight-bold">{{ session('import_summary.created') }}</h3>
+                        <h3 class="text-primary font-weight-bold">{{ session('import_summary.created', 0) }}</h3>
                         <span class="text-uppercase small font-weight-bold text-muted">New Activities</span>
                     </div>
                     <div class="col-4 border-right">
-                        <h3 class="text-info font-weight-bold">{{ session('import_summary.updated') }}</h3>
+                        <h3 class="text-info font-weight-bold">{{ session('import_summary.updated', 0) }}</h3>
                         <span class="text-uppercase small font-weight-bold text-muted">Updated Records</span>
                     </div>
                     <div class="col-4">
-                        <h4 class="text-danger">{{ count(session('import_summary.failures', [])) }}</h4>
-                        <small>FAILED</small>
+                        <h3 class="text-danger font-weight-bold">{{ session('import_summary.failures', 0) }}</h3>
+                        <span class="text-uppercase small font-weight-bold text-muted">Issues/Warnings Found</span>
                     </div>
                 </div>
-                <hr>
-                @if(session('import_summary.failures') && count(session('import_summary.failures')) > 0)
-                    <div class="alert alert-danger p-0" style="max-height: 200px; overflow-y: auto;">
-                        <table class="table table-sm mb-0">
-                            <thead class="bg-danger text-white">
+
+                @if(session('import_notes') && count(session('import_notes')) > 0)
+                    <hr class="mt-4">
+                    <h6 class="text-left font-weight-bold text-muted mb-2 uppercase small">Issue Details & Row Warnings:</h6>
+                    <div class="table-responsive border rounded" style="max-height: 250px; overflow-y: auto;">
+                        <table class="table table-sm table-hover mb-0 text-left">
+                            <thead class="bg-light sticky-top">
                                 <tr>
-                                    <th class="pl-2">Activity</th>
-                                    <th>Error Reason</th>
+                                    <th class="pl-3">Row</th>
+                                    <th>Reason / Warning</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                @foreach(session('import_summary.failures') as $fail)
+                                @foreach(session('import_notes') as $note)
                                     <tr>
-                                        <td class="small pl-2">{{ $fail['row'] }}</td>
-                                        <td class="small pl-2">{{ $fail['reason'] }}</td>
+                                        <td class="pl-3">{{ $note['row'] }}</td>
+                                        <td class="text-secondary small">{{ $note['reason'] }}</td>
                                     </tr>
                                 @endforeach
                             </tbody>
                         </table>
                     </div>
-                    <p class="small text-muted mt-2 text-center">
-                        <i class="fas fa-exclamation-triangle mr-1"></i> 
-                        Rows listed above were skipped. Please fix them in your Excel and re-upload.
+                    <p class="small text-muted mt-2 text-left">
+                        <i class="fas fa-info-circle mr-1 text-warning"></i> 
+                        Rows with issues may have been skipped or imported with a ₱0.00 budget. Please review the table above.
                     </p>
                 @endif
-                <p class="mb-0 font-weight-bold">Total Rows Processed: {{ session('import_summary.total') }}</p>
+                
+                <div class="mt-4 p-3 bg-light rounded-pill d-inline-block px-5 border">
+                    <span class="mb-0 font-weight-bold">Total Rows Processed: {{ session('import_summary.total', 0) }}</span>
+                </div>
             </div>
-            <div class="modal-footer bg-light">
-                <button type="button" class="btn btn-secondary btn-block" data-dismiss="modal">Close Summary</button>
+            <div class="modal-footer bg-white border-0">
+                <button type="button" class="btn btn-outline-secondary" data-dismiss="modal">Close</button>
+                {{-- <a href="#tabs-realignment" class="btn btn-primary" data-toggle="pill">Go to Realignment</a> --}}
             </div>
         </div>
     </div>
 </div>
+
+
+<div class="modal fade" id="deleteSourceModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title"><i class="fas fa-exclamation-triangle mr-2"></i> Confirm Deletion</h5>
+                <button type="button" class="close text-white" data-dismiss="modal"><span>&times;</span></button>
+            </div>
+            <form id="deleteSourceForm" method="POST">
+                @csrf
+                @method('DELETE')
+                <div class="modal-body text-center p-4">
+                    <i class="fas fa-folder-minus text-danger fa-4x mb-3"></i>
+                    <h4>Are you sure?</h4>
+                    <p class="text-muted">You are about to delete <strong id="sourceNameDisplay" class="text-dark"></strong>.</p>
+                    
+                    <div class="alert alert-warning border-warning">
+                        <i class="fas fa-info-circle mr-1"></i>
+                        This will also permanently delete <strong><span id="activityCountDisplay"></span> activities</strong> linked to this source.
+                    </div>
+                    <p class="small text-danger">This action cannot be undone if no transactions exist.</p>
+                </div>
+                <div class="modal-footer bg-light justify-content-between">
+                    <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-danger px-4">Yes, Delete Everything</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 
 
 @endsection
@@ -774,7 +852,26 @@
         });
     });
 
-    
+    $(document).ready(function() {
+        $('.delete-source-btn').on('click', function() {
+            // Get data from button
+            let id = $(this).data('id');
+            let name = $(this).data('name');
+            let count = $(this).data('count');
+            
+            // Update Modal Content
+            $('#sourceNameDisplay').text(name);
+            $('#activityCountDisplay').text(count);
+            
+            // Update Form Action URL (Adjust 'sources' to your actual route name)
+            let deleteUrl = "{{ route('settings.source.destroy', ':id') }}";
+            deleteUrl = deleteUrl.replace(':id', id);
+            $('#deleteSourceForm').attr('action', deleteUrl);
+            
+            // Show Modal
+            $('#deleteSourceModal').modal('show');
+        });
+    });
 
 
 </script>

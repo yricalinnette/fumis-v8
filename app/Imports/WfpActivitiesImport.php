@@ -66,7 +66,6 @@ class WfpActivitiesImport implements ToModel, WithHeadingRow, WithEvents
     {
         $config = $this->config;
         
-        // Map keys using slugs from your settings
         $keys = [
             'activity' => Str::slug($config->activity_col, '_'),
             'uacs'     => Str::slug($config->uacs_col, '_'),
@@ -80,43 +79,52 @@ class WfpActivitiesImport implements ToModel, WithHeadingRow, WithEvents
         if (empty($activityName)) return null;
 
         try {
-            // 1. Get the Selected Fund Source details from the UI dropdown
             $selectedFund = SourceOfFund::findOrFail((int)$this->defaultFundId);
             $finalFundId = $selectedFund->id;
 
-            // 2. Check the Excel "Source" column
+            // 1. Validate Source Name from Excel if provided
             $excelSourceName = trim($row[$keys['source']] ?? '');
-
             if (!empty($excelSourceName)) {
-                // Find what fund the Excel is CLAIMING to be
                 $excelFund = SourceOfFund::where('name', $excelSourceName)->first();
-
-                if (!$excelFund) {
-                    throw new \Exception("Fund Source '{$excelSourceName}' does not exist in the Library.");
-                }
-
-                // 3. THE STRICT BLOCK: 
-                // Compare the ID found in Excel against the ID from the UI Dropdown
-                if ((int)$excelFund->id !== (int)$selectedFund->id) {
-                    throw new \Exception("Mismatch: Row says '{$excelSourceName}', but you selected '{$selectedFund->name}'. Row skipped.");
+                if (!$excelFund || (int)$excelFund->id !== (int)$selectedFund->id) {
+                    throw new \Exception("Mismatch: Row says '{$excelSourceName}', but you selected '{$selectedFund->name}'.");
                 }
             }
 
-            // 4. Proceed with Save using the validated finalFundId
-            $activity = Activity::updateOrCreate(
-                [
+            // 2. CHECK IF ACTIVITY EXISTS
+            $activity = Activity::where('source_of_fund_id', $finalFundId)
+                                ->where('name', $activityName)
+                                ->first();
+
+            if ($activity) {
+                // UPDATE EXISTING: Do NOT touch budget
+                $activity->update([
+                    'uacs_code'        => $row[$keys['uacs']] ?? $activity->uacs_code,
+                    'objective'        => $row[$keys['obj']] ?? $activity->objective,
+                    'budget_line_item' => $row[$keys['line']] ?? $activity->budget_line_item,
+                ]);
+                $this->updatedCount++;
+            } else {
+                // CREATE NEW: Force budget to 0 regardless of Excel value
+                $activity = Activity::create([
                     'source_of_fund_id' => $finalFundId,
                     'name'              => $activityName,
-                ],
-                [
-                    'uacs_code'   => $row[Str::slug($config->uacs_col, '_')] ?? null,
-                    'budget'      => (float) str_replace([',', '₱', ' '], '', $row[Str::slug($config->budget_col, '_')] ?? 0),
-                    'objective'   => $row[Str::slug($config->objective_col, '_')] ?? null,
-                    'budget_line_item' => $row[Str::slug($config->budget_line_col, '_')] ?? null,
-                ]
-            );
+                    'uacs_code'         => $row[$keys['uacs']] ?? null,
+                    'budget'            => 0, 
+                    'budget_adjusted'   => 0, 
+                    'objective'         => $row[$keys['obj']] ?? null,
+                    'budget_line_item'  => $row[$keys['line']] ?? null,
+                ]);
+                
+                $this->createdCount++;
 
-            $activity->wasRecentlyCreated ? $this->createdCount++ : $this->updatedCount++;
+                // 3. INFORM USER: Log a notification that the budget was ignored
+                $this->failures[] = [
+                    'row'    => $activityName,
+                    'reason' => "New activity detected. Budget set to ₱0.00. Please allocate funds via Budget Realignment."
+                ];
+            }
+
             return $activity;
 
         } catch (\Exception $e) {
@@ -124,7 +132,7 @@ class WfpActivitiesImport implements ToModel, WithHeadingRow, WithEvents
                 'row'    => $activityName,
                 'reason' => $e->getMessage()
             ];
-            return null; // This row fails, but the import continues for the next rows
+            return null;
         }
     }
 }

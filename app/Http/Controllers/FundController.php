@@ -615,7 +615,7 @@ class FundController extends Controller
     private function mapStatus($dtrackStatus) {
         return match ($dtrackStatus) {
             'For Signature' => 'For Signature',
-            'For CAF/Obligation (Budget)' => 'Obligated',
+            'For CAF/Obligation (Budget)' => 'For CAF/Obligation',
             'For Processing', 'For Processing (Accounting)' => 'Processing',
             default => $dtrackStatus,
         };

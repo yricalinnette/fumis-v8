@@ -55,26 +55,32 @@ class ActivityController extends Controller
         ]);
 
         try {
-            $import = new \App\Imports\WfpActivitiesImport($request->fund_source_id);
-            
-            // This will now throw the Exception if headers are wrong
-            \Maatwebsite\Excel\Facades\Excel::import($import, $request->file('wfp_file'));
+            $file = $request->file('wfp_file');
+            $import = new \App\Imports\WfpActivitiesImport($request->fund_source_id, $file->getPathname());
+            \Maatwebsite\Excel\Facades\Excel::import($import, $file);
 
-            // Check if anything actually happened
-            if (($import->createdCount + $import->updatedCount + count($import->failures)) === 0) {
-                return back()->withErrors(['error' => 'No rows were processed. Please ensure to use the Downloadable WFP Template.']);
-            }
+            // 1. Separate actual failures from warnings if possible, 
+            // but for now, let's just fix the math:
+            $created = $import->createdCount;
+            $updated = $import->updatedCount;
+            $notesCount = count($import->failures);
 
-            // Now failures will definitely have data because the importer caught them row-by-row
-            return back()->with('import_summary', [
-                'created'  => $import->createdCount,
-                'updated'  => $import->updatedCount,
-                'failures' => $import->failures,
-                'total'    => $import->createdCount + $import->updatedCount + count($import->failures),
-            ]);
+            // 2. Logic: If the row was created or updated, it's NOT an "Issue Found" 
+            // even if it has a note. "Issues" should be for rows that totally failed.
+            // For a quick fix, let's label them "Notifications" instead of "Issues".
+
+            return back()
+                ->with('success', "Import completed.")
+                ->with('import_notes', $import->failures)
+                ->with('import_summary', [
+                    'created'  => $created,
+                    'updated'  => $updated,
+                    'failures' => $notesCount, // These are warnings/notes
+                    'total'    => $created + $updated, // Total successfully synced
+                ]);
+
         } catch (\Exception $e) {
-            // This catches the "Header Mismatch" exception
-            return back()->withErrors(['error' => $e->getMessage()]);
+            return back()->withErrors(['error' => 'Import Error: ' . $e->getMessage()]);
         }
     }
 

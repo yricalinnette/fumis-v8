@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 use App\Models\SourceOfFund;
 use App\Models\Employee; 
 use App\Models\Activity; 
+use App\Models\Fund; 
 use App\Models\ImportTemplate; 
 use App\Imports\WfpActivitiesImport;
 use Maatwebsite\Excel\Facades\Excel;
@@ -136,10 +137,25 @@ class SettingsController extends Controller
 
     public function destroyActivity($id)
     {
-        $activity = \App\Models\Activity::findOrFail($id);
-        $activity->delete();
+        // 1. Find the activity and its source_of_fund_id
+        $activity = Activity::findOrFail($id);
 
-        return redirect()->back()->with('success', 'Activity deleted successfully!');
+        // 2. Query the Fund table for a match on BOTH columns
+        $isUsed = \App\Models\Fund::where('source_of_fund_id', $activity->source_of_fund_id)
+                    ->where('transaction_type_id', $activity->id) // Linking Activity ID to transaction_type_id
+                    ->exists();
+
+        // 3. Block deletion if a record is found
+        if ($isUsed) {
+            return redirect()->back()->with('error', "Deletion Denied: This activity has active transactions recorded under '{$activity->source->name}'.");
+        }
+
+        try {
+            $activity->delete();
+            return redirect()->back()->with('success', 'Activity deleted successfully!');
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'An error occurred: ' . $e->getMessage());
+        }
     }
 
     public function destroySource($id)
@@ -148,26 +164,29 @@ class SettingsController extends Controller
         $source = SourceOfFund::findOrFail($id);
 
         // 2. Check for transactions in the funds table
-        // Replace 'Fund' with your actual Transaction model name
+        // If transactions exist, we stop here to prevent data orphans
         $hasTransactions = \App\Models\Fund::where('source_of_fund_id', $id)->exists();
 
         if ($hasTransactions) {
             return back()->withErrors([
-                'error' => "Cannot delete '{$source->name}'. There are already transactions/funds recorded under this source."
+                'error' => "Cannot delete '{$source->name}'. Financial transactions are already recorded against this source."
             ]);
         }
 
-        // 3. Optional: Check for linked activities as well
-        if ($source->activities()->exists()) {
-            return back()->withErrors([
-                'error' => "Cannot delete '{$source->name}'. Please delete its linked activities first."
-            ]);
-        }
+        // 3. Perform Cascade Delete
+        // Since there are no transactions, we delete all linked activities first
+        $activityCount = $source->activities()->count();
+        $source->activities()->delete(); 
 
-        // 4. If clean, delete
+        // 4. Delete the Fund Source
         $source->delete();
 
-        return back()->with('success', 'Fund source deleted successfully!');
+        $message = "Fund source deleted successfully!";
+        if ($activityCount > 0) {
+            $message .= " Also removed {$activityCount} linked activities.";
+        }
+
+        return back()->with('success', $message);
     }
 
     //for updating the wfp import settings configurations
@@ -194,7 +213,7 @@ class SettingsController extends Controller
         return redirect()->back()->with('success', 'WFP Template mapping updated successfully!');
     }
 
-    
+    //for BUDGET REALIGNMENT
     public function updateAllocation(Request $request)
     {
         $request->validate([
@@ -206,37 +225,49 @@ class SettingsController extends Controller
             DB::beginTransaction();
 
             $source = SourceOfFund::findOrFail($request->source_id);
-            $adjustments = $request->adjustments;
             
-            // 1. Validate total sum
-            $newTotal = array_sum($adjustments);
-            if (round($newTotal, 2) > round($source->total_amount, 2)) {
-                return back()->with('error', 'The total adjusted budget exceeds the original Fund Source limit.');
+            // 1. Sanitize the adjustments array (remove commas)
+            $adjustments = collect($request->adjustments)->map(function ($value) {
+                return (float) str_replace(',', '', $value);
+            })->toArray();
+
+            // 2. Validate Total Sum against Fund Source (using sanitized numbers)
+            if (round(array_sum($adjustments), 2) > round($source->total_amount, 2)) {
+                return back()->with('error', 'The total exceeds the available Fund Source limit.');
             }
 
-            // 2. Process each activity
+            // 3. Process Adjustments
             foreach ($adjustments as $activityId => $newAmount) {
                 $activity = Activity::findOrFail($activityId);
                 
-                // Safety: Check against obligated amount
+                // Check against obligation_amount (matching your frontend calculation)
                 $obligated = $activity->funds()->sum('obligation_amount');
-                if ($newAmount < $obligated) {
+
+                // Safety check: Don't allow reduction below already spent/obligated funds
+                if (round($newAmount, 2) < round($obligated, 2)) {
                     return back()->with('error', "Cannot reduce {$activity->name} below its obligations (₱" . number_format($obligated, 2) . ").");
                 }
 
-                // Update the adjusted column
-                $activity->update([
-                    'budget_adjusted' => $newAmount
-                ]);
+                // CORE LOGIC: If the activity was newly uploaded with 0 budget
+                if ((float)$activity->budget == 0) {
+                    $activity->update([
+                        'budget' => $newAmount,          // Set the "Base" budget
+                        'budget_adjusted' => $newAmount  // Set the "Current" budget
+                    ]);
+                } else {
+                    // For existing activities, only update the adjusted column
+                    $activity->update([
+                        'budget_adjusted' => $newAmount
+                    ]);
+                }
             }
 
             DB::commit();
-            // Redirect back to the realignment tab
-            return redirect(url()->previous() . '#tabs-realignment')->with('success', 'Budget successfully replanned.');
+            return redirect(url()->previous() . '#tabs-realignment')->with('success', 'Budget replanned successfully.');
 
         } catch (\Exception $e) {
             DB::rollBack();
-            return back()->with('error', 'An error occurred: ' . $e->getMessage());
+            return back()->with('error', 'Error: ' . $e->getMessage());
         }
     }
 

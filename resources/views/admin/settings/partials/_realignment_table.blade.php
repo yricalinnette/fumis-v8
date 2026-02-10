@@ -46,12 +46,12 @@
                                     <div class="input-group-prepend">
                                         <span class="input-group-text bg-white">₱</span>
                                     </div>
-                                    <input type="number" 
+                                    <input type="text" 
                                         name="adjustments[{{ $activity->id }}]" 
                                         class="form-control text-right realign-input font-weight-bold" 
-                                        value="{{ $currentBudget }}" 
+                                        value="{{ number_format($currentBudget, 2, '.', ',') }}" 
                                         data-min="{{ $obligated }}" 
-                                        step="0.01">
+                                        placeholder="0.00">
                                 </div>
                                 <small class="text-xs float-right text-muted mt-1">Cannot be less than ₱{{ number_format($obligated, 2) }}</small>
                             </td>
@@ -84,15 +84,25 @@
 $(document).ready(function() {
     const sourceTotal = {{ $source->total_amount }};
     
+    // Helper function to add commas
+    function numberWithCommas(x) {
+        return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    }
+
+    // Helper to strip commas for calculation
+    function cleanValue(val) {
+        return parseFloat(val.replace(/,/g, '')) || 0;
+    }
+
     function validateRealignment() {
         let currentSum = 0;
         let hasError = false;
 
         $('.realign-input').each(function() {
-            let val = parseFloat($(this).val()) || 0;
+            let rawVal = $(this).val();
+            let val = cleanValue(rawVal);
             let min = parseFloat($(this).data('min'));
 
-            // Check if user tried to go below obligations
             if (val < min) {
                 $(this).addClass('is-invalid');
                 hasError = true;
@@ -102,27 +112,52 @@ $(document).ready(function() {
             currentSum += val;
         });
 
-        // Round to 2 decimal places to prevent float precision issues
         let difference = (sourceTotal - currentSum).toFixed(2);
 
         if (hasError) {
             $('#realign-status-text').html('<i class="fas fa-times-circle text-danger"></i> Below Obligation Limit');
             $('#realign-save-btn').prop('disabled', true);
-        } else if (difference == 0) {
+        } else if (Math.abs(difference) < 0.01) { // Handing float precision
             $('#realign-status-text').html('<i class="fas fa-check-circle text-success"></i> Balanced');
             $('#realign-save-btn').prop('disabled', false);
         } else if (difference > 0) {
-            $('#realign-status-text').html('<i class="fas fa-exclamation-circle text-warning"></i> Under by ₱' + parseFloat(difference).toLocaleString());
+            $('#realign-status-text').html('<i class="fas fa-exclamation-circle text-warning"></i> Under by ₱' + numberWithCommas(parseFloat(difference).toFixed(2)));
             $('#realign-save-btn').prop('disabled', true);
         } else {
-            $('#realign-status-text').html('<i class="fas fa-exclamation-triangle text-danger"></i> Over by ₱' + Math.abs(difference).toLocaleString());
+            $('#realign-status-text').html('<i class="fas fa-exclamation-triangle text-danger"></i> Over by ₱' + numberWithCommas(Math.abs(difference).toFixed(2)));
             $('#realign-save-btn').prop('disabled', true);
         }
     }
 
-    $('.realign-input').on('input change', validateRealignment);
-    
-    // Trigger initial calculation
+    // Handle typing and formatting
+    $(document).on('input', '.realign-input', function() {
+        // Allow only numbers and decimal point while typing
+        let cursorPosition = this.selectionStart;
+        let originalLength = this.value.length;
+        
+        let value = this.value.replace(/[^0-9.]/g, '');
+        let parts = value.split('.');
+        
+        // Prevent multiple decimal points
+        if (parts.length > 2) value = parts[0] + '.' + parts.slice(1).join('');
+        
+        this.value = value;
+        validateRealignment();
+    });
+
+    // Format with commas when user finishes typing (leaves the field)
+    $(document).on('blur', '.realign-input', function() {
+        let val = cleanValue($(this).val());
+        $(this).val(val.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+    });
+
+    // Strip commas when user clicks back into the field to edit
+    $(document).on('focus', '.realign-input', function() {
+        let val = $(this).val().replace(/,/g, '');
+        if(parseFloat(val) === 0) val = '';
+        $(this).val(val);
+    });
+
     validateRealignment();
 });
 </script>
