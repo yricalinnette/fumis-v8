@@ -502,12 +502,15 @@
                         <div class="col-md-4">
                             <div class="form-group">
                                 <label>Fiscal Year</label>
-                                <select name="fiscal_year" class="form-control" required>
+                                <select name="fiscal_year" id="edit_fiscal_year" class="form-control" required>
                                     <option value="">-- Select Year --</option>
-                                    <option value="2025">2025</option>
-                                    <option value="2026">2026</option>
-                                    <option value="2027">2027</option>
-                                    <option value="2024">2028</option>
+                                    {{-- Range: Last Year to 3 Years from now --}}
+                                    @php 
+                                        $currentYear = date('Y'); 
+                                    @endphp
+                                    @for($i = $currentYear - 2; $i <= $currentYear + 3; $i++)
+                                        <option value="{{ $i }}">{{ $i }}</option>
+                                    @endfor
                                 </select>
                             </div>
                         </div>
@@ -566,10 +569,13 @@
                                 <label>Fiscal Year</label>
                                 <select name="fiscal_year" class="form-control" required>
                                     <option value="">-- Select Year --</option>
-                                    <option value="2025">2025</option>
-                                    <option value="2026">2026</option>
-                                    <option value="2027">2027</option>
-                                    <option value="2024">2028</option>
+                                    {{-- Range: Last Year to 3 Years from now --}}
+                                    @php 
+                                        $currentYear = date('Y'); 
+                                    @endphp
+                                    @for($i = $currentYear - 2; $i <= $currentYear + 3; $i++)
+                                        <option value="{{ $i }}">{{ $i }}</option>
+                                    @endfor
                                 </select>
                             </div>
                         </div>

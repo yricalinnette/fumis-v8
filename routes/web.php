@@ -52,7 +52,7 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
             })->name('funds.sync-count');
     Route::post('/funds/sync-cancel', [FundController::class, 'cancelSync'])->name('funds.sync-cancel');
     Route::delete('/funds/{id}', [FundController::class, 'destroy'])->name('funds.destroy');
-    Route::post('/funds/sync-all', [FundController::class, 'syncAllRouted'])->name('funds.sync_all');
+    Route::post('/funds/sync-all', [FundController::class, 'syncAllDTrack'])->name('funds.sync_all');
     Route::get('/funds/sync-all-dtrack', [FundController::class, 'syncAllDTrack']);
     Route::get('funds/check-balance', [FundController::class, 'checkBalance'])->name('funds.check_balance');
     Route::get('/funds/create', [FundController::class, 'create'])->name('funds.create');

@@ -9,7 +9,7 @@ class Fund extends Model
     protected $fillable = [
         'dtrack_no',
         'source_of_fund_id',
-        'transaction_type_id', // Now properly mapped to the activities table
+        'transaction_type_id',
         'particulars',
         'transaction_date',
         'amount',
@@ -65,5 +65,5 @@ class Fund extends Model
         return $this->belongsToMany(Employee::class, 'employee_fund');
     }
 
-    // --- Cleaned up the incorrect hasMany relationship ---
+  
 }

@@ -77,14 +77,27 @@ class SettingsController extends Controller
                 'required', 'string',
                 Rule::unique('source_of_funds')->where(function ($query) use ($request) {
                     return $query->where('fiscal_year', $request->fiscal_year);
-                })->ignore($id), // IMPORTANT: Ignore the current record
+                })->ignore($id),
             ],
             'fiscal_year' => 'required|integer',
-            'total_amount'   => 'required|numeric',
+            'total_amount'   => 'required|numeric|min:0', // Ensure it's not negative
             'spreadsheet_id' => 'nullable|string',
             'sheet_name'     => 'nullable|string',
         ]);
 
+        // 1. Calculate the total budget already distributed to activities
+        $totalAllocatedToActivities = $source->activities()->sum('budget');
+
+        // 2. Compare with the new proposed total_amount
+        if ($request->total_amount < $totalAllocatedToActivities) {
+            return back()->withErrors([
+                'total_amount' => "Cannot reduce the total amount to ₱" . number_format($request->total_amount, 2) . 
+                                ". Currently, ₱" . number_format($totalAllocatedToActivities, 2) . 
+                                " is already allocated to activities. Please reduce activity budgets first."
+            ])->withInput();
+        }
+
+        // 3. If check passes, update
         $source->update($validated);
 
         return back()->with('success', 'Fund source updated successfully!');

@@ -67,7 +67,7 @@ class FundController extends Controller
                                 ->count();
 
         // Count for the notification badge (remains the same)
-        $awaitingOBRN = Fund::where('status', 'Obligated')
+        $awaitingOBRN = Fund::where('status', 'For CAF/Obligation')
                                 ->whereNull('obligation_serial')
                                 ->count();
         
@@ -572,19 +572,30 @@ class FundController extends Controller
             $updatedData = [];
 
             foreach ($funds as $fund) {
+                // Skip if there is no DTrack number to search for
+                if (!$fund->dtrack_no) continue;
+
                 $externalData = $dtrackService->getDTrackStatus($fund->dtrack_no);
-                $latestLog = $externalData['doc_register_destination'][0] ?? null;
+                
+                // 1. Get the array of logs
+                $logs = $externalData['doc_register_destination'] ?? [];
+
+                // 2. TARGET THE LATEST ENTRY: 
+                // We use end() to get the last item in the array, 
+                // which represents the most recent movement in DTrack.
+                $latestLog = !empty($logs) ? end($logs) : null;
 
                 if ($latestLog) {
                     $dtrackStatus = $latestLog['actreq_desc'] ?? '';
                     $office = $latestLog['dest_office'] ?? 'Unknown Office';
                     $dtrackUpdateDate = $latestLog['docdet_rlsd_dateupdated'] ?? null;
 
-                    // Apply logic
+                    // Apply Logic
                     if ($fund->status === 'Obligated') {
                         $fund->remarks = "Currently at: {$office} ({$dtrackStatus})";
                     } else {
-                        $fund->status = $this->mapStatus($dtrackStatus); // Now this method exists!
+                        // Update status based on DTrack movement
+                        $fund->status = $this->mapStatus($dtrackStatus); 
                         $fund->remarks = "Currently at: {$office}";
                     }
 
@@ -593,6 +604,9 @@ class FundController extends Controller
                     }
 
                     $fund->status_date = now();
+                    
+                    // 3. Save triggers the $touches in your Model, 
+                    // which updates the Dashboard's "Last Updated" timestamp!
                     $fund->save();
 
                     $updatedData[] = [
@@ -616,7 +630,6 @@ class FundController extends Controller
         return match ($dtrackStatus) {
             'For Signature' => 'For Signature',
             'For CAF/Obligation (Budget)' => 'For CAF/Obligation',
-            'For Processing', 'For Processing (Accounting)' => 'Processing',
             default => $dtrackStatus,
         };
     }

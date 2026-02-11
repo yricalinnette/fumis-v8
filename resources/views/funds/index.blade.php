@@ -113,15 +113,15 @@
             DTrack Auto-Sync: <span id="sync-status">Active</span>
         </div>
         <button type="button" class="btn shadow-sm">
-                <i class="fas fa-sync-alt mr-1"></i> Awaiting OBRN
+                <i class="fas fa-sync-alt mr-1"></i> Awaiting ORSN
                 @if(isset($awaitingOBRN) && $awaitingOBRN > 0)
-                    <span class="badge badge-primary ml-1">{{ $awaitingOBRN }}</span>
+                    <span class="badge badge-warning ml-1">{{ $awaitingOBRN }}</span>
                 @endif
             </button>
         <button type="button" id="btn-bulk-sync" class="btn btn-info shadow-sm">
                 <i class="fas fa-sync-alt mr-1"></i> Bulk Sync (RAODS)
                 @if(isset($awaitingSyncCount) && $awaitingSyncCount > 0)
-                    <span class="badge badge-danger ml-1">{{ $awaitingSyncCount }}</span>
+                    <span class="badge badge-warning ml-1">{{ $awaitingSyncCount }}</span>
                 @endif
             </button>
         {{-- <button type="button" id="btn-sync-all" class="btn btn-primary   shadow-sm">
@@ -197,6 +197,9 @@
                                 <span class="text-orange">₱{{ number_format($fund->amount, 2) }}</span>
                                 <div class="text-xs text-muted" style="font-size: 0.6rem;">(AWAITING SYNC)</div>
                             @endif
+                        @elseif($fund->status == 'For CAF/Obligation')
+                            <span class="badge-warning">₱{{ number_format($fund->amount, 2) }}</span>
+                            <div class="text-xs text-muted" style="font-size: 0.6rem;">(Awaiting ORSN)</div>
                         @else
                             {{-- Show original requested amount --}}
                             <span>₱{{ number_format($fund->amount, 2) }}</span>
@@ -209,7 +212,8 @@
                             $fund->status == 'Disbursed' || $fund->status == 'Completed' ? 'badge-success' : 
                             ($fund->status == 'Cancelled' ? 'badge-danger' : 
                             ($fund->status == 'Routed' ? 'badge-primary' : 
-                            ($fund->status == 'Obligated' ? 'bg-orange' : 'badge-warning'))) 
+                            ($fund->status == 'For CAF/Obligation' ? 'badge-warning' : 
+                            ($fund->status == 'Obligated' ? 'bg-orange' : 'badge-info'))))
                         }}">
                             {{ $fund->status }}
                         </span>
@@ -810,7 +814,7 @@
         //         }
         //     });
         // });
-
+        
         $(document).ready(function() {
             // Automatically trigger the sync every 5 minutes while the dashboard is open
             setInterval(function() {

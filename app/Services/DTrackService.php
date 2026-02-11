@@ -9,7 +9,7 @@ class DTrackService
 {
     // The shared secret provided by your teammate
     protected $secret = '@m0b1l3DTr@ckID';
-    protected $baseUrl = 'http://192.168.2.211/mdtrackapi/index.php'; // Added index.php if it's CodeIgniter/PHP
+    protected $baseUrl = 'http://192.168.2.211/mdtrackapi/index.php'; 
 
     public function getDTrackStatus($dtrackNo)
     {
