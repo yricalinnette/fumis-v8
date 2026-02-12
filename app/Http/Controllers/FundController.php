@@ -14,6 +14,7 @@ use Google\Service\Sheets;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
+use Illuminate\Support\Facades\Log;
 
 class MyReadFilter implements \PhpOffice\PhpSpreadsheet\Reader\IReadFilter
 {
@@ -303,144 +304,168 @@ class FundController extends Controller
             $fund = Fund::with('fundSource')->findOrFail($id);
             $sourceConfig = SourceOfFund::find($fund->source_of_fund_id);
 
+            // 1. Validation Check
             if (!$sourceConfig || !$sourceConfig->spreadsheet_id || !$sourceConfig->sheet_name) {
-                return response()->json([
-                    'success' => false, 
-                    'message' => 'Configuration missing. Please set Spreadsheet ID and Sheet Name in Settings.'
-                ], 422);
+                return response()->json(['success' => false, 'message' => 'Sheet configuration (ID or Tab Name) is missing for this fund source.'], 422);
             }
 
+            // 2. Google Drive Auth & Download
             $client = new \Google\Client();
-            $client->setAuthConfig(storage_path('app/google-credentials.json'));
+            $credPath = storage_path('app/google-credentials.json');
+            
+            if (!file_exists($credPath)) {
+                throw new \Exception("Google credentials file not found at " . $credPath);
+            }
+
+            $client->setAuthConfig($credPath);
             $client->addScope(\Google_Service_Drive::DRIVE_READONLY);
             
             $driveService = new \Google_Service_Drive($client);
             $spreadsheetId = $sourceConfig->spreadsheet_id;
 
-            $content = $driveService->files->get($spreadsheetId, ['alt' => 'media']);
-            $data = $content->getBody()->getContents();
+            // Try to fetch the file
+            try {
+                $content = $driveService->files->get($spreadsheetId, ['alt' => 'media']);
+                $data = $content->getBody()->getContents();
+            } catch (\Exception $e) {
+                throw new \Exception("Google Drive Access Error: Verify that the Service Account has 'Viewer' access to the spreadsheet.");
+            }
 
+            // 3. Save to Temp File
             $tempFile = tempnam(sys_get_temp_dir(), 'excel_'); 
             file_put_contents($tempFile, $data);
 
+            // 4. Load Spreadsheet
             $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReader('Xlsx');
             $reader->setReadDataOnly(true);
             
-            // Define the range you want to read to save memory
-            $startRow = 1;
-            $endRow = 10000; // Adjust based on your typical sheet size
-            $columns = range('B', 'Q'); 
-            $reader->setReadFilter(new MyReadFilter($startRow, $endRow, $columns));
-            
+            // Define range to save memory
+            $reader->setReadFilter(new MyReadFilter(1, 10000, range('B', 'Q')));
+
             $spreadsheet = $reader->load($tempFile);
             $sheet = $spreadsheet->getSheetByName($sourceConfig->sheet_name);
             
             if (!$sheet) {
-                throw new \Exception("Tab name '{$sourceConfig->sheet_name}' not found in the Google Sheet.");
+                throw new \Exception("Tab name '{$sourceConfig->sheet_name}' not found in the spreadsheet.");
             }
 
+            // 5. Data Processing Logic
             $highestRow = $sheet->getHighestRow();
             $found = false;
-            
-            // Initialize aggregation variables
             $netObligationAmount = 0;
             $netDisbursementAmount = 0;
             $latestObDate = null;
             $latestDisbDate = null;
-            $dbFundSourceName = trim((string)($fund->fundSource->name ?? ''));
 
-            // UPDATED: Helper to handle (95,000.00) as -95000.00
+            $seenObFingerprints = []; 
+            $seenDisbFingerprints = []; 
+            $duplicateObRows = [];
+            $duplicateDisbRows = [];
+
             $cleanAmount = function($val) {
                 if ($val === null || $val === '') return 0.0;
-                
                 $val = trim((string)$val);
-                
-                // Check for accounting negative format: (1,000.00)
                 if (str_starts_with($val, '(') && str_ends_with($val, ')')) {
                     $val = '-' . trim($val, '()');
                 }
-
-                // Remove commas, currency symbols, and spaces
                 $raw = str_replace([',', '₱', ' '], '', $val);
-                
                 return (float) $raw;
             };
 
-            // Iterate through all rows to sum original entries and adjustments
             for ($row = 1; $row <= $highestRow; $row++) { 
                 $sheetSerial = trim((string)$sheet->getCell("C$row")->getValue());
                 $sheetFundSource = trim((string)$sheet->getCell("G$row")->getValue());
 
-                // Match Serial Number (Column C)
                 if ($sheetSerial == trim((string)$fund->obligation_serial)) {
-                    
-                    // Match Fund Source (Column G) if specified
-                    if ($sheetFundSource !== '' && $sheetFundSource !== $dbFundSourceName) {
-                        continue; 
-                    }
+                    $dbFundSourceName = trim((string)($fund->fundSource->name ?? ''));
+                    if ($sheetFundSource !== '' && $sheetFundSource !== $dbFundSourceName) continue; 
 
                     $found = true;
 
-                    // SUM OBLIGATIONS FROM COLUMN I (Netting out deobligations)
-                    $valI = $cleanAmount($sheet->getCell("I$row")->getCalculatedValue());
-                    $netObligationAmount += $valI;
+                    // Obligation Check (B-K)
+                    $obFingerprintParts = [];
+                    foreach (range('B', 'K') as $col) {
+                        $obFingerprintParts[] = trim((string)$sheet->getCell($col . $row)->getValue());
+                    }
+                    $obFingerprint = md5(implode('|', $obFingerprintParts));
 
-                    // Capture obligation date (Column B)
-                    $currentObDate = $this->parseExcelDate($sheet->getCell("B$row")->getValue());
-                    if ($currentObDate) $latestObDate = $currentObDate;
+                    if (!in_array($obFingerprint, $seenObFingerprints)) {
+                        $netObligationAmount += $cleanAmount($sheet->getCell("I$row")->getCalculatedValue());
+                        $seenObFingerprints[] = $obFingerprint;
+                        $currentObDate = $this->parseExcelDate($sheet->getCell("B$row")->getValue());
+                        if ($currentObDate) $latestObDate = $currentObDate;
+                    } else {
+                        $duplicateObRows[] = $row;
+                    }
 
-                    // SUM DISBURSEMENTS FROM COLUMN Q (Netting out adjustments)
+                    // Disbursement Check (M-Q)
                     $valQ = $cleanAmount($sheet->getCell("Q$row")->getCalculatedValue());
-                    $netDisbursementAmount += $valQ;
+                    if ($valQ != 0) {
+                        $disbFingerprintParts = [];
+                        foreach (range('M', 'Q') as $col) {
+                            $disbFingerprintParts[] = trim((string)$sheet->getCell($col . $row)->getValue());
+                        }
+                        $disbFingerprint = md5(implode('|', $disbFingerprintParts));
 
-                    // Capture disbursement date (Column M)
-                    $currentDisbDate = $this->parseExcelDate($sheet->getCell("M$row")->getValue());
-                    if ($currentDisbDate) $latestDisbDate = $currentDisbDate;
+                        if (!in_array($disbFingerprint, $seenDisbFingerprints)) {
+                            $netDisbursementAmount += $valQ;
+                            $seenDisbFingerprints[] = $disbFingerprint;
+                            $currentDisbDate = $this->parseExcelDate($sheet->getCell("M$row")->getValue());
+                            if ($currentDisbDate) $latestDisbDate = $currentDisbDate;
+                        } else {
+                            $duplicateDisbRows[] = $row;
+                        }
+                    }
                 }
             }
 
+            // 6. DB Update
             if ($found) {
-                $finalUpdateData = [
-                    'obligation_amount' => $netObligationAmount,
-                    'obligation_date'   => $latestObDate,
-                ];
-
-                // Logical check for status based on NET disbursement
-                if ($netDisbursementAmount > 0) {
-                    $finalUpdateData['status'] = 'Disbursed';
-                    $finalUpdateData['disbursement_amount'] = $netDisbursementAmount;
-                    $finalUpdateData['disbursement_date']   = $latestDisbDate;
-                    $finalUpdateData['status_date'] = now()->format('Y-m-d');
-                } else {
-                    // Revert to Obligated if net disbursement is 0 (Cancellation)
-                    $finalUpdateData['status'] = 'Obligated';
-                    $finalUpdateData['disbursement_amount'] = 0;
-                    $finalUpdateData['disbursement_date'] = null;
+                if ($netDisbursementAmount > $netObligationAmount) {
+                    $netDisbursementAmount = $netObligationAmount;
                 }
 
-                $fund->update($finalUpdateData);
+                $fund->update([
+                    'obligation_amount'   => $netObligationAmount,
+                    'obligation_date'     => $latestObDate,
+                    'disbursement_amount' => $netDisbursementAmount,
+                    'disbursement_date'   => $latestDisbDate,
+                    'status'              => $netDisbursementAmount > 0 ? 'Disbursed' : 'Obligated',
+                    'status_date'         => now()->format('Y-m-d')
+                ]);
+
+                // Log duplicates for audit
+                if (!empty($duplicateObRows) || !empty($duplicateDisbRows)) {
+                    Log::channel('sync')->warning("Duplicates for Serial: {$fund->obligation_serial}", [
+                        'ob_rows' => $duplicateObRows,
+                        'disb_rows' => $duplicateDisbRows
+                    ]);
+                }
             }
 
             if ($tempFile && file_exists($tempFile)) { unlink($tempFile); }
 
             if (!$found) {
-                return response()->json([
-                    'success' => false, 
-                    'message' => 'Serial number ' . $fund->obligation_serial . ' not found in sheet.'
-                ], 404);
+                return response()->json(['success' => false, 'message' => "Serial number '{$fund->obligation_serial}' was not found in the selected spreadsheet."], 404);
             }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Synced successfully!',
-                'new_amount' => number_format($netObligationAmount, 2),
-                'new_status' => $fund->status
+                'details' => [
+                    'serial' => $fund->obligation_serial,
+                    'new_amount' => number_format($netObligationAmount, 2),
+                    'new_status' => $fund->status,
+                    'has_duplicates' => !empty($duplicateObRows) || !empty($duplicateDisbRows),
+                    // Add these two lines to pass the row numbers to the frontend
+                    'duplicate_ob_rows' => $duplicateObRows, 
+                    'duplicate_disb_rows' => $duplicateDisbRows
+                ]
             ]);
 
         } catch (\Exception $e) {
             if ($tempFile && file_exists($tempFile)) { unlink($tempFile); }
             \Log::error("Sync Error: " . $e->getMessage()); 
-            return response()->json(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
 

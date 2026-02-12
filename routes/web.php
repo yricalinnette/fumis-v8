@@ -58,6 +58,7 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::get('/funds/create', [FundController::class, 'create'])->name('funds.create');
     Route::post('/funds/store', [FundController::class, 'store'])->name('funds.store');
     Route::get('/funds', [FundController::class, 'index'])->name('funds.index'); // Table View
+    Route::get('/funds/awaiting-obligation', [FundController::class, 'getAwaitingObligation'])->name('funds.awaiting');
 
     //dashboard
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');

@@ -113,11 +113,11 @@
             DTrack Auto-Sync: <span id="sync-status">Active</span>
         </div>
         <button type="button" class="btn shadow-sm">
-                <i class="fas fa-sync-alt mr-1"></i> Awaiting ORSN
-                @if(isset($awaitingOBRN) && $awaitingOBRN > 0)
-                    <span class="badge badge-warning ml-1">{{ $awaitingOBRN }}</span>
-                @endif
-            </button>
+            <i class="fas fa-sync-alt mr-1"></i> Awaiting ORSN
+            @if(isset($awaitingOBRN) && $awaitingOBRN > 0)
+                <span class="badge badge-warning ml-1">{{ $awaitingOBRN }}</span>
+            @endif
+        </button>
         <button type="button" id="btn-bulk-sync" class="btn btn-info shadow-sm">
                 <i class="fas fa-sync-alt mr-1"></i> Bulk Sync (RAODS)
                 @if(isset($awaitingSyncCount) && $awaitingSyncCount > 0)
@@ -357,36 +357,57 @@
 </div>
 
 <div class="modal fade" id="syncSummaryModal" tabindex="-1" role="dialog" data-backdrop="static">
-    <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+    <div class="modal-dialog modal-xl modal-dialog-centered" role="document">
         <div class="modal-content border-info">
             <div class="modal-header bg-info text-white">
                 <h5 class="modal-title"><i class="fas fa-list-check mr-2"></i> Bulk Sync Report</h5>
             </div>
-            <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+            <div class="modal-body" style="max-height: 80vh; overflow-y: auto;">
                 <div class="row text-center mb-4">
-                    <div class="col-4">
+                    <div class="col-3">
+                        <h2 id="sum-total" class="font-weight-bold mb-0 text-secondary">0</h2>
+                        <small class="text-muted font-weight-bold">TOTAL ITEMS</small>
+                    </div>
+                    <div class="col-3 border-left">
                         <h2 id="sum-success" class="text-success font-weight-bold mb-0">0</h2>
-                        <small class="text-muted">SUCCESS</small>
+                        <small class="text-muted font-weight-bold">SYNCED</small>
                     </div>
-                    <div class="col-4">
+                    <div class="col-3 border-left">
+                        <h2 id="sum-duplicates" class="text-warning font-weight-bold mb-0">0</h2>
+                        <small class="text-muted font-weight-bold">HAD DUPLICATES</small>
+                    </div>
+                    <div class="col-3 border-left">
                         <h2 id="sum-failed" class="text-danger font-weight-bold mb-0">0</h2>
-                        <small class="text-muted">FAILED/NOT FOUND</small>
-                    </div>
-                    <div class="col-4">
-                        <h2 id="sum-total" class="font-weight-bold mb-0">0</h2>
-                        <small class="text-muted">TOTAL</small>
+                        <small class="text-muted font-weight-bold">FAILED / NOT FOUND</small>
                     </div>
                 </div>
 
                 <div class="row">
-                    <div class="col-md-6">
-                        <h6 class="text-success border-bottom pb-2"><i class="fas fa-check-circle mr-1"></i> Updated</h6>
-                        <ul id="list-success" class="list-group list-group-flush small" style="max-height: 200px; overflow-y: auto;">
-                            </ul>
+                    <div class="col-md-8">
+                        <h6 class="text-success border-bottom pb-2 font-weight-bold">
+                            <i class="fas fa-check-circle mr-1"></i> Successful Syncs
+                        </h6>
+                        <div class="table-responsive" style="max-height: 350px; overflow-y: auto;">
+                            <table class="table table-sm table-hover border">
+                                <thead class="bg-light sticky-top">
+                                    <tr>
+                                        <th>Serial Number</th>
+                                        <th>New Status</th>
+                                        <th>Amount</th>
+                                        <th>Duplicates (Row #)</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="list-success-table" class="small">
+                                    </tbody>
+                            </table>
+                        </div>
                     </div>
-                    <div class="col-md-6">
-                        <h6 class="text-danger border-bottom pb-2"><i class="fas fa-times-circle mr-1"></i> Failed / Mismatch</h6>
-                        <ul id="list-failed" class="list-group list-group-flush small" style="max-height: 200px; overflow-y: auto;">
+
+                    <div class="col-md-4">
+                        <h6 class="text-danger border-bottom pb-2 font-weight-bold text-center">
+                            <i class="fas fa-times-circle mr-1"></i> Failed / Not Found
+                        </h6>
+                        <ul id="list-failed" class="list-group list-group-flush small" style="max-height: 350px; overflow-y: auto;">
                             </ul>
                     </div>
                 </div>
@@ -395,12 +416,14 @@
                     <i class="fas fa-exclamation-triangle mr-1"></i> Process was halted manually.
                 </div>
             </div>
-            <div class="modal-footer bg-light">
-                <button type="button" class="btn btn-secondary" onclick="location.reload()">Close & Refresh</button>
+            <div class="modal-footer bg-light justify-content-between">
+                <small class="text-muted italic">* Duplicate rows were skipped to prevent amount inflation.</small>
+                <button type="button" class="btn btn-secondary shadow-sm" onclick="location.reload()">Close & Refresh Page</button>
             </div>
         </div>
     </div>
 </div>
+
 
 <div class="modal fade" id="viewTransactionModal" tabindex="-1" role="dialog">
     <div class="modal-dialog modal-lg" role="document">
@@ -473,6 +496,52 @@
 
             <div class="modal-footer bg-light border-0 px-4">
                 <button type="button" class="btn btn-outline-secondary px-4" data-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<div class="modal fade" id="syncResultModal" tabindex="-1" role="dialog" aria-labelledby="syncResultModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-body text-center p-4">
+                <div class="mb-3">
+                    <i class="fas fa-check-circle text-success fa-3x"></i>
+                </div>
+                <h4 class="modal-title mb-1" id="syncResultModalLabel">Sync Complete</h4>
+                <p class="text-muted small">Serial: <span id="rs-serial" class="font-weight-bold"></span></p>
+                
+                <hr class="my-4">
+                
+                <div class="row">
+                    <div class="col-6 border-right">
+                        <small class="text-uppercase text-muted d-block mb-1" style="font-size: 0.7rem; letter-spacing: 1px;">Amount</small>
+                        <strong id="rs-amount" class="h5 text-dark"></strong>
+                    </div>
+                    <div class="col-6">
+                        <small class="text-uppercase text-muted d-block mb-1" style="font-size: 0.7rem; letter-spacing: 1px;">Status</small>
+                        <span id="rs-status" class="badge p-2 w-100" style="font-size: 0.85rem;"></span>
+                    </div>
+                </div>
+
+                <div id="rs-warning" class="mt-4 alert alert-warning border-warning mb-0" style="display:none;">
+                    <div class="d-flex align-items-center mb-2">
+                        <i class="fas fa-exclamation-triangle mr-2"></i>
+                        <strong>Duplicate Rows Found</strong>
+                    </div>
+                    <div style="font-size: 0.8rem; line-height: 1.4;">
+                        <p class="mb-1 text-dark">The following rows in your Google Sheet were skipped to prevent double counting:</p>
+                        <div id="rs-duplicate-list" class="bg-white p-2 rounded border" style="max-height: 100px; overflow-y: auto;">
+                            </div>
+                    </div>
+                </div>
+
+                <div class="mt-4">
+                    <button type="button" class="btn btn-primary btn-block shadow-sm" data-dismiss="modal" onclick="window.location.reload();">
+                        Done
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -636,25 +705,61 @@
 
     $(document).on('click', '.btn-sync-sheet', function(e) {
         e.preventDefault();
+        
         const btn = $(this);
-        const id = btn.data('id');
+        const fundId = btn.data('id');
         const originalHtml = btn.html();
 
-        // Prevent double-clicking
-        btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i>');
+        // UI Feedback: Loading state
+        btn.prop('disabled', true).html('<i class="fas fa-circle-notch fa-spin"></i>');
 
         $.ajax({
-            url: `/funds/${id}/sync`,
+            url: `/funds/${fundId}/sync`,
             method: "GET",
+            dataType: "json",
             success: function(response) {
-                // Use a Toast or small alert for individual success
-                alert('Sync Successful: ' + response.new_amount);
-                location.reload(); 
+                if (response.success && response.details) {
+                    const data = response.details;
+
+                    $('#rs-serial').text(data.serial);
+                    $('#rs-amount').text('₱' + data.new_amount);
+                    
+                    const statusBadge = $('#rs-status');
+                    statusBadge.text(data.new_status);
+                    
+                    statusBadge.removeClass('badge-primary badge-success badge-secondary');
+                    if (data.new_status === 'Disbursed') {
+                        statusBadge.addClass('badge-success');
+                    } else {
+                        statusBadge.addClass('badge-primary');
+                    }
+
+                    // --- NEW DUPLICATE DISPLAY LOGIC ---
+                    if (data.has_duplicates) {
+                        let listHtml = '';
+                        
+                        if (data.duplicate_ob_rows.length > 0) {
+                            listHtml += `<strong>Obligation Duplicates (Cols B-K):</strong> Rows ${data.duplicate_ob_rows.join(', ')}<br>`;
+                        }
+                        
+                        if (data.duplicate_disb_rows.length > 0) {
+                            listHtml += `<strong>Disbursement Duplicates (Cols M-Q):</strong> Rows ${data.duplicate_disb_rows.join(', ')}`;
+                        }
+
+                        $('#rs-duplicate-list').html(listHtml);
+                        $('#rs-warning').show();
+                    } else {
+                        $('#rs-warning').hide();
+                    }
+
+                    $('#syncResultModal').modal('show');
+                }
+                btn.prop('disabled', false).html(originalHtml);
             },
             error: function(xhr) {
                 btn.prop('disabled', false).html(originalHtml);
-                let msg = xhr.responseJSON ? xhr.responseJSON.message : "Connection failed";
-                alert('Sync Error: ' + msg);
+                const errorMsg = xhr.responseJSON ? xhr.responseJSON.message : "Server connection error";
+                alert('Error: ' + errorMsg);
             }
         });
     });
@@ -678,41 +783,33 @@
             const btn = $(this);
             window.bulkSyncStopSignal = false;
             
-            // Initialize results with arrays to store details
+            // 1. Results Object
             let results = { 
                 success: 0, 
                 failed: 0, 
-                disbursed: 0, 
-                obligated: 0,
-                successList: [], // Store {dtrack, serial}
-                failedList: []   // Store {dtrack, serial, reason}
+                duplicateCount: 0,
+                successList: [], 
+                failedList: [] 
             };
 
             let table = $('#funds-table').DataTable();
             const items = [];
 
-            // Capture data from the table
+            // 2. Capture data from DataTable
             table.rows().every(function() {
                 const rowNode = this.node();
                 const syncBtn = $(rowNode).find('.btn-sync-sheet');
                 
                 if (syncBtn.length > 0 && !syncBtn.is(':disabled')) {
-                    // Find the DTrack (usually the first <td>)
-                    const dtrackVal = $(rowNode).find('td').eq(0).text().trim();
-                    
-                    // Find the Serial (look for it in the data attribute of the button first)
-                    const serialVal = syncBtn.data('serial') || $(rowNode).find('td').eq(2).text().trim();
-
                     items.push({
                         id: syncBtn.data('id'),
-                        serial: serialVal, 
-                        dtrack: dtrackVal
+                        serial: syncBtn.data('serial') || $(rowNode).find('td').eq(2).text().trim()
                     });
                 }
             });
 
             if (items.length === 0) return alert('No valid transactions found.');
-            if (!confirm(`${items.length} item/s found with Obligation Reference Serial Number. Do you want to sync now?`)) return;
+            if (!confirm(`Found ${items.length} item(s). Start Bulk Sync?`)) return;
 
             btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Processing...');
             $('#sync-progress-container').slideDown();
@@ -721,13 +818,9 @@
             let currentIdx = 0;
 
             function processNext() {
-                if (window.bulkSyncStopSignal) {
-                    showSummary(results, true);
-                    return;
-                }
-
-                if (currentIdx >= total) {
-                    showSummary(results, false);
+                if (window.bulkSyncStopSignal || currentIdx >= total) {
+                    showSummary(results, window.bulkSyncStopSignal);
+                    btn.prop('disabled', false).html('<i class="fas fa-sync"></i> Bulk Sync');
                     return;
                 }
 
@@ -737,31 +830,46 @@
                     url: `/funds/${currentItem.id}/sync`,
                     method: "GET",
                     success: function(response) {
-                        results.success++;
-                        results.successList.push(currentItem);
+                        if (response.success) {
+                            const d = response.details;
+                            results.success++;
+
+                            let duplicateRows = [];
+                            if (d.has_duplicates) {
+                                results.duplicateCount++;
+                                duplicateRows = [...(d.duplicate_ob_rows || []), ...(d.duplicate_disb_rows || [])];
+                            }
+
+                            results.successList.push({
+                                serial: d.serial,
+                                status: d.new_status,
+                                amount: d.new_amount,
+                                duplicates: duplicateRows
+                            });
+                        } else {
+                            // Logic for "success: false" but 200 status (if any)
+                            recordFailure(currentItem.serial, response.message || "Unknown Error");
+                        }
                         
-                        if(response.new_status === 'Disbursed') results.disbursed++;
-                        else results.obligated++;
-                        
-                        updateUI(currentIdx, total);
-                        currentIdx++;
-                        processNext();
+                        finishItem();
                     },
                     error: function(xhr) {
-                        results.failed++;
-                        // Add to failed list with the error message from server
                         let errorMsg = xhr.responseJSON ? xhr.responseJSON.message : "Server Error";
-                        results.failedList.push({
-                            dtrack: currentItem.dtrack,
-                            serial: currentItem.serial,
-                            reason: errorMsg
-                        });
-                        
-                        updateUI(currentIdx, total);
-                        currentIdx++;
-                        processNext();
+                        recordFailure(currentItem.serial, errorMsg);
+                        finishItem();
                     }
                 });
+            }
+
+            function recordFailure(serial, reason) {
+                results.failed++;
+                results.failedList.push({ serial: serial, reason: reason });
+            }
+
+            function finishItem() {
+                updateUI(currentIdx, total);
+                currentIdx++;
+                processNext();
             }
 
             function updateUI(idx, total) {
@@ -770,50 +878,60 @@
                 $('#sync-percent-text').text(`${progress}% (${idx + 1}/${total})`);
             }
 
+            // 3. Updated showSummary Function
+            function showSummary(res, halted) {
+                $('#sum-total').text(total);
+                $('#sum-success').text(res.success);
+                $('#sum-failed').text(res.failed);
+                $('#sum-duplicates').text(res.duplicateCount);
+
+                // Populate Success Table
+                let successHtml = '';
+                if (res.successList.length > 0) {
+                    res.successList.forEach(item => {
+                        let dupBadge = item.duplicates.length > 0 
+                            ? `<span class="badge badge-warning text-dark">Rows: ${item.duplicates.join(', ')}</span>` 
+                            : '<span class="text-muted small">None</span>';
+
+                        successHtml += `
+                            <tr>
+                                <td><strong>${item.serial}</strong></td>
+                                <td><span class="badge ${item.status === 'Disbursed' ? 'badge-success' : 'badge-primary'}">${item.status}</span></td>
+                                <td>₱${item.amount}</td>
+                                <td>${dupBadge}</td>
+                            </tr>`;
+                    });
+                } else {
+                    successHtml = '<tr><td colspan="4" class="text-center text-muted">No successful updates.</td></tr>';
+                }
+                $('#list-success-table').html(successHtml);
+
+                // Populate Failed List with Empty Check
+                let failedHtml = '';
+                if (res.failedList.length > 0) {
+                    res.failedList.forEach(item => {
+                        failedHtml += `
+                            <li class="list-group-item list-group-item-danger py-1">
+                                <strong>${item.serial}</strong>: ${item.reason}
+                            </li>`;
+                    });
+                } else {
+                    failedHtml = `
+                        <li class="list-group-item list-group-item-light py-3 text-center">
+                            <i class="fas fa-check-circle text-success mr-2"></i>
+                            <span class="text-muted">No failed transactions.</span>
+                        </li>`;
+                }
+                $('#list-failed').html(failedHtml);
+
+                if (halted) $('#halted-warning').removeClass('d-none');
+                
+                $('#syncSummaryModal').modal('show');
+            }
+
             processNext();
         });
 
-        // $(document).on('click', '#btn-sync-all', function() {
-        //     const btn = $(this);
-        //     const originalHtml = btn.html();
-
-        //     // 1. UI Feedback: Disable and show loading
-        //     btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Syncing...');
-
-        //     $.ajax({
-        //         url: "{{ route('funds.sync_all') }}", // Ensure you define this in web.php
-        //         method: "POST",
-        //         data: { _token: "{{ csrf_token() }}" },
-        //         success: function(response) {
-        //             if (response.success) {
-        //                 $(document).Toasts('create', {
-        //                     class: 'bg-success',
-        //                     title: 'Sync Successful',
-        //                     autohide: true,
-        //                     delay: 3000,
-        //                     body: response.message
-        //                 });
-        //                 // Refresh page to show new statuses and badge colors
-        //                 setTimeout(() => { location.reload(); }, 1500);
-        //             } else {
-        //                 $(document).Toasts('create', {
-        //                     class: 'bg-warning',
-        //                     title: 'Sync Note',
-        //                     body: response.message
-        //                 });
-        //                 btn.prop('disabled', false).html(originalHtml);
-        //             }
-        //         },
-        //         error: function() {
-        //             $(document).Toasts('create', {
-        //                 class: 'bg-danger',
-        //                 title: 'Error',
-        //                 body: 'Failed to connect to DTrack system.'
-        //             });
-        //             btn.prop('disabled', false).html(originalHtml);
-        //         }
-        //     });
-        // });
         
         $(document).ready(function() {
             // Automatically trigger the sync every 5 minutes while the dashboard is open
@@ -849,7 +967,7 @@
                     <div class="d-flex justify-content-between align-items-center">
                         <div>
                             <span class="text-muted small">#${item.dtrack}</span><br>
-                            <strong>${item.serial}</strong>
+                            <strong>${item.serial} (${item.status})</strong>
                         </div>
                         <i class="fas fa-check text-success"></i>
                     </div>
