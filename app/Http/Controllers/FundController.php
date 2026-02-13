@@ -56,8 +56,12 @@ class FundController extends Controller
         $funds = Fund::with(['creditors', 'fundSource', 'activity'])
                 ->latest() // This is shorthand for orderBy('created_at', 'desc')
                 ->get();
+
+        $currentYear = date('Y');
         
-        $sources = SourceOfFund::all(); 
+        $sources = SourceOfFund::where('fiscal_year', $currentYear)
+                ->orderBy('name')->get();
+
         $employees = Employee::orderBy('last_name')->get();
         $activities = Activity::all(); 
 

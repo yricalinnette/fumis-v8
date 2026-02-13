@@ -36,7 +36,7 @@
                 </li>
                 <li class="nav-item">
                     <a class="nav-link" id="tabs-templates-tab" data-toggle="pill" href="#tabs-templates" role="tab">
-                        <i class="fas fa-file-excel mr-1"></i> Import Settings
+                        <i class="fas fa-file-excel mr-1"></i> WFP Template Settings
                     </a>
                 </li>
                 <li class="nav-item">
@@ -59,6 +59,8 @@
 
         <div class="card-body">
             <div class="tab-content" id="settingsCustomTabContent">
+
+                {{-- TAB 1: Fund Source Registry --}}
                 <div class="tab-pane fade show active" id="tabs-sources" role="tabpanel">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <h5 class="text-muted mb-0"><i class="fas fa-database mr-2"></i>Fund Source Registry</h5>
@@ -72,52 +74,76 @@
                             <thead class="bg-light">
                                 <tr>
                                     <th style="width: 15%">Source Name</th>
-                                    <th style="width: 20%">Spreadsheet ID</th>
-                                    <th style="width: 15%">Tab Name</th>
-                                    <th style="width: 15%" class="text-center">Allocation</th>
-                                    <th style="width: 10%" class="text-center">Sync</th>
-                                    <th style="width: 10%" class="text-center">FY</th> 
-                                    <th style="width: 15%" class="text-center">Action</th>
+                                    <th style="width: 15%">Sync Info</th>
+                                    <th style="width: 15%" class="text-right">Original Allotment</th>
+                                    <th style="width: 10%" class="text-center">Pooled Funds</th>
+                                    <th style="width: 20%" class="text-center">Net Allotment</th>
+                                    <th style="width: 5%" class="text-center">FY</th> 
+                                    <th style="width: 10%" class="text-center">Action</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 @foreach($sources as $source)
+                                @php
+                                    $totalPooled = $source->activities->sum('pooled_amount');
+                                    $netAmount = $source->total_amount - $totalPooled;
+                                @endphp
                                 <tr>
-                                    <td class="align-middle"><strong>{{ $source->name }}</strong></td>
-                                    
                                     <td class="align-middle">
+                                        <strong>{{ $source->name }}</strong>
+                                    </td>
+                                    
+                                    <td class="align-middle small">
                                         @if($source->spreadsheet_id)
-                                            <code class="text-truncate d-inline-block"  title="{{ $source->spreadsheet_id }}">
+                                            <div class="text-info mb-1"><i class="fas fa-link mr-1"></i> Linked</div>
+                                            <code class="text-truncate d-block"title="{{ $source->spreadsheet_id }}">
                                                 {{ $source->spreadsheet_id }}
                                             </code>
                                         @else
-                                            <span class="text-muted small">N/A</span>
+                                            <span class="text-muted"><i class="fas fa-keyboard mr-1"></i> Manual</span>
                                         @endif
                                     </td>
-                                    <td class="align-middle">
-                                        @if($source->sheet_name)
-                                            <span class="text-info"><i class="far fa-file-alt mr-1"></i> {{ $source->sheet_name }}</span>
-                                        @else
-                                            <span class="text-muted small">N/A</span>
-                                        @endif
-                                    </td>
-                                    <td class="align-middle text-center font-weight-bold">
+
+                                    <td class="align-middle text-right text-muted">
                                         ₱{{ number_format($source->total_amount, 2) }}
                                     </td>
-                                    <td class="align-middle text-center ">
-                                        @if($source->spreadsheet_id)
-                                            <span class="badge badge-success"><i class="fas fa-sync-alt mr-1"></i> Linked</span>
+
+                                    <td class="align-middle text-center">
+                                        @if($totalPooled > 0)
+                                            @php
+                                                // Prepare the tooltip content string
+                                                $remarksContent = "<b>Pooled Remarks:</b><br>";
+                                                foreach($source->activities->where('pooled_amount', '>', 0) as $act) {
+                                                    $remarksContent .= "• " . e($act->name) . ": " . e($act->pooled_remarks ?? 'No remarks') . "<br>";
+                                                }
+                                            @endphp
+                                            
+                                            <span class="badge badge-danger p-2" 
+                                                style="cursor: pointer;"
+                                                data-toggle="tooltip" 
+                                                data-html="true" 
+                                                title="{{ $remarksContent }}">
+                                                <i class="fas fa-arrow-down mr-1"></i> ₱{{ number_format($totalPooled, 2) }}
+                                            </span>
                                         @else
-                                            <span class="badge badge-secondary">Manual</span>
+                                            <span class="text-muted small">—</span>
                                         @endif
                                     </td>
-                                    <td class="align-middle text-center"><span class="badge badge-info">{{ $source->fiscal_year }}</span>
-                                    </td> <td class="align-middle text-center">
+
+                                    <td class="align-middle text-center font-weight-bold text-navy">
+                                        ₱{{ number_format($netAmount, 2) }}
+                                    </td>
+
+                                    <td class="align-middle text-center">
+                                        <span class="badge badge-info">{{ $source->fiscal_year }}</span>
+                                    </td> 
+
+                                    <td class="align-middle text-center">
                                         <div class="btn-group">
                                             <button type="button" class="btn btn-sm btn-outline-info edit-source-btn" 
                                                 data-id="{{ $source->id }}" 
                                                 data-name="{{ $source->name }}" 
-                                                data-fiscal_year="{{ $source->fiscal_year }}" {{-- Added Data Attribute --}}
+                                                data-fiscal_year="{{ $source->fiscal_year }}"
                                                 data-amount="{{ $source->total_amount }}" 
                                                 data-sheetid="{{ $source->spreadsheet_id }}" 
                                                 data-sheetname="{{ $source->sheet_name }}">
@@ -125,15 +151,10 @@
                                             </button>
 
                                             <form action="{{ route('settings.source.destroy', $source->id) }}" method="POST" class="d-inline" 
-                                                onsubmit="return confirm('Are you sure you want to delete this source? This action cannot be undone.')">
+                                                onsubmit="return confirm('Are you sure you want to delete this source?')">
                                                 @csrf
                                                 @method('DELETE')
-                                                <button type="button" 
-                                                    class="btn btn-sm btn-outline-danger delete-source-btn" 
-                                                    data-id="{{ $source->id }}" 
-                                                    data-name="{{ $source->name }}" 
-                                                    data-count="{{ $source->activities->count() }}"
-                                                    title="Delete Source">
+                                                <button type="submit" class="btn btn-sm btn-outline-danger">
                                                     <i class="fas fa-trash"></i>
                                                 </button>
                                             </form>
@@ -158,7 +179,9 @@
                         @csrf
                         <div class="card card-outline card-success shadow-sm">
                             <div class="card-header">
-                                <h3 class="card-title font-weight-bold"><i class="fas fa-file-excel mr-2"></i>Bulk Import WFP</h3>
+                                <h3 class="card-title font-weight-bold">
+                                    <i class="fas fa-file-excel mr-2"></i>Bulk Import WFP (FY {{ $currentYear }})
+                                </h3>
                             </div>
                             <div class="card-body">
                                 <div class="row">
@@ -171,13 +194,12 @@
                                         </small>
                                     </div>
                                     
-                                    {{-- Added the required Fund Source Selector for the Import --}}
                                     <div class="col-md-5">
                                         <div class="form-group">
-                                            <label>Default Fund Source (Backup)</label>
+                                            <label>Default Fund Source (FY {{ $currentYear }})</label>
                                             <select name="fund_source_id" class="form-control select2" required>
-                                                <option value="">-- Select Source --</option>
-                                                @foreach($sources as $source)
+                                                <option value="">-- Select Current Source --</option>
+                                                @foreach($sources->where('fiscal_year', $currentYear) as $source)
                                                     <option value="{{ $source->id }}">{{ $source->name }}</option>
                                                 @endforeach
                                             </select>
@@ -194,100 +216,147 @@
                                                 </div>
                                                 <div class="input-group-append">
                                                     <button type="submit" class="btn btn-success">
-                                                        <i class="fas fa-file-import mr-1"></i> Import Data
+                                                        <i class="fas fa-file-import mr-1"></i> Import
                                                     </button>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
-
-                                <small class="text-info d-block">
-                                    <i class="fas fa-cog mr-1"></i> Current mapping expects headers on row <b>{{ $template->header_row ?? 1 }}</b>.
-                                </small>
                             </div>
                         </div>
                     </form>
 
                     <hr class="my-4">
 
-                    {{-- MANUAL ENTRY FORM (Existing) --}}
-                    {{-- <h5 class="text-muted mb-3"><i class="fas fa-keyboard mr-2"></i>Manual Activity Entry</h5>
-                    <form action="{{ route('settings.activity.store') }}" method="POST" id="activity_form" class="row">
-                        @csrf
-                        <div class="col-md-4">
-                            <label>Fund Source</label>
-                            <select name="source_of_fund_id" id="source_selector" class="form-control select2" required style="width: 100%;">
-                                <option value="">-- Choose Source --</option>
-                                @foreach($sources as $source)
-                                    @php $rem = $source->total_amount - $source->activities->sum('budget'); @endphp
-                                    <option value="{{ $source->id }}" data-remaining="{{ $rem }}" data-name="{{ $source->name }}">
-                                        {{ $source->name }} (Available: ₱{{ number_format($rem, 2) }})
-                                    </option>
-                                @endforeach
-                            </select>
-                        </div>
-                        <div class="col-md-4">
-                            <label>Activity Name</label>
-                            <input type="text" name="name" class="form-control" required placeholder="e.g. Training Expenses">
-                        </div>
-                        <div class="col-md-3">
-                            <label>Budget Limit</label>
-                            <div class="input-group">
-                                <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
-                                <input type="text" class="form-control amount-mask-display" required>
-                                <input type="hidden" name="budget" class="amount-mask-raw">
-                            </div>
-                        </div>
-                        <div class="col-md-1">
-                            <label>&nbsp;</label>
-                            <button type="submit" id="btn-save-activity" class="btn btn-success btn-block"><i class="fas fa-plus"></i></button>
-                        </div>
-                    </form> --}}
-                    <div class="mt-4">
-                        <table class="table table-bordered table-striped">
-                            <thead>
-                                <tr class="bg-dark text-white">
-                                    <th>Activity Name</th>
-                                    <th class="text-right">Alloted Budget</th>
-                                    <th class="text-center">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @foreach($activities->groupBy('source.name') as $sourceName => $groupedActivities)
-                                    <tr class="bg-light font-weight-bold">
-                                        <td colspan="2"><i class="fas fa-folder-open mr-2"></i> {{ $sourceName }}</td>
-                                        <td class="text-center">Total: ₱{{ number_format($groupedActivities->sum('budget'), 2) }}</td>
-                                    </tr>
-                                    @foreach($groupedActivities as $activity)
-                                    <tr>
-                                        <td class="pl-5 text-secondary">{{ $activity->name }}</td>
-                                        <td class="text-right text-primary">₱{{ number_format($activity->budget_adjusted, 2) }}</td>
-                                        <td class="text-center">
-                                            @php
-                                                $isLocked = \App\Models\Fund::where('source_of_fund_id', $activity->source_of_fund_id)
-                                                            ->where('transaction_type_id', $activity->id)
-                                                            ->exists();
-                                            @endphp
+                    {{-- COLLAPSIBLE ACTIVITY GROUPS --}}
+                    <div id="activitiesAccordion">
+                        @foreach($activities->groupBy('source.fiscal_year') as $year => $yearGroups)
+                            @php 
+                                $isCurrent = ($year == $currentYear); 
+                                $collapseId = "collapseYear" . $year;
+                            @endphp
+                            
+                            <div class="card card-dark card-outline mb-2">
+                                <div class="card-header p-0" id="heading{{ $year }}">
+                                    <button class="btn btn-link btn-block text-left text-dark font-weight-bold py-2 px-3" 
+                                            type="button" 
+                                            data-toggle="collapse" 
+                                            data-target="#{{ $collapseId }}" 
+                                            aria-expanded="{{ $isCurrent ? 'true' : 'false' }}">
+                                        <i class="fas {{ $isCurrent ? 'fa-folder-open' : 'fa-folder' }} mr-2 text-warning"></i> 
+                                        FISCAL YEAR {{ $year }} 
+                                        @if($isCurrent) <span class="badge badge-success ml-2">Current</span> @endif
+                                        <span class="float-right"><i class="fas fa-chevron-down small"></i></span>
+                                    </button>
+                                </div>
 
-                                            @if(!$isLocked)
-                                                <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST">
-                                                    @csrf @method('DELETE')
-                                                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Confirm deletion?')">
-                                                        <i class="fas fa-trash"></i>
-                                                    </button>
-                                                </form>
-                                            @else
-                                                <button class="btn btn-sm btn-secondary" title="Locked: Transactions exist for this source" disabled>
-                                                    <i class="fas fa-lock"></i>
-                                                </button>
-                                            @endif
-                                        </td>
-                                    </tr>
-                                    @endforeach
-                                @endforeach
-                            </tbody>
-                        </table>
+                                <div id="{{ $collapseId }}" class="collapse {{ $isCurrent ? 'show' : '' }}" data-parent="#activitiesAccordion">
+                                    <div class="card-body p-0">
+                                        <table class="table table-bordered table-sm m-0">
+                                            <thead>
+                                                <tr class="bg-light">
+                                                    <th class="pl-3">Activity Name</th>
+                                                    <th class="text-right" style="width: 250px;">Budget (Distributed / Total)</th>
+                                                    <th class="text-center" style="width: 100px;">Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach($yearGroups->groupBy('source.name') as $sourceName => $groupedActivities)
+                                                    @php
+                                                        // Access the SourceOfFund model from the first activity in the group
+                                                        $source = $groupedActivities->first()->source;
+                                                        
+                                                        $totalPooled = $groupedActivities->sum('pooled_amount');
+                                                        $sumDistributed = $groupedActivities->sum('budget_adjusted');
+                                                        
+                                                        // EFFECTIVE BALANCE = Total Amount(from Source Funds) - Pooled
+                                                        $effectiveSourceFund = $source->total_amount - $totalPooled;
+                                                        // BUDGET BALANCE = Total Adjusted - Pooled
+                                                        $totalAllActivities = $sumDistributed - $totalPooled;
+                                                    @endphp
+                                                    <tr class="bg-gray-light">
+                                                        <td class="font-weight-bold pl-3 italic">
+                                                            <i class="fas fa-layer-group mr-2 text-muted"></i> {{ $sourceName }}
+                                                        </td>
+                                                        <td class="text-right font-weight-bold">
+                                                            <span class="text-primary" title="Sum of all activities below">
+                                                                ₱{{ number_format($totalAllActivities, 2) }}
+                                                            </span>
+                                                            <span class="text-muted mx-1">/</span>
+                                                            <span class="text-dark" title="Effective Total (Original: ₱{{ number_format($source->total_amount, 2) }})">
+                                                                {{-- This is the 'Calculated' amount for Pooled funds --}}
+                                                                ₱{{ number_format($effectiveSourceFund, 2) }}
+                                                            </span>
+                                                        </td>
+                                                        <td class="bg-white text-center">
+                                                            @if($totalPooled > 0)
+                                                                <span class="badge badge-danger" title="Total pooled funds">
+                                                                    Pooled: ₱{{ number_format($totalPooled, 2) }}
+                                                                </span>
+                                                            @endif
+                                                        </td>
+                                                    </tr>
+
+                                                    {{-- INDIVIDUAL ACTIVITIES --}}
+                                                    @foreach($groupedActivities as $activity)
+                                                        @php
+                                                            // CALCULATE NET PER ACTIVITY: Adjusted Budget - Pooled Funds
+                                                            $netAllotment = $activity->budget_adjusted - $activity->pooled_amount;
+                                                            $hasTransactions = \App\Models\Fund::where('transaction_type_id', $activity->id)->exists();
+                                                        @endphp
+                                                        <tr>
+                                                            <td class="pl-5 text-secondary">
+                                                                <i class="fas fa-caret-right mr-1"></i> {{ $activity->name }}
+                                                                
+                                                                @if($activity->pooled_amount > 0)
+                                                                    <small class="text-danger italic ml-2">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</small>
+                                                                    
+                                                                    @if($activity->pooled_remarks)
+                                                                        <i class="fas fa-info-circle text-muted ml-1" 
+                                                                        data-toggle="tooltip" 
+                                                                        title="Reason: {{ $activity->pooled_remarks }}"></i>
+                                                                    @endif
+                                                                @endif
+                                                            </td>
+                                                            <td class="text-right">
+                                                                <span class="{{ $activity->pooled_amount > 0 ? 'text-strikethrough text-muted small' : 'text-primary' }}">
+                                                                    ₱{{ number_format($activity->budget_adjusted, 2) }}
+                                                                </span>
+                                                                @if($activity->pooled_amount > 0)
+                                                                    <div class="font-weight-bold text-primary">
+                                                                        ₱{{ number_format($netAllotment, 2) }} <small class="text-muted">(Adjusted)</small>
+                                                                    </div>
+                                                                @endif
+                                                            </td>
+                                                            <td class="text-center">
+                                                                @if($isCurrent && !$hasTransactions)
+                                                                    <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST" class="d-inline">
+                                                                        @csrf @method('DELETE')
+                                                                        <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Confirm deletion?')">
+                                                                            <i class="fas fa-trash"></i>
+                                                                        </button>
+                                                                    </form>
+                                                                    
+                                                                    <button type="button" 
+                                                                        class="btn btn-xs btn-warning" 
+                                                                        onclick="openPoolModal({{ $activity->id }}, '{{ addslashes($activity->name) }}', {{ $activity->budget_adjusted }}, {{ $activity->pooled_amount }}, '{{ addslashes($activity->pooled_remarks) }}')"
+                                                                        title="Pool Funds">
+                                                                        <i class="fas fa-hand-holding-usd"></i>
+                                                                    </button>
+                                                                @else
+                                                                    <i class="fas fa-lock text-muted" title="{{ !$isCurrent ? 'Locked: Previous Year' : 'Locked: Transactions exist' }}"></i>
+                                                                @endif
+                                                            </td>
+                                                        </tr>
+                                                    @endforeach
+                                                @endforeach
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        @endforeach
                     </div>
                 </div>
 
@@ -325,7 +394,7 @@
                     </div>
                 </div>
 
-                {{-- TAB 4: IMPORT SETTINGS (DYNAMIC TEMPLATE) --}}
+                {{-- TAB 4: WFP TEMPLATE SETTINGS (DYNAMIC TEMPLATE) --}}
                 <div class="tab-pane fade" id="tabs-templates" role="tabpanel">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <h5 class="text-muted mb-0"><i class="fas fa-sliders-h mr-2"></i>WFP Template Configuration</h5>
@@ -336,7 +405,7 @@
                         @method('PUT')
                         <div class="row">
                             {{-- Header Settings --}}
-                            <div class="col-md-4">
+                            {{-- <div class="col-md-4">
                                 <div class="card card-outline card-info shadow-sm">
                                     <div class="card-header"><h3 class="card-title font-weight-bold">Header Settings</h3></div>
                                     <div class="card-body">
@@ -348,10 +417,10 @@
                                         </div>
                                     </div>
                                 </div>
-                            </div>
+                            </div> --}}
 
                             {{-- Column Mapping --}}
-                            <div class="col-md-8">
+                            <div class="col-md-12">
                                 <div class="card card-outline card-primary shadow-sm">
                                     <div class="card-header">
                                         <h3 class="card-title font-weight-bold">Column Mapping (Exact Excel Header Names)</h3>
@@ -716,6 +785,43 @@
 </div>
 
 
+<div class="modal fade" id="poolFundModal" tabindex="-1" role="dialog">
+    <div class="modal-dialog">
+        <form action="{{ route('settings.activity.pool') }}" method="POST">
+            @csrf
+            <input type="hidden" name="activity_id" id="pool_activity_id">
+            <div class="modal-content shadow-lg">
+                <div class="modal-header bg-warning">
+                    <h5 class="modal-title font-weight-bold"><i class="fas fa-university mr-2"></i>Pool Funds</h5>
+                    <button type="button" class="close" data-dismiss="modal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p>Activity: <strong id="pool_activity_name" class="text-primary"></strong></p>
+                    <div class="form-group">
+                        <label>Enter Amount to Pool:</label>
+                        <div class="input-group">
+                            <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
+                            <input type="number" step="0.01" name="amount" id="pool_input_amount" class="form-control" required>
+                        </div>
+                        <small class="text-muted">Maximum available: ₱<span id="pool_max_display"></span></small>
+                    </div>
+                    <button type="button" class="btn btn-outline-danger btn-block btn-sm" onclick="setFullPool()">
+                        <i class="fas fa-arrow-down mr-1"></i> Pool Entire Activity Budget
+                    </button>
+                    <div class="form-group mt-3">
+                        <label>Reason for Pooling:</label>
+                        <textarea name="remarks" id="pool_remarks" class="form-control" rows="3" placeholder="e.g., Activity cancelled, excess funds, or realignment..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" class="btn btn-warning font-weight-bold">Confirm Transaction</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+
 
 @endsection
 
@@ -876,6 +982,33 @@
             
             // Show Modal
             $('#deleteSourceModal').modal('show');
+        });
+    });
+
+
+    function openPoolModal(id, name, budget, currentPooled, currentRemarks) {
+        $('#pool_activity_id').val(id);
+        $('#pool_activity_name').text(name);
+        $('#pool_max_display').text(budget.toLocaleString());
+        $('#pool_input_amount').val(currentPooled);
+        $('#pool_input_amount').attr('max', budget); 
+        
+        // Set the existing remarks if any
+        $('#pool_remarks').val(currentRemarks); 
+        
+        $('#poolFundModal').modal('show');
+    }
+
+    function setFullPool() {
+        // Get the raw number from the max display text
+        let fullAmount = $('#pool_max_display').text().replace(/,/g, '');
+        $('#pool_input_amount').val(fullAmount);
+    }
+
+    $(function () {
+        // Standard initialization
+        $('[data-toggle="tooltip"]').tooltip({
+            html: true // This ensures the <b> and <br> tags are rendered as HTML
         });
     });
 

@@ -18,20 +18,33 @@ class SettingsController extends Controller
 {
     public function index()
     {
-        // Fetch Sources (you likely already have this)
-        $sources = SourceOfFund::all();
+        // 1. Current Year for logic checks
+        $currentYear = date('Y');
 
-        // Fetch Employees (you likely already have this)
-        $employees = Employee::all();
+        // 2. Fetch all Sources (showing all years)
+        $sources = SourceOfFund::orderBy('fiscal_year', 'desc')->get();
 
-        // MISSING PART: Fetch Activities
-        // We eager load 'source' to avoid N+1 issues if needed later
-        $activities = Activity::with('source')->get();
+        // 3. Fetch all Employees
+        $employees = Employee::orderBy('last_name')->get();
 
-        // Fetch the first template record, or create a blank object if none exists
+        // 4. Fetch ALL Activities from all years
+        // We order by source year so history is grouped logically
+        $activities = Activity::with('source')
+            ->join('source_of_funds', 'activities.source_of_fund_id', '=', 'source_of_funds.id')
+            ->select('activities.*')
+            ->orderBy('source_of_funds.fiscaL_year', 'desc')
+            ->get();
+
+        // 5. Fetch template
         $template = \App\Models\ImportTemplate::first();
 
-        return view('admin.settings', compact('sources', 'employees', 'activities', 'template'));
+        return view('admin.settings', compact(
+            'sources', 
+            'employees', 
+            'activities', 
+            'template', 
+            'currentYear'
+        ));
     }
 
     public function storeSource(Request $request) 
@@ -290,6 +303,25 @@ class SettingsController extends Controller
         
         // Point this specifically to the small file we created
         return view('admin.settings.partials._realignment_table', compact('source'))->render();
+    }
+
+
+    public function poolFunds(Request $request)
+    {
+        $request->validate([
+            'activity_id' => 'required|exists:activities,id',
+            'amount' => 'required|numeric|min:0',
+            'remarks' => 'nullable|string|max:1000', // Validate the new field
+        ]);
+
+        $activity = Activity::findOrFail($request->activity_id);
+        
+        $activity->update([
+            'pooled_amount' => $request->amount,
+            'pooled_remarks' => $request->remarks, // Save to database
+        ]);
+
+        return back()->with('success', 'Funds pooled and remarks recorded.');
     }
     
     

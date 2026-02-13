@@ -13,6 +13,8 @@ class Activity extends Model {
     'source_of_fund_id',
     'uacs_code',
     'budget_adjusted',
+    'pooled_amount',
+    'pooled_remarks',
 ];
 
     public function source() {

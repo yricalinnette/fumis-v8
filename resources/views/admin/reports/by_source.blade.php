@@ -100,8 +100,8 @@
                 <table class="table table-sm table-hover table-sticky mb-0">
                     <thead>
                         <tr class="text-muted text-uppercase text-xs">
-                            <th class="pl-4 py-3" style="width: 20%">Fund Source</th>
-                            <th class="text-right py-3">Total Allotted</th>
+                            <th class="pl-4 py-3" style="width: 25%">Fund Source</th>
+                            <th class="text-right py-3">Working Allotment</th> {{-- Changed label --}}
                             <th class="text-right py-3 bg-light border-left-info">Obligated</th>
                             <th class="text-center py-3 bg-light">Obligation Rate(%)</th>
                             <th class="text-right py-3 border-left-success">Disbursed</th>
@@ -111,43 +111,58 @@
                     </thead>
                     <tbody>
                         @php
-                            $totals = ['allotted' => 0, 'obligated' => 0, 'disbursed' => 0];
+                            $totals = ['allotted' => 0, 'obligated' => 0, 'disbursed' => 0, 'pooled' => 0];
                         @endphp
 
                         @foreach($reportData as $data)
                             @php
-                                $totals['allotted'] += $data['allotted'];
-                                $totals['obligated'] += $data['obligated'];
-                                $totals['disbursed'] += $data['disbursed'];
+                                // Use the source_total (which is now net in your controller)
+                                $currentAllotted = $data['source_total'];
+                                $pooled = $data['total_pooled'] ?? 0;
+
+                                $totals['allotted'] += $currentAllotted;
+                                $totals['obligated'] += $data['total_obligated'];
+                                $totals['disbursed'] += $data['total_disbursed'];
+                                $totals['pooled'] += $pooled;
                                 
-                                $obligClass = $data['obligation_rate'] >= 90 ? 'badge-success' : ($data['obligation_rate'] > 0 ? 'badge-warning' : 'badge-danger');
-                                $disbClass = $data['disbursement_rate'] >= 90 ? 'badge-success' : ($data['disbursement_rate'] > 0 ? 'badge-warning' : 'badge-danger');
+                                $obligClass = $data['overall_oblig_rate'] >= 90 ? 'badge-success' : ($data['overall_oblig_rate'] > 0 ? 'badge-warning' : 'badge-danger');
+                                $disbClass = $data['overall_disb_rate'] >= 90 ? 'badge-success' : ($data['overall_disb_rate'] > 0 ? 'badge-warning' : 'badge-danger');
                             @endphp
                             <tr>
                                 <td class="pl-4 align-middle">
-                                    <span class="text-navy font-weight-bold text-uppercase small">{{ $data['name'] }}</span>
+                                    <span class="text-navy font-weight-bold text-uppercase small d-block">{{ $data['source_name'] }}</span>
+                                    @if($pooled > 0)
+                                        <span class="badge badge-danger text-xs shadow-none" style="font-weight: 500;">
+                                            <i class="fas fa-arrow-circle-down mr-1"></i>Pooled: ₱{{ number_format($pooled, 2) }}
+                                        </span>
+                                    @endif
                                 </td>
-                                <td class="text-right align-middle financial-number text-muted">
-                                    ₱{{ number_format($data['allotted'], 2) }}
+                                <td class="text-right align-middle financial-number">
+                                    <div class="text-dark">₱{{ number_format($currentAllotted, 2) }}</div>
+                                    @if($pooled > 0)
+                                        <small class="text-muted d-block" style="text-decoration: line-through; font-weight: normal;">
+                                            ₱{{ number_format($data['original_source_total'], 2) }}
+                                        </small>
+                                    @endif
                                 </td>
-                                <td class="text-right align-middle financial-number text-primary font-weight-bold border-left-info">
-                                    ₱{{ number_format($data['obligated'], 2) }}
+                                <td class="text-right align-middle financial-number text-info font-weight-bold border-left-info">
+                                    ₱{{ number_format($data['total_obligated'], 2) }}
                                 </td>
                                 <td class="text-center align-middle bg-light">
                                     <span class="badge {{ $obligClass }} shadow-none" style="width: 55px;">
-                                        {{ number_format($data['obligation_rate'], 1) }}%
+                                        {{ number_format($data['overall_oblig_rate'], 1) }}%
                                     </span>
                                 </td>
                                 <td class="text-right align-middle financial-number text-success font-weight-bold border-left-success">
-                                    ₱{{ number_format($data['disbursed'], 2) }}
+                                    ₱{{ number_format($data['total_disbursed'], 2) }}
                                 </td>
                                 <td class="text-center align-middle">
                                     <span class="badge {{ $disbClass }} shadow-none" style="width: 55px;">
-                                        {{ number_format($data['disbursement_rate'], 1) }}%
+                                        {{ number_format($data['overall_disb_rate'], 1) }}%
                                     </span>
                                 </td>
-                                <td class="text-right align-middle financial-number pr-4 {{ $data['balance'] < 0 ? 'text-danger' : 'text-dark' }}">
-                                    ₱{{ number_format($data['balance'], 2) }}
+                                <td class="text-right align-middle financial-number pr-4 {{ $data['total_unobligated'] < 0 ? 'text-danger' : 'text-primary' }}">
+                                    ₱{{ number_format($data['total_unobligated'], 2) }}
                                 </td>
                             </tr>
                         @endforeach
@@ -158,11 +173,18 @@
                             $overallDisbRate = $totals['obligated'] > 0 ? ($totals['disbursed'] / $totals['obligated']) * 100 : 0;
                         @endphp
                         <tr class="font-weight-bold">
-                            <td class="pl-4 py-3 align-middle text-uppercase small">Grand Total</td>
+                            <td class="pl-4 py-3 align-middle">
+                                <span class="text-uppercase small">Grand Total</span>
+                                @if($totals['pooled'] > 0)
+                                    <div class="text-xs text-danger" style="font-weight: normal;">
+                                        Total Pooled: ₱{{ number_format($totals['pooled'], 2) }}
+                                    </div>
+                                @endif
+                            </td>
                             <td class="text-right align-middle financial-number">
                                 ₱{{ number_format($totals['allotted'], 2) }}
                             </td>
-                            <td class="text-right text-primary align-middle financial-number border-left-info">
+                            <td class="text-right text-info align-middle financial-number border-left-info">
                                 ₱{{ number_format($totals['obligated'], 2) }}
                             </td>
                             <td class="text-center align-middle bg-light">
@@ -180,7 +202,7 @@
                                 </div>
                                 <span class="text-xs text-navy">{{ number_format($overallDisbRate, 1) }}%</span>
                             </td>
-                            <td class="text-right align-middle financial-number pr-4">
+                            <td class="text-right align-middle financial-number pr-4 text-primary">
                                 ₱{{ number_format($totals['allotted'] - $totals['obligated'], 2) }}
                             </td>
                         </tr>

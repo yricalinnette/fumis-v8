@@ -38,6 +38,7 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::get('settings/download-template', [ActivityController::class, 'downloadTemplate'])->name('settings.template.download');
     Route::post('/settings/realign', [SettingsController::class, 'updateAllocation'])->name('settings.realign');
     Route::get('/admin/settings/get-realignment-table/{id}', [App\Http\Controllers\SettingsController::class, 'getRealignmentTable']);
+    Route::post('/settings/activities/pool', [SettingsController::class, 'poolFunds'])->name('settings.activity.pool');
 
     //funds transactions
     Route::patch('/funds/{id}/status', [FundController::class, 'updateStatus'])->name('funds.updateStatus');

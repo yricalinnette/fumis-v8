@@ -417,7 +417,7 @@
                 </div>
             </div>
             <div class="modal-footer bg-light justify-content-between">
-                <small class="text-muted italic">* Duplicate rows were skipped to prevent amount inflation.</small>
+                <small class="text-muted italic">* Duplicate rows skipped to prevent amount inflation.</small>
                 <button type="button" class="btn btn-secondary shadow-sm" onclick="location.reload()">Close & Refresh Page</button>
             </div>
         </div>
