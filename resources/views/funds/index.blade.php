@@ -166,6 +166,7 @@
             </thead>
             <tbody>
                 @foreach($funds as $fund)
+                {{-- $fund is now an object representing a unique DTrack No. --}}
                 <tr class="{{ $fund->status == 'Disbursed' ? 'table-light' : '' }}">
                     <td>{{ $fund->dtrack_no }}</td>
                     <td data-order="{{ \Carbon\Carbon::parse($fund->transaction_date)->format('Y-m-d') }}">
@@ -180,31 +181,43 @@
                             <span class="text-muted italic">N/A</span>
                         @endif
                     </td>
-                    <td>{{ $fund->fundSource->name ?? 'N/A' }}</td>
-                    <td>{{ $fund->activity->name ?? 'N/A' }}</td>
                     
-                    <td class="text-right font-weight-bold">
-                        @if($fund->status == 'Disbursed')
-                            {{-- Show Disbursement Amount --}}
-                            <span class="text-success">₱{{ number_format($fund->disbursement_amount, 2) }}</span>
-                            <div class="text-xs text-muted" style="font-size: 0.6rem;">(DISBURSED)</div>
-                        @elseif($fund->status == 'Obligated')
-                            {{-- Show Obligation Amount IF NOT NULL, otherwise fallback to initial amount --}}
-                            @if($fund->obligation_amount > 0)
-                                <span class="text-primary">₱{{ number_format($fund->obligation_amount, 2) }}</span>
+                    {{-- UPDATED: Use merged source names --}}
+                    <td style="font-size: 0.85rem; line-height: 1.2;">
+                        {!! $fund->source_names !!}
+                    </td>
+                    
+                    {{-- UPDATED: Use merged activity names --}}
+                    <td style="font-size: 0.85rem; line-height: 1.2;">
+                        {!! $fund->activity_names !!}
+                    </td>
+                    
+                    <td class="text-right">
+                        {{-- 1. Individual Breakdown (only if more than 1 source) --}}
+                        @if(count($fund->breakdown) > 1)
+                            <div class="mb-1" style="border-bottom: 1px dashed #ddd; padding-bottom: 2px;">
+                                @foreach($fund->breakdown as $item)
+                                    <div class="text-muted" style="font-size: 0.7rem; line-height: 1;">
+                                        {{ $item['source'] }}: 
+                                        <span class="font-italic">₱{{ number_format($item['amount'], 2) }}</span>
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
+
+                        {{-- 2. Grand Total Display --}}
+                        <div class="font-weight-bold" style="font-size: 1rem;">
+                            @if($fund->status == 'Disbursed')
+                                <span class="text-success">₱{{ number_format($fund->total_amount, 2) }}</span>
+                                <div class="text-xs text-muted" style="font-size: 0.6rem;">(DISBURSED)</div>
+                            @elseif($fund->status == 'Obligated')
+                                <span class="text-primary">₱{{ number_format($fund->total_amount, 2) }}</span>
                                 <div class="text-xs text-muted" style="font-size: 0.6rem;">(OBLIGATED)</div>
                             @else
-                                <span class="text-orange">₱{{ number_format($fund->amount, 2) }}</span>
-                                <div class="text-xs text-muted" style="font-size: 0.6rem;">(AWAITING SYNC)</div>
+                                <span>₱{{ number_format($fund->total_amount, 2) }}</span>
+                                <div class="text-xs text-muted" style="font-size: 0.6rem;">(Processed)</div>
                             @endif
-                        @elseif($fund->status == 'For CAF/Obligation')
-                            <span class="badge-warning">₱{{ number_format($fund->amount, 2) }}</span>
-                            <div class="text-xs text-muted" style="font-size: 0.6rem;">(Awaiting ORSN)</div>
-                        @else
-                            {{-- Show original requested amount --}}
-                            <span>₱{{ number_format($fund->amount, 2) }}</span>
-                            <div class="text-xs text-muted" style="font-size: 0.6rem;">(Processed)</div>
-                        @endif
+                        </div>
                     </td>
 
                     <td>
@@ -225,9 +238,6 @@
                             @elseif($fund->status == 'Obligated' && $fund->obligation_date)
                                 <i class="far fa-calendar-check text-primary mr-1"></i> 
                                 Obligated: {{ \Carbon\Carbon::parse($fund->obligation_date)->format('M d, Y') }}
-                            @elseif($fund->status_date)
-                                <i class="far fa-clock text-muted mr-1"></i> 
-                                As of: {{ \Carbon\Carbon::parse($fund->dtrack_update_date)->format('M d, Y') }}
                             @endif
                         </div>
 
@@ -238,68 +248,35 @@
                                 </small>
                             </div>
                         @endif
-
-                        @if($fund->remarks)
-                            <div class="mt-1">
-                                <small class="text-muted"><i class="fas fa-info-circle"></i> {{ $fund->remarks }}</small>
-                            </div>
-                        @endif
                     </td>
 
                     <td class="text-center">
+                        {{-- Status Update Button --}}
                         <button type="button" 
                             class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
                             style="border-left: 3px solid #17a2b8;"
                             data-id="{{ $fund->id }}"
-                            data-particulars="{{ $fund->particulars }}"
                             data-dtrack="{{ $fund->dtrack_no }}"
                             data-status="{{ $fund->status }}"
-                            data-statusdate="{{ $fund->status_date ? \Carbon\Carbon::parse($fund->status_date)->format('Y-m-d') : date('Y-m-d') }}"
-                            data-remarks="{{ $fund->remarks }}"
-                            data-serial="{{ $fund->obligation_serial }}"
-                            data-obamount="{{ $fund->obligation_amount ?? 0 }}"
-                            data-toggle="tooltip" 
-                            {{-- DISABLE IF DISBURSED --}}
-                            {{ $fund->status == 'Disbursed' ? 'disabled' : '' }}
-                            title="{{ $fund->status == 'Disbursed' ? 'Transaction is finalized' : 'Update Status' }}">
-                            <i class="fas fa-history {{ $fund->status == 'Disbursed' ? 'text-muted' : 'text-info' }} mr-1"></i> 
+                            {{ $fund->status == 'Disbursed' ? 'disabled' : '' }}>
+                            <i class="fas fa-history {{ $fund->status == 'Disbursed' ? 'text-muted' : 'text-info' }}"></i> 
                         </button>
 
+                        {{-- Edit Button --}}
                         <button type="button" 
                             class="btn btn-sm btn-default btn-flat shadow-sm btn-edit-transaction"
                             style="border-left: 3px solid #ffc107;"
                             data-id="{{ $fund->id }}"
-                            data-status="{{ $fund->status }}"
-                            data-toggle="tooltip" 
-                            {{-- DISABLE IF NOT ROUTED (This naturally includes Disbursed) --}}
-                            {{ $fund->status !== 'Routed' ? 'disabled' : '' }}
-                            title="{{ $fund->status !== 'Routed' ? 'Editing only allowed for Routed status' : 'Edit Transaction Details' }}">
-                            <i class="fas fa-edit {{ $fund->status !== 'Routed' ? 'text-muted' : 'text-warning' }} mr-1"></i> 
+                            {{ $fund->status !== 'Routed' ? 'disabled' : '' }}>
+                            <i class="fas fa-edit {{ $fund->status !== 'Routed' ? 'text-muted' : 'text-warning' }}"></i> 
                         </button>
 
-                        <button type="button" 
-                                class="btn btn-sm btn-outline-info btn-sync-sheet" 
-                                data-id="{{ $fund->id }}"
-                                data-serial="{{ $fund->obligation_serial }}" {{-- ADD THIS LINE --}}
-                                {{-- DISABLE SYNC IF DISBURSED OR NO SERIAL --}}
-                                {{ $fund->status == 'Disbursed' || !$fund->obligation_serial ? 'disabled' : '' }}
-                                data-toggle="tooltip"
-                                title="{{ $fund->status == 'Disbursed' ? 'Sync locked' : 'Sync with Google Sheet' }}">
-                            <i class="fas fa-sync-alt {{ $fund->status == 'Disbursed' ? 'text-muted' : '' }}"></i>
-                        </button>
-
-                        @php
-                            // Ensure this variable matches the one in your @foreach ($fund)
-                            $isDeleteDisabled = ($fund->status !== 'Routed');
-                        @endphp
-
+                        {{-- Delete Button --}}
+                        @php $isDeleteDisabled = ($fund->status !== 'Routed'); @endphp
                         <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-delete-transaction"
                             style="border-left: 3px solid {{ $isDeleteDisabled ? '#6c757d' : '#dc3545' }};" 
                             data-id="{{ $fund->id }}" 
-                            data-dtrack="{{ $fund->dtrack_no }}"
-                            {{ $isDeleteDisabled ? 'disabled' : '' }}
-                            data-toggle="tooltip" 
-                            title="{{ $isDeleteDisabled ? 'Only Routed transactions can be deleted' : 'Delete Transaction' }}">
+                            {{ $isDeleteDisabled ? 'disabled' : '' }}>
                             <i class="fas fa-trash {{ $isDeleteDisabled ? 'text-muted' : 'text-danger' }}"></i>
                         </button>
                     </td>
@@ -1606,71 +1583,138 @@
                 }
             });
         });
+    });
 
-        $('#modal_activity_select').on('change', function() {
-            // Convert to lowercase once for comparison
-            const activityText = $(this).find("option:selected").text().toLowerCase();
-            
-            // Check against lowercase keywords
-            const isRequired = activityText.includes('salary') || 
-                            activityText.includes('provision of tev') || 
-                            activityText.includes('provision of plane tickets');
+    $(document).ready(function() {
+        function updateCreditorStatus() {
+            let isRequiredByAnyRow = false;
+
+            // Loop through every activity select in the table
+            $('.activity-select').each(function() {
+                const $selectedOption = $(this).find("option:selected");
+                
+                // Only check if an option is actually selected
+                if ($selectedOption.val()) {
+                    const activityText = $selectedOption.text().toLowerCase();
+                    
+                    // Check against keywords
+                    if (activityText.includes('salary') || 
+                        activityText.includes('provision of tev') || 
+                        activityText.includes('provision of plane tickets')) {
+                        isRequiredByAnyRow = true;
+                        return false; // Break the .each() loop early
+                    }
+                }
+            });
 
             const $creditorSelect = $('#creditor_select');
             const $label = $creditorSelect.closest('.form-group').find('label');
 
-            if (isRequired) {
-                // Enable and make required
+            if (isRequiredByAnyRow) {
+                // Enable and make required if at least one row matches keywords
                 $creditorSelect.prop('disabled', false).attr('required', true);
                 $label.addClass('required');
                 $creditorSelect.closest('.form-group').css('opacity', '1');
             } else {
-                // Disable, remove required, and clear any existing selection
+                // Disable and clear if NO rows match the keywords
                 $creditorSelect.val(null).prop('disabled', true).attr('required', false);
                 $label.removeClass('required');
                 $creditorSelect.closest('.form-group').css('opacity', '0.6');
             }
 
-            // Essential for Select2 to update its visual "disabled" look
+            // Essential for Select2 to update its visual state
             $creditorSelect.trigger('change');
+        }
+
+        // 1. Listen for changes on any activity dropdown (existing or future rows)
+        $(document).on('change', '.activity-select', function() {
+            updateCreditorStatus();
+        });
+
+        // 2. Also trigger check when a row is removed 
+        // (If the row requiring a creditor is deleted, we should disable the field)
+        $(document).on('click', '.remove-row', function() {
+            // Small delay to allow the row to be removed from DOM before checking
+            setTimeout(updateCreditorStatus, 50);
         });
     });
 
     $(document).ready(function() {
-        function startDTrackAutoSync() {
-            console.log('Starting background DTrack sync...');
-            
-            $.ajax({
-                url: '/funds/sync-all-dtrack',
-                method: 'GET',
-                success: function(response) {
-                    if (response.success && response.data.length > 0) {
-                        response.data.forEach(fund => {
-                            // 1. Update the table row visuals
-                            let row = $(`.fund-row[data-id="${fund.id}"]`);
-                            if (row.length) {
-                                row.find('.status-cell').text(fund.status);
-                                row.find('.remarks-cell').text(fund.remarks);
-                                
-                                // 2. Update data-attributes for the View Modal
-                                row.attr('data-remarks', fund.remarks);
-                                row.attr('data-doc-update', fund.updated_at);
-                            }
-                        });
-                        console.log('DTrack sync completed successfully.');
-                    }
-                },
-                error: function() {
-                    console.error('DTrack background sync failed.');
-                }
+        let rowCount = 1;
+
+        // 1. Add New Row
+        $('#add-allocation-row').click(function() {
+            let newRow = `
+                <tr class="allocation-row">
+                    <td>
+                        <select name="allocations[${rowCount}][source_id]" class="form-control source-select" required>
+                            <option value="">-- Select --</option>
+                            @foreach($sources as $source)
+                                <option value="{{ $source->id }}">{{ $source->name }}</option>
+                            @endforeach
+                        </select>
+                    </td>
+                    <td>
+                        <select name="allocations[${rowCount}][activity_id]" class="form-control activity-select" required disabled>
+                            <option value="">-- Select Source First --</option>
+                        </select>
+                    </td>
+                    <td>
+                        <div class="input-group">
+                            <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
+                            <input type="number" name="allocations[${rowCount}][amount]" class="form-control amount-field" step="0.01" placeholder="0.00" required>
+                        </div>
+                    </td>
+                    <td class="text-center">
+                        <button type="button" class="btn btn-danger btn-sm remove-row"><i class="fas fa-trash"></i></button>
+                    </td>
+                </tr>`;
+            $('#allocation-body').append(newRow);
+            rowCount++;
+            updateGrandTotal();
+        });
+
+        // 2. Remove Row
+        $(document).on('click', '.remove-row', function() {
+            $(this).closest('tr').remove();
+            updateGrandTotal();
+        });
+
+        // 3. Dependent Dropdown (Source -> Activity)
+        $(document).on('change', '.source-select', function() {
+            const sourceId = $(this).val();
+            const row = $(this).closest('tr');
+            const activitySelect = row.find('.activity-select');
+
+            if (!sourceId) {
+                activitySelect.html('<option value="">-- Select Source First --</option>').prop('disabled', true);
+                return;
+            }
+
+            // Fetch Activities via AJAX
+            activitySelect.prop('disabled', false).html('<option value="">Loading...</option>');
+            $.get(`/api/sources/${sourceId}/activities`, function(data) {
+                let options = '<option value="">-- Select Activity --</option>';
+                data.forEach(act => {
+                    options += `<option value="${act.id}">${act.name}</option>`;
+                });
+                activitySelect.html(options);
             });
+        });
+
+        // 4. Calculate Grand Total
+        $(document).on('input', '.amount-field', function() {
+            updateGrandTotal();
+        });
+
+        function updateGrandTotal() {
+            let total = 0;
+            $('.amount-field').each(function() {
+                let val = parseFloat($(this).val()) || 0;
+                total += val;
+            });
+            $('#grand-total-display').text('₱ ' + total.toLocaleString(undefined, {minimumFractionDigits: 2}));
         }
-
-        // Trigger on page load
-        startDTrackAutoSync();
-
-        // Repeat every 5 minutes (300,000 milliseconds)
-        setInterval(startDTrackAutoSync, 300000);
     });
 </script>
 @endsection

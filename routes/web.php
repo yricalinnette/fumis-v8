@@ -60,6 +60,14 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::post('/funds/store', [FundController::class, 'store'])->name('funds.store');
     Route::get('/funds', [FundController::class, 'index'])->name('funds.index'); // Table View
     Route::get('/funds/awaiting-obligation', [FundController::class, 'getAwaitingObligation'])->name('funds.awaiting');
+    // Route for dynamic activity loading
+    Route::get('/api/sources/{sourceId}/activities', function ($sourceId) {
+        $activities = \App\Models\Activity::where('source_of_fund_id', $sourceId)
+            ->select('id', 'name', 'pooled_amount') // only fetch what we need
+            ->get();
+            
+        return response()->json($activities);
+    });
 
     //dashboard
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');

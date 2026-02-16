@@ -47,36 +47,70 @@ class FundController extends Controller
 
     public function index()
     {
-        // 1. Use 'with' to eager load the relationships
-        // This allows $fund->fundSource->name to work in your table
+        // 1. Fetch base data with eager loading
         $query = auth()->user()->is_admin 
-            ? \App\Models\Fund::with(['fundSource', 'creditors']) 
-            : \App\Models\Fund::with(['fundSource', 'creditors'])->where('user_id', auth()->id());
+            ? \App\Models\Fund::with(['fundSource', 'activity', 'creditors']) 
+            : \App\Models\Fund::with(['fundSource', 'activity', 'creditors'])->where('user_id', auth()->id());
 
-        $funds = Fund::with(['creditors', 'fundSource', 'activity'])
-                ->latest() // This is shorthand for orderBy('created_at', 'desc')
-                ->get();
+        // 2. Group by dtrack_no to consolidate multi-fund entries
+        $funds = $query->latest()->get();
 
+        $funds = $funds->groupBy('dtrack_no')->map(function ($group) {
+            $first = $group->first();
+            return (object) [
+                'id'                => $first->id,
+                'dtrack_no'         => $first->dtrack_no,
+                'transaction_date'  => $first->transaction_date,
+                'particulars'       => $first->particulars,
+                'status'            => $first->status,
+                'creditors'         => $first->creditors,
+                'remarks'           => $first->remarks,
+                'obligation_serial' => $first->obligation_serial,
+                // ADD THESE FIELDS TO PREVENT THE ERROR:
+                'obligation_date'   => $first->obligation_date, 
+                'disbursement_date' => $first->disbursement_date,
+                'status_date'       => $first->status_date,
+                'dtrack_update_date'=> $first->dtrack_update_date,
+                
+                // Aggregates
+                'total_amount'   => $group->sum('amount'),
+                'source_names'   => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
+                'activity_names' => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
+                
+                // NEW: Create a breakdown list
+                'breakdown' => $group->map(function($item) {
+                    return [
+                        'source' => $item->fundSource->name ?? 'N/A',
+                        'amount' => $item->amount
+                    ];
+                }),
+            ];
+        });
+
+        // 3. Keep existing modal dependencies
         $currentYear = date('Y');
-        
-        $sources = SourceOfFund::where('fiscal_year', $currentYear)
-                ->orderBy('name')->get();
-
+        $sources = SourceOfFund::where('fiscal_year', $currentYear)->orderBy('name')->get();
         $employees = Employee::orderBy('last_name')->get();
         $activities = Activity::all(); 
 
-        // Count for the notification badge (remains the same)
+        // 4. Notification Badges
         $awaitingSyncCount = Fund::where('status', 'Obligated')
-                                ->whereNull('disbursement_date')
-                                ->whereNotNull('obligation_serial')
-                                ->count();
+                                    ->whereNull('disbursement_date')
+                                    ->whereNotNull('obligation_serial')
+                                    ->count();
 
-        // Count for the notification badge (remains the same)
         $awaitingOBRN = Fund::where('status', 'For CAF/Obligation')
-                                ->whereNull('obligation_serial')
-                                ->count();
+                                    ->whereNull('obligation_serial')
+                                    ->count();
         
-        return view('funds.index', compact('funds', 'sources', 'employees', 'activities', 'awaitingSyncCount', 'awaitingOBRN'));
+        return view('funds.index', compact(
+            'funds', 
+            'sources', 
+            'employees', 
+            'activities', 
+            'awaitingSyncCount', 
+            'awaitingOBRN'
+        ));
     }
 
     public function store(Request $request)
@@ -89,60 +123,61 @@ class FundController extends Controller
             $suffix = str_replace(date('Y'), '', $cleanNumber);
             $request->merge(['dtrack_no' => $yearPrefix . $suffix]);
         }
-        
+
+        // VALIDATION
         $validated = $request->validate([
-            'dtrack_no' => ['required', 'unique:funds,dtrack_no', 'regex:/^\d{4}-\d{6}$/'],
-            'transaction_date' => 'required|date',
-            'source_of_fund_id' => 'required|exists:source_of_funds,id',
-            'activity_id' => 'required|exists:activities,id',
-            'amount' => 'required|numeric|min:0',
-            'particulars' => 'required|string',
-            'creditor_ids' => 'nullable|array',
-            'creditor_ids.*' => 'exists:employees,id',
+            // Removed 'unique' because we now allow multiple rows for one DTrack
+            'dtrack_no'         => ['required', 'regex:/^\d{4}-\d{6}$/'],
+            'transaction_date'  => 'required|date',
+            'particulars'       => 'required|string',
+            'creditor_ids'      => 'nullable|array',
+            'allocations'               => 'required|array|min:1',
+            'allocations.*.source_id'   => 'required|exists:source_of_funds,id',
+            'allocations.*.activity_id' => 'required|exists:activities,id',
+            'allocations.*.amount'      => 'required|numeric|min:0.01',
         ]);
 
-        // Fetch related records
-        $activity = Activity::findOrFail($request->activity_id);
-
-        // --- START BUDGET CHECK ---
-        // FIXED: Summing based on transaction_type_id (Foreign Key)
-        $totalSpent = Fund::where('transaction_type_id', $activity->id)->sum('amount');
-        $remaining = $activity->budget - $totalSpent;
-
-        if ($request->amount > $remaining) {
-            return response()->json([
-                'message' => 'The amount exceeds the remaining budget of ₱' . number_format($remaining, 2)
-            ], 422);
+        // PRE-CHECK: Ensure this DTrack isn't already in the DB from a PREVIOUS day/transaction
+        // This prevents a user from accidentally using a DTrack from last week.
+        $exists = \App\Models\Fund::where('dtrack_no', $request->dtrack_no)->exists();
+        if ($exists) {
+            return response()->json(['message' => 'This DTrack number has already been used in a previous transaction.'], 422);
         }
-        // --- END BUDGET CHECK ---
 
-        // Create the record
-        $fund = new Fund();
-        $fund->dtrack_no = $validated['dtrack_no'];
-        $fund->transaction_date = $validated['transaction_date'];
-        $fund->amount = $validated['amount'];
-        $fund->particulars = $validated['particulars'];
-        $fund->user_id = auth()->id();
-        
-        // FIXED: Storing the ID instead of the descriptive name
-        $fund->source_of_fund_id = $validated['source_of_fund_id'];
-        $fund->transaction_type_id = $activity->id; 
-        
-        // Set default status
-        $fund->status = 'Routed';
-        $fund->save();
+        try {
+            return \DB::transaction(function () use ($request, $validated) {
+                foreach ($request->allocations as $index => $allocation) {
+                    $activity = \App\Models\Activity::findOrFail($allocation['activity_id']);
 
-        // Sync the relationships
-        $fund->creditors()->sync($request->creditor_ids ?? []);
-        
-        // Load relationships for response (using the 'activity' relationship we added to the model)
-        $fund->load(['fundSource', 'activity', 'creditors']);
+                    // Budget Check
+                    $totalSpent = \App\Models\Fund::where('transaction_type_id', $activity->id)->sum('amount');
+                    $remaining = (float)$activity->budget - (float)$activity->pooled_amount - $totalSpent;
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Transaction ' . $fund->dtrack_no . ' logged successfully!',
-            'data'    => $fund 
-        ]);
+                    if ($allocation['amount'] > $remaining) {
+                        throw new \Exception("Row " . ($index + 1) . " exceeds budget for {$activity->name}. Available: ₱" . number_format($remaining, 2));
+                    }
+
+                    // Create individual fund row
+                    $fund = new \App\Models\Fund();
+                    $fund->dtrack_no          = $validated['dtrack_no'];
+                    $fund->transaction_date   = $validated['transaction_date'];
+                    $fund->particulars        = $validated['particulars'];
+                    $fund->amount             = $allocation['amount'];
+                    $fund->source_of_fund_id  = $allocation['source_id'];
+                    $fund->transaction_type_id = $activity->id; 
+                    $fund->user_id            = auth()->id();
+                    $fund->status             = 'Routed';
+                    $fund->save();
+
+                    // Sync creditors for this specific fund row
+                    $fund->creditors()->sync($request->creditor_ids ?? []);
+                }
+
+                return response()->json(['success' => true, 'message' => 'Multi-fund transaction saved!']);
+            });
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
     }
 
     public function create()
@@ -565,24 +600,33 @@ class FundController extends Controller
     public function destroy($id)
     {
         try {
-            $fund = Fund::findOrFail($id);
+            // 1. Find the target record first to get its DTrack Number
+            $targetFund = \App\Models\Fund::findOrFail($id);
+            $dtrackNo = $targetFund->dtrack_no;
 
-            // Security check: ensure it's still "Routed" before deleting
-            // Transactions beyond "Routed" usually have audit trails or serial numbers
-            if ($fund->status !== 'Routed') {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'This transaction can no longer be deleted because it is already ' . $fund->status
-                ], 403);
+            // 2. Security check: Ensure EVERY row in this group is still "Routed"
+            // We check the whole group because we don't want to delete a transaction
+            // if one part of it has already been Obligated or Disbursed.
+            $group = \App\Models\Fund::where('dtrack_no', $dtrackNo)->get();
+            
+            foreach ($group as $item) {
+                if ($item->status !== 'Routed') {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Transaction $dtrackNo cannot be deleted because one or more allocations are already {$item->status}."
+                    ], 403);
+                }
             }
 
-            // Use forceDelete() to permanently remove the record from the database.
-            // This frees up the DTRACK NO. so it can be used again immediately.
-            $fund->forceDelete(); 
+            // 3. Perform a Bulk Delete
+            // This ensures all fund sources linked to this DTrack are removed at once.
+            \DB::transaction(function () use ($dtrackNo) {
+                \App\Models\Fund::where('dtrack_no', $dtrackNo)->forceDelete();
+            });
 
             return response()->json([
                 'success' => true,
-                'message' => 'Transaction permanently deleted. DTRACK NO. is now available.'
+                'message' => "Transaction $dtrackNo and all its associated fund sources have been permanently deleted."
             ]);
 
         } catch (\Exception $e) {

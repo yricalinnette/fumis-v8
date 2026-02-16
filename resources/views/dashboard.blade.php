@@ -22,8 +22,8 @@
                                 $currentYear = date('Y'); 
                             @endphp
                             
-                            {{-- Range from current year back to 5 years ago --}}
-                            @foreach(range($currentYear, $currentYear - 5) as $year)
+                            {{-- Range from current year back to 3 years ago --}}
+                            @foreach(range($currentYear, $currentYear - 3) as $year)
                                 <option value="{{ $year }}" {{ $selectedYear == $year ? 'selected' : '' }}>
                                     FY {{ $year }}
                                 </option>
