@@ -127,7 +127,7 @@
         {{-- <button type="button" id="btn-sync-all" class="btn btn-primary   shadow-sm">
             <i class="fas fa-sync-alt mr-1"></i> Bulk Sync (DTRACK)
         </button> --}}
-        <button type="button" class="btn btn-success" id="btn-add-new">
+        <button type="button" class="btn btn-success btn-add-new">
             <i class="fas fa-plus"></i> Add New Transaction
         </button>
     </div>
@@ -166,9 +166,16 @@
             </thead>
             <tbody>
                 @foreach($funds as $fund)
-                {{-- $fund is now an object representing a unique DTrack No. --}}
-                <tr class="{{ $fund->status == 'Disbursed' ? 'table-light' : '' }}">
-                    <td>{{ $fund->dtrack_no }}</td>
+                @php $firstItem = $fund->breakdown->first(); @endphp
+                
+                <tr class="{{ $firstItem->status == 'Disbursed' ? 'table-light' : '' }}">
+                    <td>
+                        <a href="#" class="view-dtrack font-weight-bold" 
+                        data-particulars="{{ e($fund->particulars ?? 'No particulars') }}" 
+                        data-remarks="{{ e($fund->all_remarks ?? 'No remarks') }}">
+                            {{ $fund->dtrack_no }}
+                        </a>
+                    </td>
                     <td data-order="{{ \Carbon\Carbon::parse($fund->transaction_date)->format('Y-m-d') }}">
                         {{ \Carbon\Carbon::parse($fund->transaction_date)->format('M d, Y') }}
                     </td>
@@ -182,101 +189,194 @@
                         @endif
                     </td>
                     
-                    {{-- UPDATED: Use merged source names --}}
                     <td style="font-size: 0.85rem; line-height: 1.2;">
                         {!! $fund->source_names !!}
                     </td>
                     
-                    {{-- UPDATED: Use merged activity names --}}
                     <td style="font-size: 0.85rem; line-height: 1.2;">
                         {!! $fund->activity_names !!}
                     </td>
                     
                     <td class="text-right">
-                        {{-- 1. Individual Breakdown (only if more than 1 source) --}}
                         @if(count($fund->breakdown) > 1)
                             <div class="mb-1" style="border-bottom: 1px dashed #ddd; padding-bottom: 2px;">
                                 @foreach($fund->breakdown as $item)
                                     <div class="text-muted" style="font-size: 0.7rem; line-height: 1;">
-                                        {{ $item['source'] }}: 
-                                        <span class="font-italic">₱{{ number_format($item['amount'], 2) }}</span>
+                                        {{ $item->source_name }}: 
+                                        <span class="font-italic">
+                                            @php
+                                                // Logic: Use obligation_amount if it's set and the status warrants it, 
+                                                // otherwise fallback to the original amount.
+                                                $displayAmount = ($item->status !== 'Processed' && $item->obligation_amount > 0) 
+                                                                ? $item->obligation_amount 
+                                                                : $item->amount;
+                                            @endphp
+                                            ₱{{ number_format($displayAmount, 2) }}
+                                        </span>
+
+                                        {{-- Warning icon if it's Obligated but the amount hasn't synced yet --}}
+                                        @if($item->status == 'Obligated' && (!$item->obligation_amount || $item->obligation_amount <= 0))
+                                            <i class="fas fa-exclamation-circle text-danger" title="Pending Sync"></i>
+                                        @endif
                                     </div>
                                 @endforeach
                             </div>
                         @endif
 
-                        {{-- 2. Grand Total Display --}}
                         <div class="font-weight-bold" style="font-size: 1rem;">
-                            @if($fund->status == 'Disbursed')
+                            {{-- Display Amount based on Status Color --}}
+                            @if($fund->group_status == 'Disbursed' || $fund->group_status == 'Completed')
                                 <span class="text-success">₱{{ number_format($fund->total_amount, 2) }}</span>
                                 <div class="text-xs text-muted" style="font-size: 0.6rem;">(DISBURSED)</div>
-                            @elseif($fund->status == 'Obligated')
+                            @elseif($fund->group_status == 'Obligated')
                                 <span class="text-primary">₱{{ number_format($fund->total_amount, 2) }}</span>
                                 <div class="text-xs text-muted" style="font-size: 0.6rem;">(OBLIGATED)</div>
                             @else
                                 <span>₱{{ number_format($fund->total_amount, 2) }}</span>
                                 <div class="text-xs text-muted" style="font-size: 0.6rem;">(Processed)</div>
                             @endif
+
+                            {{-- ALWAYS show Awaiting Sync if any part of the group needs it --}}
+                            @if(!$fund->is_fully_synced)
+                                <div class="text-xs text-danger font-italic mt-1" style="font-size: 0.6rem;">
+                                    <i class="fas fa-sync fa-spin"></i> Awaiting sync
+                                </div>
+                            @endif
                         </div>
                     </td>
 
                     <td>
-                        <span class="badge {{ 
-                            $fund->status == 'Disbursed' || $fund->status == 'Completed' ? 'badge-success' : 
-                            ($fund->status == 'Cancelled' ? 'badge-danger' : 
-                            ($fund->status == 'Routed' ? 'badge-primary' : 
-                            ($fund->status == 'For CAF/Obligation' ? 'badge-warning' : 
-                            ($fund->status == 'Obligated' ? 'bg-orange' : 'badge-info'))))
-                        }}">
-                            {{ $fund->status }}
-                        </span>
+                        @php
+                            // 1. Determine if we use Merged or Detailed view for Status
+                            $hasSignificantStatus = $fund->breakdown->contains(function($item) {
+                                return in_array($item->status, ['Obligated', 'Disbursed', 'Completed', 'Cancelled']);
+                            });
+                            $firstStatus = $fund->breakdown->first()->status;
+                            $allSameStatus = $fund->breakdown->every('status', $firstStatus);
 
-                        <div class="small font-weight-bold mt-1">
-                            @if($fund->status == 'Disbursed' && $fund->disbursement_date)
-                                <i class="far fa-calendar-check text-success mr-1"></i> 
-                                Disbursed: {{ \Carbon\Carbon::parse($fund->disbursement_date)->format('M d, Y') }}
-                            @elseif($fund->status == 'Obligated' && $fund->obligation_date)
-                                <i class="far fa-calendar-check text-primary mr-1"></i> 
-                                Obligated: {{ \Carbon\Carbon::parse($fund->obligation_date)->format('M d, Y') }}
-                            @endif
-                        </div>
+                            // 2. Remark Deduplication Logic
+                            // Get all unique, non-empty remarks from the breakdown
+                            $uniqueRemarks = $fund->breakdown->pluck('remarks')->filter()->unique();
+                            $allRemarksSame = $uniqueRemarks->count() <= 1;
+                        @endphp
 
-                        @if($fund->obligation_serial)
-                            <div class="mt-1">
-                                <small class="text-primary font-weight-bold" style="letter-spacing: 0.5px;">
-                                    <i class="fas fa-barcode mr-1"></i> {{ $fund->obligation_serial }}
-                                </small>
+                        @if(!$hasSignificantStatus && $allSameStatus)
+                            {{-- MERGED VIEW (Early Stage) --}}
+                            <div class="text-left">
+                                <span class="badge {{ 
+                                    $firstStatus == 'Routed' ? 'badge-primary' : 
+                                    ($firstStatus == 'For CAF/Obligation' ? 'badge-warning' : 'badge-info') 
+                                }}">
+                                    {{ $firstStatus }}
+                                </span>
+                                
+                                @if($uniqueRemarks->isNotEmpty())
+                                    <div class="mt-1 text-muted small border-left pl-2" style="font-style: italic;">
+                                        <i class="fas fa-comment-dots mr-1" style="font-size: 0.7rem;"></i> 
+                                        {{ $uniqueRemarks->implode('; ') }}
+                                    </div>
+                                @endif
                             </div>
+                        @else
+                            {{-- DETAILED VIEW --}}
+                            @foreach($fund->breakdown as $item)
+                                <div class="allocation-row {{ !$loop->last ? 'mb-3 border-bottom pb-2' : '' }}">
+                                    <div class="small font-weight-bold text-dark mb-1">
+                                        <i class="fas fa-wallet text-muted mr-1"></i> {{ $item->source_name }}
+                                    </div>
+
+                                    <span class="badge {{ 
+                                        in_array($item->status, ['Disbursed', 'Completed']) ? 'badge-success' : 
+                                        ($item->status == 'Cancelled' ? 'badge-danger' : 
+                                        ($item->status == 'Routed' ? 'badge-primary' : 
+                                        ($item->status == 'For CAF/Obligation' ? 'badge-warning' : 
+                                        ($item->status == 'Obligated' ? 'bg-orange text-white' : 'badge-info'))))
+                                    }}">
+                                        {{ $item->status }}
+                                    </span>
+
+                                    <div class="small mt-1">
+                                        @if($item->status == 'Obligated')
+                                            @if(empty($item->obligation_amount) || $item->obligation_amount == 0)
+                                                <div class="text-danger font-italic">
+                                                    <i class="fas fa-sync fa-spin mr-1" style="font-size: 0.7rem;"></i> Awaiting sync to RAODS
+                                                </div>
+                                            @else
+                                                @if($item->obligation_date)
+                                                    <div class="text-primary">
+                                                        <i class="far fa-calendar-check mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($item->obligation_date)->format('M d, Y') }}
+                                                    </div>
+                                                @endif
+                                            @endif
+                                        @elseif(in_array($item->status, ['Disbursed', 'Completed']))
+                                            @if($item->disbursement_date)
+                                                <div class="text-success font-weight-bold">
+                                                    <i class="fas fa-check-circle mr-1"></i> Disb: {{ \Carbon\Carbon::parse($item->disbursement_date)->format('M d, Y') }}
+                                                </div>
+                                            @endif
+                                        @endif
+
+                                        @if($item->obligation_serial)
+                                            <div class="text-primary font-weight-bold">
+                                                <i class="fas fa-barcode mr-1"></i> {{ $item->obligation_serial }}
+                                            </div>
+                                        @endif
+                                    </div>
+
+                                    {{-- Only show individual remarks if they are DIFFERENT from each other --}}
+                                    @if(!$allRemarksSame && $item->remarks)
+                                        <div class="mt-1 text-muted small border-left pl-2" style="font-style: italic; background-color: #f9f9f9;">
+                                            <i class="fas fa-comment-dots mr-1" style="font-size: 0.7rem;"></i> {{ $item->remarks }}
+                                        </div>
+                                    @endif
+                                </div>
+                            @endforeach
+
+                            {{-- Show Merged Remarks at the bottom if all sources share the same remark --}}
+                            @if($allRemarksSame && $uniqueRemarks->isNotEmpty())
+                                <div class="mt-2 text-muted small border-left pl-2" style="font-style: italic; background-color: #f8f9fa; border-left: 3px solid #dee2e6 !important;">
+                                    <i class="fas fa-comments mr-1" style="font-size: 0.7rem;"></i> 
+                                    {{ $uniqueRemarks->first() }}
+                                </div>
+                            @endif
                         @endif
                     </td>
 
                     <td class="text-center">
-                        {{-- Status Update Button --}}
-                        <button type="button" 
-                            class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
+                        @php 
+                            $hasAnySerial = $fund->breakdown->contains(fn($i) => !empty($i->obligation_serial));
+                            $isDeleteDisabled = ($firstItem->status !== 'Routed');
+                            $isDisbursed = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)
+                                ->where('status', 'Disbursed')
+                                ->exists();
+                        @endphp
+
+                        <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
                             style="border-left: 3px solid #17a2b8;"
-                            data-id="{{ $fund->id }}"
-                            data-dtrack="{{ $fund->dtrack_no }}"
-                            data-status="{{ $fund->status }}"
-                            {{ $fund->status == 'Disbursed' ? 'disabled' : '' }}>
-                            <i class="fas fa-history {{ $fund->status == 'Disbursed' ? 'text-muted' : 'text-info' }}"></i> 
+                            data-id="{{ $fund->id }}" data-dtrack="{{ $fund->dtrack_no }}"
+                            {{ $firstItem->status == 'Disbursed' ? 'disabled' : '' }}>
+                            <i class="fas fa-history {{ $firstItem->status == 'Disbursed' ? 'text-muted' : 'text-info' }}"></i> 
                         </button>
 
-                        {{-- Edit Button --}}
+                        <button type="button" class="btn btn-sm btn-default btn-edit-transaction"
+                            data-id="{{ $fund->id }}"
+                            {{ $firstItem->status !== 'Routed' ? 'disabled' : '' }}>
+                            <i class="fas fa-edit {{ $firstItem->status !== 'Routed' ? 'text-muted' : 'text-warning' }}"></i> 
+                        </button>
+
                         <button type="button" 
-                            class="btn btn-sm btn-default btn-flat shadow-sm btn-edit-transaction"
-                            style="border-left: 3px solid #ffc107;"
-                            data-id="{{ $fund->id }}"
-                            {{ $fund->status !== 'Routed' ? 'disabled' : '' }}>
-                            <i class="fas fa-edit {{ $fund->status !== 'Routed' ? 'text-muted' : 'text-warning' }}"></i> 
+                                class="btn btn-sm {{ $isDisbursed ? 'btn-outline-secondary' : 'btn-outline-info' }} btn-sync-sheet" 
+                                data-id="{{ $fund->id }}"
+                                data-dtrack="{{ $fund->dtrack_no }}"
+                                {{ ($isDisbursed || (isset($hasAnySerial) && !$hasAnySerial)) ? 'disabled' : '' }}
+                                data-toggle="tooltip" 
+                                title="{{ $isDisbursed ? 'Transaction is already Disbursed' : 'Sync with Google Sheet' }}">
+                            <i class="fas {{ $isDisbursed ? 'fa-check-double' : 'fa-sync-alt' }}"></i>
                         </button>
 
-                        {{-- Delete Button --}}
-                        @php $isDeleteDisabled = ($fund->status !== 'Routed'); @endphp
                         <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-delete-transaction"
                             style="border-left: 3px solid {{ $isDeleteDisabled ? '#6c757d' : '#dc3545' }};" 
-                            data-id="{{ $fund->id }}" 
-                            {{ $isDeleteDisabled ? 'disabled' : '' }}>
+                            data-id="{{ $fund->id }}" {{ $isDeleteDisabled ? 'disabled' : '' }}>
                             <i class="fas fa-trash {{ $isDeleteDisabled ? 'text-muted' : 'text-danger' }}"></i>
                         </button>
                     </td>
@@ -290,38 +390,57 @@
 @include('funds.modal_form')
 
 <div class="modal fade" id="statusModal" tabindex="-1" role="dialog">
-    <div class="modal-dialog" role="document">
-        <div class="modal-content">
+    <div class="modal-dialog modal-lg" role="document"> <div class="modal-content">
             <div class="modal-header bg-info">
-                <h5 class="modal-title"><i class="fas fa-sync-alt mr-2"></i>Update Status: <span id="display_dtrack"></span></h5>
+                <h5 class="modal-title">Update Status: <span id="display_dtrack"></span></h5>
                 <button type="button" class="close text-white" data-dismiss="modal"><span>&times;</span></button>
             </div>
             <form id="status-update-form">
                 @csrf
-                @method('PATCH') <input type="hidden" name="fund_id" id="modal_fund_id">
+                @method('PATCH')
+                <input type="hidden" name="fund_id" id="modal_fund_id">
                
                 <div class="modal-body">
-                    <div class="form-group">
-                        <label class="required"><i class="fas fa-calendar-alt mr-1"></i> Status Date</label>
-                        <input type="date" name="status_date" id="modal_status_date" class="form-control" value="{{ date('Y-m-d') }}" required>
-                        <small class="text-muted">Set this to the actual date the status changed.</small>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="required"><i class="fas fa-calendar-alt mr-1"></i> Status Date</label>
+                                <input type="date" name="status_date" id="modal_status_date" class="form-control" value="{{ date('Y-m-d') }}" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="required">Transaction Status</label>
+                                <select name="status" id="modal_status_select" class="form-control" required>
+                                    <option value="For Signature">For Signature</option>
+                                    <option value="Obligated">Obligated</option>
+                                    <option value="Cancelled">Cancelled</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label class="required">Transaction Status</label>
-                        <select name="status" id="modal_status_select" class="form-control" required>
-                            <option value="For Signature">For Signature</option>
-                            <option value="Obligated">Obligated</option>
-                            <option value="Cancelled">Cancelled</option>
-                        </select>
+
+                    <div id="serial_no_section" style="display: none;">
+                        <hr>
+                        <label class="text-primary font-weight-bold"><i class="fas fa-barcode mr-1"></i> Obligation Reference Serial Numbers</label>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-bordered">
+                                <thead class="bg-light">
+                                    <tr>
+                                        <th>Source of Fund</th>
+                                        <th>Amount</th>
+                                        <th style="width: 40%;">Serial No. (from Google Sheet)</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="serial_inputs_container">
+                                    </tbody>
+                            </table>
+                        </div>
                     </div>
-                    <div class="form-group" id="serial_no_container" style="display: none;">
-                        <label class="text-primary required"><i class="fas fa-barcode mr-1"></i> Obligation Reference Serial No.</label>
-                        <input type="text" name="obligation_serial" id="modal_serial_input" class="form-control border-primary" placeholder="Enter Serial No. from Google Sheet">
-                        <small class="text-muted">Required when marking as Obligated.</small>
-                    </div>
-                    <div class="form-group">
+
+                    <div class="form-group mt-3">
                         <label>Remarks / Notes</label>
-                        <textarea name="remarks" id="modal_remarks_input" class="form-control" rows="3" placeholder="Enter status updates or reasons here..."></textarea>
+                        <textarea name="remarks" id="modal_remarks_input" class="form-control" rows="2" placeholder="Enter status updates or reasons here..."></textarea>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -402,6 +521,40 @@
 </div>
 
 
+<div class="modal fade" id="syncResultModal" tabindex="-1" role="dialog" aria-labelledby="syncResultModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-body p-4 text-center">
+                <i class="fas fa-check-circle text-success fa-3x mb-3"></i>
+                <h4>Sync Complete</h4>
+                <p class="text-muted">DTrack: <span id="rs-serial" class="font-weight-bold"></span></p>
+
+                <div class="text-left bg-light p-3 border rounded mb-3" style="max-height: 150px; overflow-y: auto;">
+                    <small class="text-muted text-uppercase d-block mb-2" style="font-size: 0.7rem;">Sources Updated:</small>
+                    <ul id="rs-fund-list" class="list-unstyled mb-0" style="font-size: 0.85rem; color: #333;"></ul>
+                </div>
+
+                <div class="row">
+                    <div class="col-6 border-right">
+                        <small class="text-muted d-block">Result</small>
+                        <span id="rs-amount" class="font-weight-bold"></span>
+                    </div>
+                    <div class="col-6">
+                        <small class="text-muted d-block">Status</small>
+                        <span id="rs-status" class="badge"></span>
+                    </div>
+                </div>
+
+                <div class="mt-4">
+                    <button type="button" class="btn btn-primary btn-block shadow-sm" data-dismiss="modal" onclick="window.location.reload();">
+                        Done
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="modal fade" id="viewTransactionModal" tabindex="-1" role="dialog">
     <div class="modal-dialog modal-lg" role="document">
         <div class="modal-content shadow-lg border-0">
@@ -448,10 +601,10 @@
                                 <th><i class="fas fa-check-circle mr-2 text-muted"></i> Status:</th> 
                                 <td id="v_status"></td>
                             </tr>
-                            <tr class="py-1">
+                            {{-- <tr class="py-1">
                                 <th><i class="fas fa-barcode mr-2 text-muted"></i> Serial No:</th> 
                                 <td id="v_serial" class="text-dark"></td>
-                            </tr>
+                            </tr> --}}
                         </table>
                     </div>
                 </div>
@@ -473,52 +626,6 @@
 
             <div class="modal-footer bg-light border-0 px-4">
                 <button type="button" class="btn btn-outline-secondary px-4" data-dismiss="modal">Close</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-
-<div class="modal fade" id="syncResultModal" tabindex="-1" role="dialog" aria-labelledby="syncResultModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered" role="document">
-        <div class="modal-content border-0 shadow">
-            <div class="modal-body text-center p-4">
-                <div class="mb-3">
-                    <i class="fas fa-check-circle text-success fa-3x"></i>
-                </div>
-                <h4 class="modal-title mb-1" id="syncResultModalLabel">Sync Complete</h4>
-                <p class="text-muted small">Serial: <span id="rs-serial" class="font-weight-bold"></span></p>
-                
-                <hr class="my-4">
-                
-                <div class="row">
-                    <div class="col-6 border-right">
-                        <small class="text-uppercase text-muted d-block mb-1" style="font-size: 0.7rem; letter-spacing: 1px;">Amount</small>
-                        <strong id="rs-amount" class="h5 text-dark"></strong>
-                    </div>
-                    <div class="col-6">
-                        <small class="text-uppercase text-muted d-block mb-1" style="font-size: 0.7rem; letter-spacing: 1px;">Status</small>
-                        <span id="rs-status" class="badge p-2 w-100" style="font-size: 0.85rem;"></span>
-                    </div>
-                </div>
-
-                <div id="rs-warning" class="mt-4 alert alert-warning border-warning mb-0" style="display:none;">
-                    <div class="d-flex align-items-center mb-2">
-                        <i class="fas fa-exclamation-triangle mr-2"></i>
-                        <strong>Duplicate Rows Found</strong>
-                    </div>
-                    <div style="font-size: 0.8rem; line-height: 1.4;">
-                        <p class="mb-1 text-dark">The following rows in your Google Sheet were skipped to prevent double counting:</p>
-                        <div id="rs-duplicate-list" class="bg-white p-2 rounded border" style="max-height: 100px; overflow-y: auto;">
-                            </div>
-                    </div>
-                </div>
-
-                <div class="mt-4">
-                    <button type="button" class="btn btn-primary btn-block shadow-sm" data-dismiss="modal" onclick="window.location.reload();">
-                        Done
-                    </button>
-                </div>
             </div>
         </div>
     </div>
@@ -680,63 +787,58 @@
         });
     }
 
-    $(document).on('click', '.btn-sync-sheet', function(e) {
+    $(document).on('click', '.btn-sync-sheet', function (e) {
         e.preventDefault();
+        const $btn = $(this);
+        const fundId = $btn.data('id');
+        const dtrackNo = $btn.data('dtrack'); 
         
-        const btn = $(this);
-        const fundId = btn.data('id');
-        const originalHtml = btn.html();
+        // Select all buttons sharing the same DTrack
+        const $groupButtons = $(`.btn-sync-sheet[data-dtrack="${dtrackNo}"]`);
+        const $groupIcons = $groupButtons.find('i');
 
-        // UI Feedback: Loading state
-        btn.prop('disabled', true).html('<i class="fas fa-circle-notch fa-spin"></i>');
+        // UI Feedback
+        $groupButtons.prop('disabled', true);
+        $groupIcons.attr('class', 'fas fa-circle-notch fa-spin text-warning');
 
         $.ajax({
             url: `/funds/${fundId}/sync`,
             method: "GET",
             dataType: "json",
-            success: function(response) {
-                if (response.success && response.details) {
-                    const data = response.details;
-
-                    $('#rs-serial').text(data.serial);
-                    $('#rs-amount').text('₱' + data.new_amount);
+            success: function (response) {
+                if (response.success) {
+                    const details = response.details;
                     
-                    const statusBadge = $('#rs-status');
-                    statusBadge.text(data.new_status);
+                    // Populate Modal
+                    $('#rs-serial').text(details.dtrack_no);
                     
-                    statusBadge.removeClass('badge-primary badge-success badge-secondary');
-                    if (data.new_status === 'Disbursed') {
-                        statusBadge.addClass('badge-success');
-                    } else {
-                        statusBadge.addClass('badge-primary');
+                    const $list = $('#rs-fund-list');
+                    $list.empty();
+                    
+                    if (details.synced_names.length > 0) {
+                        details.synced_names.forEach(name => {
+                            $list.append(`<li><i class="fas fa-check-circle text-success mr-2"></i> ${name}</li>`);
+                        });
                     }
 
-                    // --- NEW DUPLICATE DISPLAY LOGIC ---
-                    if (data.has_duplicates) {
-                        let listHtml = '';
-                        
-                        if (data.duplicate_ob_rows.length > 0) {
-                            listHtml += `<strong>Obligation Duplicates (Cols B-K):</strong> Rows ${data.duplicate_ob_rows.join(', ')}<br>`;
-                        }
-                        
-                        if (data.duplicate_disb_rows.length > 0) {
-                            listHtml += `<strong>Disbursement Duplicates (Cols M-Q):</strong> Rows ${data.duplicate_disb_rows.join(', ')}`;
-                        }
-
-                        $('#rs-duplicate-list').html(listHtml);
-                        $('#rs-warning').show();
-                    } else {
-                        $('#rs-warning').hide();
-                    }
+                    $('#rs-amount').text(`${details.count} Source(s) Updated`);
+                    $('#rs-status').text('Success').addClass('badge-success');
 
                     $('#syncResultModal').modal('show');
+
+                    // Silent reload for DataTables
+                    if ($.fn.DataTable.isDataTable('#funds-table')) {
+                        // Re-fetch the table instance and reload
+                        $('#funds-table').DataTable().ajax.reload(null, false);
+                    }
                 }
-                btn.prop('disabled', false).html(originalHtml);
             },
-            error: function(xhr) {
-                btn.prop('disabled', false).html(originalHtml);
-                const errorMsg = xhr.responseJSON ? xhr.responseJSON.message : "Server connection error";
-                alert('Error: ' + errorMsg);
+            error: function (xhr) {
+                alert('Error: ' + (xhr.responseJSON?.message || 'Server Error'));
+            },
+            complete: function() {
+                $groupButtons.prop('disabled', false);
+                $groupIcons.attr('class', 'fas fa-sync-alt');
             }
         });
     });
@@ -975,34 +1077,37 @@
 
     $(document).ready(function() {
 
+        // Prevent the "Invalid JSON" alert from appearing to the user
+        $.fn.dataTable.ext.errMode = 'none';
+
         let table = $('#funds-table').DataTable({
+            "processing": true, // Show indicator while loading
+            "serverSide": false, // Change to true if using server-side processing
             "responsive": true,
             "lengthChange": false,
             "autoWidth": false,
             "ordering": true,
-            "order": [[1, 'desc']], // Keeps latest date at top
+            "order": [[1, 'desc']], 
             "dom": '<"row"<"col-md-6"B><"col-md-6"f>>rtip',
             "buttons": ["copy", "excel", "pdf", "print", "colvis"],
             "columnDefs": [
                 { 
                     "width": "120px", 
-                    "targets": 0, // DTrack Number
+                    "targets": 0, 
                     "className": "text-center",
                     "render": function(data, type, row) {
-                        return '<span class="view-dtrack text-primary font-weight-bold" style="cursor:pointer; text-decoration:underline;">' + data + '</span>';
+                        return `<span class="view-dtrack text-primary font-weight-bold" 
+                                    style="cursor:pointer; text-decoration:underline;">${data}</span>`;
                     }
                 },
                 { 
                     "width": "100px", 
-                    "targets": 1, // Date Column
+                    "targets": 1, 
                     "render": function(data, type, row) {
-                        // If this is for sorting or type checking, use the raw data (YYYY-MM-DD)
                         if (type === 'sort' || type === 'type') {
-                            // If row is an array (from AJAX), the raw date is at index 1
                             return (Array.isArray(row)) ? row[1] : data;
                         }
-                        // For display, use our formatDate helper
-                        return formatDate(data);
+                        return typeof formatDate === 'function' ? formatDate(data) : data;
                     }
                 },
                 { "width": "180px", "targets": 2 },
@@ -1016,6 +1121,11 @@
                 "searchPlaceholder": "Search transactions...",
                 "search": ""
             }
+        });
+
+        // Capture and log errors quietly instead of using alerts
+        $('#funds-table').on('error.dt', function(e, settings, techNote, message) {
+            console.error('DataTables Error:', message);
         });
         
         // 1. Initialize Select2
@@ -1296,62 +1406,102 @@
             });
         });
 
-        $(document).on('click', '.btn-update-status', function() {
-            const id = $(this).data('id');
-            const status = $(this).data('status');
-            const serial = $(this).data('serial');
+        $(document).on('click', '.btn-update-status', function(e) {
+            e.preventDefault();
+            
             const dtrack = $(this).data('dtrack');
-            const particulars = $(this).data('particulars');
-            const obAmount = parseFloat($(this).data('obamount')) || 0; // Get the amount
-            const statusDate = $(this).data('statusdate');
+            const id = $(this).data('id');
 
-            $('#statusModal .modal-title').html(
-                '<i class="fas fa-sync-alt mr-2"></i>Update Status: <span id="display_dtrack">' + dtrack + '</span>'
-            );
-            if (particulars && particulars.toString().trim() !== "") {
-                $('#v_particulars').text(particulars).removeClass('text-muted italic');
-            } else {
-                $('#v_particulars').text('No particulars provided.').addClass('text-muted italic');
-            }
-            // Populate fields
-            $('#modal_fund_id').val(id);
-            $('#modal_status_date').val(statusDate);
-            $('#modal_status_select').val(status);
-            $('#modal_serial_input').val(serial);
+            // 1. Force close and reset to prevent ghosting data
+            $('#statusModal').modal('hide');
             $('#display_dtrack').text(dtrack);
+            $('#modal_fund_id').val(id);
+            
+            // 2. Placeholder while loading
+            $('#serial_inputs_container').html('<tr><td colspan="3" class="text-center"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>');
 
-            // --- UPDATED LOCKDOWN LOGIC ---
-            // Only lock if status is Obligated AND we have successfully pulled an amount from Google
-            const isSynced = (status === 'Obligated' && obAmount > 0);
+            $.get(`/funds/group/${dtrack}`)
+                .done(function(data) {
+                    // Get today's date in YYYY-MM-DD format
+                    const today = new Date().toISOString().split('T')[0];
+                    let rows = '';
 
-            if (isSynced) {
-                // LOCK: Sync is finished
-                $('#modal_status_select').css({
-                    'pointer-events': 'none',
-                    'background-color': '#e9ecef'
-                }).attr('tabindex', '-1');
-                
-                $('#modal_serial_input').attr('readonly', true);
-                console.log("Status: Synced. Fields Locked.");
-            } else {
-                // UNLOCK: Still for signature, or Obligated but waiting for sync
-                $('#modal_status_select').css({
-                    'pointer-events': 'auto',
-                    'background-color': '#fff'
-                }).removeAttr('tabindex');
-                
-                $('#modal_serial_input').attr('readonly', false);
-                console.log("Status: Not Synced. Fields Editable.");
-            }
+                    if (data.allocations && data.allocations.length > 0) {
+                        const firstAlloc = data.allocations[0];
+                        
+                        $('#modal_status_select').val(firstAlloc.status);
+                        $('#modal_remarks_input').val(firstAlloc.remarks || '');
+                        
+                        // 2. Fix the date formatting
+                        if (firstAlloc.status === 'Obligated' && firstAlloc.status_date) {
+                            // If the date contains a 'T', split it; otherwise use it as is
+                            const cleanDate = firstAlloc.status_date.includes('T') 
+                                ? firstAlloc.status_date.split('T')[0] 
+                                : firstAlloc.status_date;
+                                
+                            $('#modal_status_date').val(cleanDate);
+                        } else {
+                            $('#modal_status_date').val(today);
+                        }
 
-            // Always show serial input if status is Obligated
+                        // Build table rows
+                        data.allocations.forEach((alloc, index) => {
+                            rows += `
+                            <tr>
+                                <td><small class="font-weight-bold">${alloc.source_name}</small></td>
+                                <td class="text-right"><small>₱${alloc.amount}</small></td>
+                                <td>
+                                    <input type="hidden" name="serials[${index}][id]" value="${alloc.id}">
+                                    <input type="text" name="serials[${index}][serial_no]" 
+                                        class="form-control form-control-sm serial-field" 
+                                        value="${alloc.obligation_serial || ''}" 
+                                        placeholder="Enter Serial No."
+                                        ${firstAlloc.status === 'Obligated' ? 'required' : ''}>
+                                </td>
+                            </tr>`;
+                        });
+                        
+                        $('#serial_inputs_container').html(rows);
+
+                        // Initial visibility check based on loaded status
+                        toggleSerialVisibility($('#modal_status_select').val());
+                        
+                    } else {
+                        $('#serial_inputs_container').html('<tr><td colspan="3" class="text-center text-danger">No allocations found.</td></tr>');
+                    }
+
+                    $('#statusModal').modal('show');
+                });
+        });
+
+        /**
+         * Helper function to handle showing/hiding serial fields
+         * Also linked to the 'change' event of the select dropdown
+         */
+        function toggleSerialVisibility(status) {
             if (status === 'Obligated') {
-                $('#serial_no_container').show();
+                $('#serial_no_section').fadeIn();
+                $('.serial-field').attr('required', true);
             } else {
-                $('#serial_no_container').hide();
+                $('#serial_no_section').hide();
+                $('.serial-field').attr('required', false).val(''); // Clear serials if not obligated
             }
+        }
 
-            $('#statusModal').modal('show');
+        // Attach listener to the dropdown for real-time UI changes
+        $('#modal_status_select').on('change', function() {
+            toggleSerialVisibility($(this).val());
+        });
+
+        // Toggle Serial Section visibility
+        $('#modal_status_select').on('change', function() {
+            if ($(this).val() === 'Obligated') {
+                $('#serial_no_section').fadeIn();
+                $('.serial-field').attr('required', true);
+            } else {
+                $('#serial_no_section').fadeOut();
+                $('.serial-field').attr('required', false);
+            }
         });
 
         // 2. Handle Form Submission via AJAX
@@ -1389,87 +1539,158 @@
         });
 
         // 1. Reset Modal for "Add New"
-        $(document).on('click', '#btn-add-new', function() {
+        $('.btn-add-new').on('click', function() {
+            // 1. Reset the form and hidden fields
             $('#fund-form')[0].reset();
             $('#edit_fund_id').val('');
             $('#form_method').val('POST');
-            $('.modal-title').html('<i class="fas fa-plus mr-2"></i>Add New Transaction');
-            $('.btn-save-fund').text('Save Transaction').removeClass('btn-warning').addClass('btn-success');
-            $('.select2').val(null).trigger('change');
+            
+            // 2. Clear out any rows left over from an "Edit" session
+            $('#allocation-body').empty();
+            
+            // 3. Reset the Select2 Creditor dropdown
+            $('#creditor_select').val(null).trigger('change');
+
+            // 4. Set the Title
+            $('.modal-title').html('<i class="fas fa-plus-circle mr-2"></i> New Transaction Log');
+
+            // 5. Add the first blank allocation row (index 0)
+            addNewAllocationRow(0);
+
+            // 6. Reset Grand Total display
+            updateGrandTotal();
+
+            // 7. Show the modal
             $('#addFundModal').modal('show');
         });
 
         $(document).on('click', '.btn-edit-transaction', function() {
-            const status = $(this).attr('data-status');
-            
-            // Safety check
-            if ($(this).is(':disabled') || (status !== 'Routed' && status !== 'For Signature')) {
-                $(document).Toasts('create', {
-                    class: 'bg-warning',
-                    title: 'Locked',
-                    autohide: true,
-                    delay: 3000,
-                    body: 'Only transactions in "Routed" or "For Signature" status can be edited.'
-                });
-                return false; 
-            }
-            
             const id = $(this).data('id');
+            const status = ($(this).attr('data-status') || '').trim().toLowerCase();
+
+            // 1. Safety check
+            if (status !== 'routed' && status !== 'for signature') {
+                $(document).Toasts('create', { 
+                    class: 'bg-warning', 
+                    title: 'Locked', 
+                    body: 'This transaction is locked and cannot be edited.' 
+                });
+                return false;
+            }
 
             $.get("/funds/" + id + "/edit", function(data) {
-                // 1. Basic Setup
+                if (!data.success) return;
+
+                const main = data.main;
+                const allocations = data.allocations;
+
+                // 2. Setup Form Basics
                 $('#fund-form')[0].reset();
-                $('#edit_fund_id').val(data.id);
+                $('#edit_fund_id').val(main.id);
                 $('#form_method').val('PATCH');
-                $('.modal-title').html('<i class="fas fa-edit mr-2 text-warning"></i>Edit Transaction: ' + data.dtrack_no);
-
-                // 2. Standard Fields
-                $('#dtrack_input').val(data.dtrack_no);
-                $('#amount_input').val(data.amount);
+                $('.modal-title').html('<i class="fas fa-edit mr-2 text-warning"></i>Edit Transaction: ' + main.dtrack_no);
                 
-                if (data.amount) {
-                    let formatted = parseFloat(data.amount).toLocaleString('en-US', {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2
-                    });
-                    $('#amount_display').val(formatted);
-                } else {
-                    $('#amount_display').val('');
-                }
-                $('#particulars_input').val(data.particulars);
-
-                // 3. Creditors (Select2)
-                if (data.creditors) {
-                    let creditorIds = data.creditors.map(c => c.id);
-                    $('#creditor_select').val(creditorIds).trigger('change');
+                // 3. Global Fields
+                $('#dtrack_input').val(main.dtrack_no);
+                
+                // FIX: Improved Date Parsing to ensure YYYY-MM-DD format
+                if (main.transaction_date) {
+                    $('#transaction_date').val(main.transaction_date.split('T')[0]);
                 }
 
-                if (data.transaction_date) {
-                    let cleanDate = data.transaction_date.split(' ')[0].split('T')[0];
-                    $('#transaction_date').val(cleanDate);
+                $('#particulars_input').val(main.particulars);
+
+                // FIX: Match the key sent from Controller (creditor_ids)
+                if (data.creditor_ids) {
+                    $('#creditor_select').val(data.creditor_ids).trigger('change');
                 }
 
-                // 4. SOURCE OF FUND (Direct ID assignment)
-                if (data.source_of_fund_id) {
-                    // 1. Set the Source of Fund first
-                    $('#modal_source_select').val(data.source_of_fund_id).trigger('change');
+                // 4. Populate Allocations
+                $('#allocation-body').empty(); // Clear existing rows
 
-                    // 2. Use a more robust interval check or a longer delay
-                    // This waits for the dependent dropdown logic to finish
+                allocations.forEach((alloc, index) => {
+                    // Add a new row for each allocation
+                    addNewAllocationRow(index, alloc.id);
+                    
+                    // Get the specific row just added
+                    const row = $(`.allocation-row`).last();
+                    
+                    // Set Source and Amount
+                    row.find('.source-select').val(alloc.source_of_fund_id).trigger('change');
+                    row.find('.amount-field').val(alloc.amount);
+
+                    // 5. Dependent Dropdown Sync
+                    // Poll for the activity select to be populated via the change trigger
                     let checkExist = setInterval(function() {
-                        if ($('#modal_activity_select option[value="' + data.transaction_type_id + '"]').length) {
-                            $('#modal_activity_select').val(data.transaction_type_id).trigger('change');
-                            clearInterval(checkExist); // Stop checking once found
+                        const activitySelect = row.find('.activity-select');
+                        if (activitySelect.find('option[value="' + alloc.transaction_type_id + '"]').length) {
+                            activitySelect.val(alloc.transaction_type_id).removeAttr('disabled');
+                            clearInterval(checkExist);
+                            updateGrandTotal(); 
                         }
-                    }, 100); // Check every 100ms
-
-                    // Safety: Stop checking after 3 seconds so it doesn't loop forever if something is wrong
+                    }, 100);
+                    
+                    // Stop polling after 3 seconds
                     setTimeout(() => clearInterval(checkExist), 3000);
-                }
+                });
 
                 $('#addFundModal').modal('show');
+            }).fail(function() {
+                toastr.error('Failed to retrieve transaction data.');
             });
         });
+
+        // Helper function to create rows (Reuse this for your "Add Funding Source" button too)
+        function addNewAllocationRow(index, rowId = '') {
+            const html = `
+            <tr class="allocation-row">
+                <input type="hidden" name="allocations[${index}][id]" value="${rowId}">
+                
+                <td>
+                    <select name="allocations[${index}][source_id]" class="form-control source-select" required>
+                        <option value="">-- Select --</option>
+                        @foreach($sources as $source)
+                            <option value="{{ $source->id }}">{{ $source->name }}</option>
+                        @endforeach
+                    </select>
+                </td>
+                <td>
+                    <select name="allocations[${index}][activity_id]" class="form-control activity-select" required disabled>
+                        <option value="">-- Select Source First --</option>
+                    </select>
+                </td>
+                <td>
+                    <div class="input-group">
+                        <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
+                        <input type="number" name="allocations[${index}][amount]" class="form-control amount-field" step="0.01" required>
+                    </div>
+                </td>
+                <td class="text-center">
+                    <button type="button" class="btn btn-danger btn-sm remove-row" ${index === 0 && rowId === '' ? 'disabled' : ''}>
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </td>
+            </tr>`;
+            $('#allocation-body').append(html);
+        }
+
+        function updateGrandTotal() {
+            let grandTotal = 0;
+
+            // Loop through every input with the class 'amount-field'
+            $('.amount-field').each(function() {
+                let value = parseFloat($(this).val());
+                if (!isNaN(value)) {
+                    grandTotal += value;
+                }
+            });
+
+            // Format the number to currency and update the display
+            $('#grand-total-display').text('₱ ' + grandTotal.toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            }));
+        }
 
         $(document).on('click', '[data-target="#addFundModal"]', function() {
             // Only reset if it's NOT the edit button being clicked
@@ -1483,66 +1704,60 @@
             }
         });
 
-        // Target ONLY the DTrack span class
-        $('#funds-table tbody').on('click', '.view-dtrack', function (e) {
+        // For viewing of transaction info
+        $(document).on('click', '.view-dtrack', function (e) {
             e.preventDefault();
-
-            const tr = $(this).closest('tr');
-            const updateBtn = tr.find('.btn-update-status');
-            const rowData = table.row(tr).data();
-
-            // 1. Set Modal Title
-            const dtrackValue = $(this).text().trim();
-            $('#viewTransactionModal').find('#view_dtrack').text(dtrackValue);
-            $('#viewTransactionModal').find('.modal-title').html(
-                '<i class="fas fa-info-circle mr-2"></i> Transaction Details: <span class="text-warning">' + dtrackValue + '</span>'
-            );
-
-            // 2. Extract Hidden Data from the Update Button
-            const particulars = updateBtn.attr('data-particulars'); 
-            const remarks = updateBtn.attr('data-remarks');
-            const serial = updateBtn.attr('data-serial');
-
-            // 3. Populate Table Fields (Handling Orthogonal Data for Date)
-            let dateDisplay = rowData[1];
             
-            // Logic to handle the new {display, @data-order} object vs raw string
-            if (typeof dateDisplay === 'object' && dateDisplay !== null) {
-                dateDisplay = dateDisplay.display;
-            } else {
-                // Fallback: If it's a raw string, format it using our global helper
-                dateDisplay = formatDate(dateDisplay);
+            const $link = $(this);
+            const modal = $('#viewTransactionModal');
+            
+            // Extraction
+            let particulars = $link.attr('data-particulars');
+            let remarks = $link.attr('data-remarks');
+
+            // Responsive fallback
+            if (particulars === undefined) {
+                const tr = $link.closest('tr');
+                particulars = tr.find('[data-particulars]').attr('data-particulars') || "";
+                remarks = tr.find('[data-remarks]').attr('data-remarks') || "";
             }
 
-            $('#v_date').text(dateDisplay);
-            $('#v_creditors').html(rowData[2]);
-            $('#v_source').text(rowData[3]);
-            $('#v_activity').text(rowData[4]);
-            $('#v_amount').html(rowData[5]);
-            $('#v_status').html(rowData[6]);
-            $('#v_serial').text(serial || 'N/A');
+            // Header
+            modal.find('#view_dtrack').text($link.text().trim());
+            
+            // Inject and format
+            // Replace semicolons with line breaks if you want them stacked in the modal
+            const formattedRemarks = remarks ? remarks.replace(/; /g, '<br>') : 'No remarks provided.';
 
-            // 4. Handle Particulars
-            if (particulars && particulars.trim() !== "" && particulars !== 'null') {
-                $('#v_particulars').text(particulars).removeClass('text-muted italic');
-            } else {
-                $('#v_particulars').html('<span class="text-muted italic">No particulars provided.</span>').addClass('text-muted italic');
+            $('#v_particulars').text(particulars || 'No particulars provided.');
+            $('#v_remarks').html(formattedRemarks); // Use .html() if you added <br>
+
+            // Populate remaining row data
+            const tr = $link.closest('tr');
+            const rowData = table.row(tr).data();
+            if (rowData) {
+                $('#v_date').html(rowData[1].display || rowData[1]);
+                $('#v_creditors').html(rowData[2]);
+                $('#v_source').html(rowData[3]);
+                $('#v_activity').html(rowData[4]);
+                $('#v_amount').html(rowData[5]);
+                $('#v_status').html(rowData[6]);
             }
 
-            // 5. Handle Remarks
-            if (remarks && remarks.trim() !== "" && remarks !== 'null') {
-                $('#v_remarks').text(remarks).removeClass('text-muted italic');
-            } else {
-                $('#v_remarks').html('<span class="text-muted italic">No remarks provided.</span>').addClass('text-muted italic');
-            }
-
-            // 6. Launch Modal
-            $('#viewTransactionModal').modal('show');
+            modal.modal('show');
         });
 
         $('#statusModal').on('hidden.bs.modal', function () {
-            $(this).find('.modal-title').html(''); // Clear title
-            $('#v_particulars').text('');           // Clear particulars
+            // Reset the form values
+            $(this).find('form').trigger('reset');
+            // Clear the dynamic table
+            $('#serial_inputs_container').empty();
+            // Reset the DTrack text
+            $('#display_dtrack').text('');
+            // Remove modal backdrop if it gets stuck
+            $('.modal-backdrop').remove();
+            // Fix the body scrolling/padding issue
+            $('body').removeClass('modal-open').css('padding-right', '');
         });
 
         $(document).on('click', '.btn-delete-transaction', function() {

@@ -26,7 +26,7 @@ class Fund extends Model
     ];
 
     protected $casts = [
-        'transaction_date' => 'date',
+        'transaction_date' => 'date:Y-m-d',
         'status_date' => 'date',
         'obligation_date' => 'date',
         'disbursement_date' => 'date',
@@ -65,5 +65,10 @@ class Fund extends Model
         return $this->belongsToMany(Employee::class, 'employee_fund');
     }
 
+    public function groupAllocations()
+    {
+        // Fetches all funds sharing the same DTrack Number
+        return $this->hasMany(Fund::class, 'dtrack_no', 'dtrack_no');
+    }
   
 }

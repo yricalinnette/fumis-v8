@@ -15,6 +15,7 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class MyReadFilter implements \PhpOffice\PhpSpreadsheet\Reader\IReadFilter
 {
@@ -47,65 +48,104 @@ class FundController extends Controller
 
     public function index()
     {
-        // 1. Fetch base data with eager loading
-        $query = auth()->user()->is_admin 
-            ? \App\Models\Fund::with(['fundSource', 'activity', 'creditors']) 
-            : \App\Models\Fund::with(['fundSource', 'activity', 'creditors'])->where('user_id', auth()->id());
+        // 1. Fetch base data
+        $baseQuery = auth()->user()->is_admin 
+            ? \App\Models\Fund::query()
+            : \App\Models\Fund::where('user_id', auth()->id());
 
-        // 2. Group by dtrack_no to consolidate multi-fund entries
-        $funds = $query->latest()->get();
+        $fundsCollection = $baseQuery->with(['fundSource', 'activity', 'creditors'])
+            ->whereNotNull('dtrack_no')
+            ->where('dtrack_no', '!=', '')
+            ->latest()
+            ->get();
 
-        $funds = $funds->groupBy('dtrack_no')->map(function ($group) {
+        // 2. Group and Map
+        $funds = $fundsCollection->groupBy('dtrack_no')->map(function ($group) {
             $first = $group->first();
+
+            $mergedRemarks = $group->pluck('remarks')
+                ->filter()
+                ->unique()
+                ->implode('; '); // Or use " | " as a separator
+
+            $calculatedTotal = $group->sum(function($item) {
+                return ($item->obligation_amount > 0) ? $item->obligation_amount : $item->amount;
+            });
+
+            $hasDisbursed = $group->contains('status', 'Disbursed');
+            $hasCompleted = $group->contains('status', 'Completed');
+            $hasObligated = $group->contains('status', 'Obligated');
+
+            // SYNC LOGIC: Check if ANY item in the group is Obligated but missing an amount
+            $needsSync = $group->contains(function ($item) {
+                return $item->status === 'Obligated' && (empty($item->obligation_amount) || $item->obligation_amount <= 0);
+            });
+
+            // Priority Status
+            if ($hasDisbursed || $hasCompleted) {
+                $priorityStatus = 'Disbursed';
+            } elseif ($hasObligated) {
+                $priorityStatus = 'Obligated';
+            } else {
+                $priorityStatus = $first->status;
+            }
+
             return (object) [
-                'id'                => $first->id,
-                'dtrack_no'         => $first->dtrack_no,
-                'transaction_date'  => $first->transaction_date,
-                'particulars'       => $first->particulars,
-                'status'            => $first->status,
-                'creditors'         => $first->creditors,
-                'remarks'           => $first->remarks,
-                'obligation_serial' => $first->obligation_serial,
-                // ADD THESE FIELDS TO PREVENT THE ERROR:
-                'obligation_date'   => $first->obligation_date, 
-                'disbursement_date' => $first->disbursement_date,
-                'status_date'       => $first->status_date,
-                'dtrack_update_date'=> $first->dtrack_update_date,
-                
-                // Aggregates
-                'total_amount'   => $group->sum('amount'),
-                'source_names'   => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
-                'activity_names' => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
-                
-                // NEW: Create a breakdown list
-                'breakdown' => $group->map(function($item) {
-                    return [
-                        'source' => $item->fundSource->name ?? 'N/A',
-                        'amount' => $item->amount
+                'id'                 => $first->id,
+                'dtrack_no'          => $first->dtrack_no,
+                'transaction_date'   => $first->transaction_date,
+                'particulars'        => $first->particulars,
+                'creditors'          => $first->creditors,
+                'remarks'            => $first->remarks,
+                'all_remarks'        => $mergedRemarks,
+                'dtrack_update_date' => $first->dtrack_update_date,
+                'total_amount'       => $calculatedTotal,
+                'is_fully_synced'    => !$needsSync, // Sync is FALSE if even ONE item needs sync
+                'group_status'       => $priorityStatus,
+                'source_names'       => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
+                'activity_names'     => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
+                'breakdown'          => $group->map(function($item) {
+                    return (object) [
+                        'id'                => $item->id,
+                        'source_name'       => $item->fundSource->name ?? 'N/A',
+                        'amount'            => $item->amount,
+                        'status'            => $item->status,
+                        'obligation_serial' => $item->obligation_serial,
+                        'remarks'           => $item->remarks,
+                        'status_date'       => $item->status_date,
+                        'disbursement_date' => $item->disbursement_date,
+                        'obligation_amount' => $item->obligation_amount, 
+                        'obligation_date'   => $item->obligation_date,
                     ];
                 }),
             ];
         });
 
-        // 3. Keep existing modal dependencies
+        // 3. Define the Missing Variables (CRITICAL)
         $currentYear = date('Y');
-        $sources = SourceOfFund::where('fiscal_year', $currentYear)->orderBy('name')->get();
-        $employees = Employee::orderBy('last_name')->get();
-        $activities = Activity::all(); 
+        
+        // Make sure this is "sources" (matching your compact call)
+        $sources = \App\Models\SourceOfFund::where('fiscal_year', $currentYear)
+                    ->orderBy('name')
+                    ->get();
+                    
+        $employees = \App\Models\Employee::orderBy('last_name')->get();
+        $activities = \App\Models\Activity::all(); 
 
         // 4. Notification Badges
-        $awaitingSyncCount = Fund::where('status', 'Obligated')
-                                    ->whereNull('disbursement_date')
-                                    ->whereNotNull('obligation_serial')
-                                    ->count();
+        $awaitingSyncCount = \App\Models\Fund::where('status', 'Obligated')
+                                ->whereNull('disbursement_date')
+                                ->whereNotNull('obligation_serial')
+                                ->count();
 
-        $awaitingOBRN = Fund::where('status', 'For CAF/Obligation')
-                                    ->whereNull('obligation_serial')
-                                    ->count();
+        $awaitingOBRN = \App\Models\Fund::where('status', 'For CAF/Obligation')
+                                ->whereNull('obligation_serial')
+                                ->count();
         
+        // 5. Final Return
         return view('funds.index', compact(
             'funds', 
-            'sources', 
+            'sources',      // This matches the variable defined in Step 3
             'employees', 
             'activities', 
             'awaitingSyncCount', 
@@ -187,99 +227,169 @@ class FundController extends Controller
 
     public function updateStatus(Request $request, $id)
     {
-        $fund = Fund::findOrFail($id);
+        // 1. Get the primary record to identify the DTRACK group
+        $primaryFund = Fund::findOrFail($id);
+        $dtrack = $primaryFund->dtrack_no;
 
-        // 1. Prepare the update array with fields that are ALWAYS editable
-        $updateData = [
-            'status_date' => $request->status_date,
-            'remarks'     => $request->remarks,
-        ];
+        // 2. Fetch all allocations in this group
+        $funds = Fund::where('dtrack_no', $dtrack)->get();
 
-        // 2. Logic for Status and Serial Number
-        // If the transaction is ALREADY synced, we keep the existing status and serial
-        if ($fund->status === 'Obligated' && $fund->obligation_amount > 0) {
-            // Do nothing for status/serial, they stay as they are in the DB
-        } else {
-            // If not synced, we allow updating the status and the serial
-            $updateData['status'] = $request->status;
-            
-            if ($request->status === 'Obligated') {
-                $updateData['obligation_serial'] = $request->obligation_serial;
-            } else {
-                // If they move it back to 'For Signature', clear the serial
-                $updateData['obligation_serial'] = null;
+        DB::beginTransaction();
+        try {
+            foreach ($funds as $fund) {
+                // Prepare common update data
+                $updateData = [
+                    'status_date' => $request->status_date,
+                    'remarks'     => $request->remarks,
+                ];
+
+                // 3. Logic for Status and Serial Number
+                // If the specific row is ALREADY obligated/synced, we protect its status/serial
+                if ($fund->status === 'Obligated' && $fund->obligation_amount > 0) {
+                    // Keep existing status and serial for this row
+                } else {
+                    $updateData['status'] = $request->status;
+
+                    if ($request->status === 'Obligated') {
+                        // Match the serial number from the request to this specific row ID
+                        // We look for the 'serials' array sent from the modal
+                        $submittedSerials = collect($request->serials);
+                        $rowSerial = $submittedSerials->firstWhere('id', $fund->id);
+                        
+                        $updateData['obligation_serial'] = $rowSerial ? $rowSerial['serial_no'] : null;
+                    } else {
+                        $updateData['obligation_serial'] = null;
+                    }
+                }
+
+                $fund->update($updateData);
             }
+
+            DB::commit();
+            return response()->json([
+                'success' => true,
+                'message' => 'Group status updated successfully!',
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['message' => 'Error: ' . $e->getMessage()], 422);
         }
-
-        $fund->update($updateData);
-
-        return response()->json([
-            'success' => true, 
-            'message' => 'Status updated successfully!',
-            'debug_data' => $updateData // Optional: helps you see what was saved
-        ]);
     }
 
-    public function edit(Fund $fund) {
+    public function getGroupByDtrack($dtrack)
+    {
+        $allocations = Fund::where('dtrack_no', $dtrack)
+            ->with(['fundSource']) 
+            ->get()
+            ->map(function ($fund) {
+                return [
+                    'id' => $fund->id,
+                    'source_name' => $fund->fundSource->name ?? 'N/A',
+                    'amount' => number_format($fund->amount, 2), 
+                    'obligation_serial' => $fund->obligation_serial,
+                    // ADD THESE FIELDS:
+                    'status' => $fund->status,
+                    'remarks' => $fund->remarks,
+                    'status_date' => $fund->status_date ? \Carbon\Carbon::parse($fund->status_date)->format('Y-m-d') : date('Y-m-d'),
+                ];
+            });
+
+        return response()->json(['allocations' => $allocations]);
+    }
+
+    public function edit(\App\Models\Fund $fund) 
+    {
+        // 1. Validation (Same as before, ensures data integrity)
         if ($fund->status !== 'Routed') {
-            return response()->json(['message' => 'Editing is only allowed for Routed status.'], 403);
+            return response()->json([
+                'success' => false,
+                'message' => 'Editing is only allowed for transactions in Routed status.'
+            ], 403);
         }
-       return response()->json($fund->load('creditors'));
+
+        // 2. Fetch all allocations sharing the same DTrack Number
+        // We load fundSource and activity so the frontend can display their names/IDs
+        $allAllocations = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)
+            ->with(['fundSource', 'activity'])
+            ->get();
+
+        // 3. Load Creditors (Pivot table)
+        $fund->load('creditors');
+
+        // 4. Return as a structured JSON object
+        return response()->json([
+            'success'     => true,
+            'main'        => $fund,            // The primary transaction details
+            'allocations' => $allAllocations,  // The array of all fund sources
+            'creditor_ids'=> $fund->creditors->pluck('id')->toArray() // For Select2 auto-select
+        ]);
     }
 
     public function update(Request $request, $id)
     {
-        $fund = Fund::findOrFail($id);
+        $primaryFund = Fund::findOrFail($id);
+        $oldDtrack = $primaryFund->dtrack_no;
 
-        // 1. Validation 
         $validated = $request->validate([
-            'dtrack_no'        => 'required|regex:/^\d{4}-\d{6}$/|unique:funds,dtrack_no,' . $id,
+            'dtrack_no'        => 'required|regex:/^\d{4}-\d{6}$/', 
             'transaction_date' => 'required|date',
-            'source_of_fund_id'=> 'required|exists:source_of_funds,id',
-            'activity_id'      => 'required|exists:activities,id',
-            'amount'           => 'required|numeric|min:0',
-            'particulars'      => 'nullable|string',
-            'creditor_ids'     => 'nullable|array', 
-            'creditor_ids.*'   => 'exists:employees,id',
+            'particulars'      => 'required|string',
+            'creditor_ids'     => 'nullable|array',
+            'allocations'             => 'required|array|min:1',
+            'allocations.*.id'        => 'nullable|exists:funds,id', // Track existing rows
+            'allocations.*.source_id' => 'required|exists:source_of_funds,id',
+            'allocations.*.activity_id' => 'required|exists:activities,id',
+            'allocations.*.amount'    => 'required|numeric|min:0',
         ]);
 
-        // 2. Budget Validation Check
-        $activity = Activity::findOrFail($request->activity_id);
-        
-        // Sum total spent on this activity EXCLUDING the current record's old amount
-        $totalSpent = Fund::where('transaction_type_id', $activity->id)
-                        ->where('id', '!=', $id)
-                        ->sum('amount');
-                        
-        $remaining = $activity->budget - $totalSpent;
+        try {
+            DB::beginTransaction();
 
-        if ($request->amount > $remaining) {
-            return response()->json([
-                'message' => 'Update failed. The new amount exceeds the remaining budget of ₱' . number_format($remaining, 2)
-            ], 422);
+            // 1. Get IDs of all current rows in the database for this DTrack
+            $existingRowIds = Fund::where('dtrack_no', $oldDtrack)->pluck('id')->toArray();
+            
+            // 2. Get IDs sent from the form
+            $submittedRowIds = collect($request->allocations)->pluck('id')->filter()->toArray();
+
+            // 3. Delete rows that were removed in the UI
+            $rowsToDelete = array_diff($existingRowIds, $submittedRowIds);
+            Fund::whereIn('id', $rowsToDelete)->delete();
+
+            // 4. Process each allocation
+            foreach ($request->allocations as $alloc) {
+                $data = [
+                    'dtrack_no'           => $request->dtrack_no,
+                    'transaction_date'    => $request->transaction_date,
+                    'particulars'         => $request->particulars,
+                    'source_of_fund_id'   => $alloc['source_id'],
+                    'transaction_type_id' => $alloc['activity_id'],
+                    'amount'              => $alloc['amount'],
+                    'status'              => $primaryFund->status,
+                ];
+
+                if (!empty($alloc['id'])) {
+                    // UPDATE existing row
+                    $row = Fund::find($alloc['id']);
+                    $row->update($data);
+                } else {
+                    // CREATE new row (if user added a row in the modal)
+                    // Add the user_id here to satisfy the database constraint
+                    $data['user_id'] = auth()->id(); 
+                    $row = Fund::create($data);
+                }
+
+                // Sync Payees for this specific row
+                $row->creditors()->sync($request->input('creditor_ids', []));
+            }
+
+            DB::commit();
+            return response()->json(['success' => true, 'message' => 'Updated successfully!']);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['message' => $e->getMessage()], 422);
         }
-
-        // 3. Update the Record
-        $fund->update([
-            'dtrack_no'           => $validated['dtrack_no'],
-            'transaction_date'    => $validated['transaction_date'],
-            'amount'              => $validated['amount'],
-            'particulars'         => $validated['particulars'],
-            'source_of_fund_id'   => $validated['source_of_fund_id'],
-            'transaction_type_id' => $activity->id, // FIXED: Storing ID, not name
-        ]);
-
-        // 4. Sync Relationships
-        $fund->creditors()->sync($request->input('creditor_ids', []));
-
-        // 5. Load the relationships (including the 'activity' relationship)
-        $fund->load(['fundSource', 'activity', 'creditors']);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Transaction ' . $fund->dtrack_no . ' updated successfully!',
-            'data'    => $fund 
-        ]);
     }
 
     public function checkBalance(Request $request)
@@ -336,175 +446,134 @@ class FundController extends Controller
 
     public function syncWithGoogleSheet($id)
     {
-        set_time_limit(300); 
+        set_time_limit(600);
         $tempFile = null;
 
         try {
-            $fund = Fund::with('fundSource')->findOrFail($id);
-            $sourceConfig = SourceOfFund::find($fund->source_of_fund_id);
+            $clickedFund = Fund::findOrFail($id);
+            $dtrackNo = $clickedFund->dtrack_no;
 
-            // 1. Validation Check
-            if (!$sourceConfig || !$sourceConfig->spreadsheet_id || !$sourceConfig->sheet_name) {
-                return response()->json(['success' => false, 'message' => 'Sheet configuration (ID or Tab Name) is missing for this fund source.'], 422);
-            }
+            // 1. Get the entire group and group them by Source ID
+            // This ensures we visit every spreadsheet needed for this DTrack
+            $fundGroup = Fund::with('fundSource')
+                ->where('dtrack_no', $dtrackNo)
+                ->get()
+                ->groupBy('source_of_fund_id');
 
-            // 2. Google Drive Auth & Download
-            $client = new \Google\Client();
-            $credPath = storage_path('app/google-credentials.json');
-            
-            if (!file_exists($credPath)) {
-                throw new \Exception("Google credentials file not found at " . $credPath);
-            }
+            $updatedNames = [];
 
-            $client->setAuthConfig($credPath);
-            $client->addScope(\Google_Service_Drive::DRIVE_READONLY);
-            
-            $driveService = new \Google_Service_Drive($client);
-            $spreadsheetId = $sourceConfig->spreadsheet_id;
-
-            // Try to fetch the file
-            try {
-                $content = $driveService->files->get($spreadsheetId, ['alt' => 'media']);
-                $data = $content->getBody()->getContents();
-            } catch (\Exception $e) {
-                throw new \Exception("Google Drive Access Error: Verify that the Service Account has 'Viewer' access to the spreadsheet.");
-            }
-
-            // 3. Save to Temp File
-            $tempFile = tempnam(sys_get_temp_dir(), 'excel_'); 
-            file_put_contents($tempFile, $data);
-
-            // 4. Load Spreadsheet
-            $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReader('Xlsx');
-            $reader->setReadDataOnly(true);
-            
-            // Define range to save memory
-            $reader->setReadFilter(new MyReadFilter(1, 10000, range('B', 'Q')));
-
-            $spreadsheet = $reader->load($tempFile);
-            $sheet = $spreadsheet->getSheetByName($sourceConfig->sheet_name);
-            
-            if (!$sheet) {
-                throw new \Exception("Tab name '{$sourceConfig->sheet_name}' not found in the spreadsheet.");
-            }
-
-            // 5. Data Processing Logic
-            $highestRow = $sheet->getHighestRow();
-            $found = false;
-            $netObligationAmount = 0;
-            $netDisbursementAmount = 0;
-            $latestObDate = null;
-            $latestDisbDate = null;
-
-            $seenObFingerprints = []; 
-            $seenDisbFingerprints = []; 
-            $duplicateObRows = [];
-            $duplicateDisbRows = [];
-
-            $cleanAmount = function($val) {
-                if ($val === null || $val === '') return 0.0;
-                $val = trim((string)$val);
-                if (str_starts_with($val, '(') && str_ends_with($val, ')')) {
-                    $val = '-' . trim($val, '()');
+            // 2. Iterate through each unique Source/Spreadsheet
+            foreach ($fundGroup as $sourceId => $fundsInSource) {
+                $sourceConfig = SourceOfFund::find($sourceId);
+                
+                if (!$sourceConfig || !$sourceConfig->spreadsheet_id || !$sourceConfig->sheet_name) {
+                    continue; // Skip sources with missing config
                 }
-                $raw = str_replace([',', '₱', ' '], '', $val);
-                return (float) $raw;
-            };
 
-            for ($row = 1; $row <= $highestRow; $row++) { 
-                $sheetSerial = trim((string)$sheet->getCell("C$row")->getValue());
-                $sheetFundSource = trim((string)$sheet->getCell("G$row")->getValue());
+                // 3. Download and Load Spreadsheet (Optimized)
+                $client = new \Google\Client();
+                $client->setAuthConfig(storage_path('app/google-credentials.json'));
+                $client->addScope(\Google_Service_Drive::DRIVE_READONLY);
+                $driveService = new \Google_Service_Drive($client);
+                $content = $driveService->files->get($sourceConfig->spreadsheet_id, ['alt' => 'media']);
+                
+                $tempFile = tempnam(sys_get_temp_dir(), 'excel_'); 
+                file_put_contents($tempFile, $content->getBody()->getContents());
 
-                if ($sheetSerial == trim((string)$fund->obligation_serial)) {
-                    $dbFundSourceName = trim((string)($fund->fundSource->name ?? ''));
-                    if ($sheetFundSource !== '' && $sheetFundSource !== $dbFundSourceName) continue; 
+                $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReader('Xlsx');
+                $reader->setReadDataOnly(true);
+                $reader->setReadFilter(new MyReadFilter(1, 25000, range('B', 'Q'))); 
+                $spreadsheet = $reader->load($tempFile);
+                $sheet = $spreadsheet->getSheetByName($sourceConfig->sheet_name);
+                
+                if (!$sheet) continue;
 
-                    $found = true;
+                // 4. Create a tracker for serials belonging ONLY to this specific source
+                $tracker = [];
+                foreach ($fundsInSource as $f) {
+                    $serial = trim($f->obligation_serial);
+                    $tracker[$serial] = [
+                        'models' => [], 'netOb' => 0.0, 'netDisb' => 0.0,
+                        'latestObDate' => null, 'latestDisbDate' => null,
+                        'seenOb' => [], 'seenDisb' => [], 'found' => false
+                    ];
+                    $tracker[$serial]['models'][] = $f;
+                }
 
-                    // Obligation Check (B-K)
-                    $obFingerprintParts = [];
-                    foreach (range('B', 'K') as $col) {
-                        $obFingerprintParts[] = trim((string)$sheet->getCell($col . $row)->getValue());
+                // 5. Single pass over the sheet for this source's serials
+                $highestRow = $sheet->getHighestRow();
+                for ($row = 1; $row <= $highestRow; $row++) {
+                    $sheetSerial = trim((string)$sheet->getCell("C$row")->getValue());
+                    
+                    if (isset($tracker[$sheetSerial])) {
+                        $tracker[$sheetSerial]['found'] = true;
+                        $this->processRowData($sheet, $row, $tracker[$sheetSerial]);
                     }
-                    $obFingerprint = md5(implode('|', $obFingerprintParts));
+                }
 
-                    if (!in_array($obFingerprint, $seenObFingerprints)) {
-                        $netObligationAmount += $cleanAmount($sheet->getCell("I$row")->getCalculatedValue());
-                        $seenObFingerprints[] = $obFingerprint;
-                        $currentObDate = $this->parseExcelDate($sheet->getCell("B$row")->getValue());
-                        if ($currentObDate) $latestObDate = $currentObDate;
-                    } else {
-                        $duplicateObRows[] = $row;
-                    }
-
-                    // Disbursement Check (M-Q)
-                    $valQ = $cleanAmount($sheet->getCell("Q$row")->getCalculatedValue());
-                    if ($valQ != 0) {
-                        $disbFingerprintParts = [];
-                        foreach (range('M', 'Q') as $col) {
-                            $disbFingerprintParts[] = trim((string)$sheet->getCell($col . $row)->getValue());
-                        }
-                        $disbFingerprint = md5(implode('|', $disbFingerprintParts));
-
-                        if (!in_array($disbFingerprint, $seenDisbFingerprints)) {
-                            $netDisbursementAmount += $valQ;
-                            $seenDisbFingerprints[] = $disbFingerprint;
-                            $currentDisbDate = $this->parseExcelDate($sheet->getCell("M$row")->getValue());
-                            if ($currentDisbDate) $latestDisbDate = $currentDisbDate;
-                        } else {
-                            $duplicateDisbRows[] = $row;
+                // 6. Update Database for this source
+                foreach ($tracker as $serial => $data) {
+                    if ($data['found']) {
+                        foreach ($data['models'] as $model) {
+                            $model->update([
+                                'obligation_amount'   => $data['netOb'],
+                                'obligation_date'     => $data['latestObDate'],
+                                'disbursement_amount' => min($data['netDisb'], $data['netOb']),
+                                'disbursement_date'   => $data['latestDisbDate'],
+                                'status'              => $data['netDisb'] > 0 ? 'Disbursed' : 'Obligated',
+                                'status_date'         => now()->format('Y-m-d')
+                            ]);
+                            $updatedNames[] = $model->fundSource->name ?? 'Unknown';
                         }
                     }
                 }
-            }
 
-            // 6. DB Update
-            if ($found) {
-                if ($netDisbursementAmount > $netObligationAmount) {
-                    $netDisbursementAmount = $netObligationAmount;
-                }
-
-                $fund->update([
-                    'obligation_amount'   => $netObligationAmount,
-                    'obligation_date'     => $latestObDate,
-                    'disbursement_amount' => $netDisbursementAmount,
-                    'disbursement_date'   => $latestDisbDate,
-                    'status'              => $netDisbursementAmount > 0 ? 'Disbursed' : 'Obligated',
-                    'status_date'         => now()->format('Y-m-d')
-                ]);
-
-                // Log duplicates for audit
-                if (!empty($duplicateObRows) || !empty($duplicateDisbRows)) {
-                    Log::channel('sync')->warning("Duplicates for Serial: {$fund->obligation_serial}", [
-                        'ob_rows' => $duplicateObRows,
-                        'disb_rows' => $duplicateDisbRows
-                    ]);
-                }
-            }
-
-            if ($tempFile && file_exists($tempFile)) { unlink($tempFile); }
-
-            if (!$found) {
-                return response()->json(['success' => false, 'message' => "Serial number '{$fund->obligation_serial}' was not found in the selected spreadsheet."], 404);
+                // Clean up memory per source
+                $spreadsheet->disconnectWorksheets();
+                unset($spreadsheet, $sheet);
+                if (file_exists($tempFile)) @unlink($tempFile);
             }
 
             return response()->json([
                 'success' => true,
                 'details' => [
-                    'serial' => $fund->obligation_serial,
-                    'new_amount' => number_format($netObligationAmount, 2),
-                    'new_status' => $fund->status,
-                    'has_duplicates' => !empty($duplicateObRows) || !empty($duplicateDisbRows),
-                    // Add these two lines to pass the row numbers to the frontend
-                    'duplicate_ob_rows' => $duplicateObRows, 
-                    'duplicate_disb_rows' => $duplicateDisbRows
+                    'dtrack_no'    => $dtrackNo,
+                    'synced_names' => array_values(array_unique($updatedNames)),
+                    'count'        => count(array_unique($updatedNames))
                 ]
             ]);
 
         } catch (\Exception $e) {
-            if ($tempFile && file_exists($tempFile)) { unlink($tempFile); }
-            \Log::error("Sync Error: " . $e->getMessage()); 
+            if ($tempFile && file_exists($tempFile)) @unlink($tempFile);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    // Helper to keep code clean
+    private function processRowData($sheet, $row, &$data) {
+        $clean = function($val) {
+            $raw = str_replace([',', '₱', ' '], '', trim((string)$val));
+            if (str_starts_with($raw, '(')) $raw = '-' . trim($raw, '()');
+            return is_numeric($raw) ? (float)$raw : 0.0;
+        };
+
+        // Obligation
+        $obKey = md5($sheet->getCell("B$row")->getValue().$sheet->getCell("I$row")->getValue());
+        if (!in_array($obKey, $data['seenOb'])) {
+            $data['netOb'] += $clean($sheet->getCell("I$row")->getCalculatedValue());
+            $data['seenOb'][] = $obKey;
+            $data['latestObDate'] = $this->parseExcelDate($sheet->getCell("B$row")->getValue());
+        }
+
+        // Disbursement
+        $valQ = $clean($sheet->getCell("Q$row")->getCalculatedValue());
+        if ($valQ != 0) {
+            $disbKey = md5($sheet->getCell("M$row")->getValue().$valQ);
+            if (!in_array($disbKey, $data['seenDisb'])) {
+                $data['netDisb'] += $valQ;
+                $data['seenDisb'][] = $disbKey;
+                $data['latestDisbDate'] = $this->parseExcelDate($sheet->getCell("M$row")->getValue());
+            }
         }
     }
 

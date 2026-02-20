@@ -41,6 +41,7 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::post('/settings/activities/pool', [SettingsController::class, 'poolFunds'])->name('settings.activity.pool');
 
     //funds transactions
+    Route::get('funds/group/{dtrack}', [FundController::class, 'getGroupByDtrack']);
     Route::patch('/funds/{id}/status', [FundController::class, 'updateStatus'])->name('funds.updateStatus');
     Route::get('funds/{id}/sync', [App\Http\Controllers\FundController::class, 'syncWithGoogleSheet'])->name('funds.sync');
     Route::post('/funds/bulk-sync', [FundController::class, 'bulkSync'])->name('funds.bulk-sync');
@@ -65,9 +66,9 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
         $activities = \App\Models\Activity::where('source_of_fund_id', $sourceId)
             ->select('id', 'name', 'pooled_amount') // only fetch what we need
             ->get();
-            
-        return response()->json($activities);
-    });
+            return response()->json($activities);
+    
+});
 
     //dashboard
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
