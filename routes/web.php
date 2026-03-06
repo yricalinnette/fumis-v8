@@ -56,7 +56,7 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::delete('/funds/{id}', [FundController::class, 'destroy'])->name('funds.destroy');
     Route::post('/funds/sync-all', [FundController::class, 'syncAllDTrack'])->name('funds.sync_all');
     Route::get('/funds/sync-all-dtrack', [FundController::class, 'syncAllDTrack']);
-    Route::get('funds/check-balance', [FundController::class, 'checkBalance'])->name('funds.check_balance');
+    Route::get('/funds/check-balance', [FundController::class, 'checkBalance'])->name('funds.check_balance');
     Route::get('/funds/create', [FundController::class, 'create'])->name('funds.create');
     Route::post('/funds/store', [FundController::class, 'store'])->name('funds.store');
     Route::get('/funds', [FundController::class, 'index'])->name('funds.index'); // Table View

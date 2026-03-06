@@ -70,5 +70,9 @@ class Fund extends Model
         // Fetches all funds sharing the same DTrack Number
         return $this->hasMany(Fund::class, 'dtrack_no', 'dtrack_no');
     }
+
+    public function fund_sources() {
+        return $this->belongsToMany(FundSource::class, 'fund_fund_source');
+    }
   
 }

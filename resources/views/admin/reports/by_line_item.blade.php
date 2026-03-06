@@ -80,10 +80,10 @@
                     </div>
 
                     <div class="col-md-4">
-                        <button type="submit" class="btn btn-sm btn-navy px-4 shadow-sm">
+                        <button type="submit" class="btn btn-sm btn-primary px-4 shadow-sm">
                             <i class="fas fa-sync-alt mr-1"></i> Update Report
                         </button>
-                        <a href="{{ route('reports.by_line_item') }}" class="btn btn-sm btn-default border ml-2">
+                        <a href="{{ route('reports.by_line_item') }}" class="btn btn-sm btn-warning border ml-2">
                             <i class="fas fa-undo mr-1"></i> Reset
                         </a>
                     </div>
@@ -96,6 +96,27 @@
 
     @foreach($reportData as $source)
     <div class="card card-navy card-outline shadow-sm mb-5">
+
+        @php
+            // 1. Determine the Net Working Budget for the entire Source
+            $sourceTotalPooled = collect($source['line_items'])->sum('pooled_amount');
+            $netSourceBudget = $source['total_activity_budget']; 
+            // If your total_activity_budget isn't already net, use: 
+            // $netSourceBudget = $source['source_total'] - $sourceTotalPooled;
+
+            // 2. Calculation based on Net Fund Source (Requirement)
+            $overallObligRate = $netSourceBudget > 0 
+                ? ($source['total_obligated'] / $netSourceBudget) * 100 
+                : 0;
+
+            // 3. Overall Efficiency: Disbursement over Net Fund Source
+            $overallEfficiency = $netSourceBudget > 0 
+                ? ($source['total_disbursed'] / $netSourceBudget) * 100 
+                : 0;
+
+            $netTotalUnobligated = $netSourceBudget - $source['total_obligated'];
+        @endphp
+        
         <div class="card-header bg-white py-3" style="cursor: pointer;" data-card-widget="collapse">
             <div class="d-flex justify-content-between align-items-center">
                 <h3 class="card-title text-navy font-weight-bold">
@@ -117,6 +138,49 @@
         </div>
         
         <div class="card-body p-0">
+            <div class="p-4 bg-light border-bottom">
+                <div class="row align-items-center">
+                    <div class="col-md-6">
+                        <label class="text-xs text-muted text-uppercase font-weight-bold mb-3 d-block">Source Performance Bullet Chart</label>
+                        
+                        <div class="bullet-chart-container position-relative mb-2" style="height: 40px;">
+                            <div class="position-absolute w-100 h-100 shadow-sm" style="background: #e9ecef; border-radius: 4px; top:0; left:0;"></div>
+                            
+                            <div class="position-absolute h-100" 
+                                style="width: {{ $overallObligRate }}%; background: #bee5eb; border-radius: 4px; top:0; left:0; transition: width 0.6s ease;"
+                                title="Total Obligated: ₱{{ number_format($source['total_obligated'] , 1) }}"></div>
+                            
+                            <div class="position-absolute" 
+                                style="width: {{ $overallEfficiency }}%; background: #28a745; height: 16px; top: 12px; left:0; z-index: 2; transition: width 0.8s ease;"
+                                title="Total Disbursed: ₱{{ number_format($source['total_disbursed'] , 1) }}"></div>
+                            
+                            <div class="position-absolute h-100" style="width: 2px; background: #343a40; right: 0; top: 0; z-index: 3;"></div>
+                        </div>
+
+                        <div class="d-flex justify-content-between">
+                            <small class="text-muted"><i class="fas fa-square text-success mr-1"></i> Disbursed ({{ number_format($overallEfficiency, 1) }}%)</small>
+                            <small class="text-muted"><i class="fas fa-square" style="color: #bee5eb;"></i> Obligated ({{ number_format($overallObligRate, 1) }}%)</small>
+                            <small class="text-muted font-weight-bold">Total Budget: ₱{{ number_format($netSourceBudget, 0) }}</small>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-3 border-left text-center">
+                        <span class="text-uppercase text-xs text-muted d-block">Efficiency</span>
+                        <h2 class="font-weight-bold mb-0 text-navy">{{ number_format($overallEfficiency, 1) }}%</h2>
+                        <small class="text-muted d-block mt-1" style="font-size: 0.7rem; line-height: 1;">
+                            <i class="fas fa-calculator mr-1"></i> 
+                            ₱{{ number_format($source['total_disbursed'], 0) }} / ₱{{ number_format($netSourceBudget, 0) }}
+                        </small>
+                    </div>
+                    
+                    <div class="col-md-3 border-left text-center">
+                        <span class="text-uppercase text-xs text-muted d-block">Savings</span>
+                        <h2 class="font-weight-bold mb-0 text-primary">₱{{ number_format($netTotalUnobligated, 0) }}</h2>
+                        <small class="text-muted" style="font-size: 0.7rem;">Unobligated Balance</small>
+                    </div>
+                </div>
+            </div>
+            
             <div class="table-responsive" style="max-height: 500px;">
                 <table class="table table-sm table-hover table-sticky mb-0">
                     <thead>
@@ -130,33 +194,40 @@
                             <th class="text-right py-3 border-left-primary">Unobligated/Savings</th>
                         </tr>
                     </thead>
-                    <<tbody>
+                    <tbody>
                         @forelse($source['line_items'] as $item)
                         @php
                             // 1. Calculate the Net Working Budget
                             $pooledAmount = $item['pooled_amount'] ?? 0;
                             $netBudget = $item['activity_budget'] - $pooledAmount;
                             
-                            // 2. Recalculate rates based on Net Budget to ensure accuracy
-                            $currentObligRate = $netBudget > 0 ? ($item['obligated_amount'] / $netBudget) * 100 : 0;
-                            $currentDisbRate = $netBudget > 0 ? ($item['disbursed_amount'] / $netBudget) * 100 : 0;
+                            $obligated = $item['obligated_amount'] ?? 0;
+                            $disbursed = $item['disbursed_amount'] ?? 0;
+
+                            // 2. Dynamic Savings/Unobligated Calculation
+                            // Logic: Use Disbursement if available (>0), otherwise use Obligation.
+                            $isDisbursed = $disbursed > 0;
+                            $unobligatedBalance = $isDisbursed 
+                                ? ($netBudget - $disbursed) 
+                                : ($netBudget - $obligated);
                             
-                            // 3. Unobligated is now Net Budget minus Obligated
-                            $unobligatedBalance = $netBudget - $item['obligated_amount'];
+                            // 3. Recalculate rates based on Net Budget
+                            $currentObligRate = $netBudget > 0 ? ($obligated / $netBudget) * 100 : 0;
+                            $currentDisbRate = $obligated > 0 ? ($disbursed / $obligated) * 100 : 0;
+
+                            // 4. Identify if "Actual Savings" occurred (Price drop during payment)
+                            $extraSavingsRealized = $isDisbursed && ($disbursed < $obligated);
                         @endphp
                         <tr>
                             <td class="pl-4 align-middle">
                                 <span class="font-weight-600 text-dark d-block">{{ $item['name'] }}</span>
                                 
-                                {{-- Badge for Pooled Funds with Remarks --}}
+                                {{-- Badge for Pooled Funds --}}
                                 @if($pooledAmount > 0)
                                     <div class="mt-1">
                                         <span class="badge badge-danger text-xs px-2 shadow-sm" 
                                             title="{{ $item['pooled_remarks'] ?? 'No remarks provided' }}">
                                             <i class="fas fa-university mr-1"></i>Pooled: ₱{{ number_format($pooledAmount, 2) }}
-                                            @if(!empty($item['pooled_remarks']))
-                                                <i class="fas fa-comment-dots ml-1 opacity-75"></i>
-                                            @endif
                                         </span>
                                     </div>
                                 @endif
@@ -168,14 +239,14 @@
                                     ₱{{ number_format($netBudget, 2) }}
                                 </div>
 
-                                {{-- Reference: The Original Allotment (if pooling exists) --}}
+                                {{-- Reference: The Original Allotment --}}
                                 @if($pooledAmount > 0)
                                     <div class="text-xs text-muted" style="text-decoration: line-through;">
                                         Allotted: ₱{{ number_format($item['activity_budget'], 2) }}
                                     </div>
                                 @endif
 
-                                {{-- Realignment History (Keep your original logic) --}}
+                                {{-- Realignment History --}}
                                 @if(round($item['original_budget'], 2) != round($item['activity_budget'], 2))
                                     <div class="text-xs text-primary" title="Original Budget before realignment">
                                         <i class="fas fa-history mr-1"></i>Orig: ₱{{ number_format($item['original_budget'], 2) }}
@@ -184,29 +255,34 @@
                             </td>
 
                             <td class="text-right align-middle financial-number text-info font-weight-bold border-left-info">
-                                ₱{{ number_format($item['obligated_amount'], 2) }}
+                                ₱{{ number_format($obligated, 2) }}
                             </td>
                             
                             <td class="text-center align-middle bg-light">
-                                {{-- Updated Rate based on Net --}}
                                 <span class="badge {{ $currentObligRate >= 90 ? 'badge-success' : ($currentObligRate > 0 ? 'badge-warning' : 'badge-danger') }} shadow-none" style="width: 50px;">
                                     {{ number_format($currentObligRate, 1) }}%
                                 </span>
                             </td>
 
                             <td class="text-right align-middle financial-number text-success font-weight-bold border-left-success">
-                                ₱{{ number_format($item['disbursed_amount'], 2) }}
+                                ₱{{ number_format($disbursed, 2) }}
                             </td>
 
                             <td class="text-center align-middle">
-                                {{-- Updated Rate based on Net --}}
                                 <span class="badge {{ $currentDisbRate >= 90 ? 'badge-success' : ($currentDisbRate > 0 ? 'badge-warning' : 'badge-danger') }} shadow-none" style="width: 50px;">
                                     {{ number_format($currentDisbRate, 1) }}%
                                 </span>
                             </td>
 
                             <td class="text-right align-middle financial-number text-primary font-weight-bold border-left-primary">
-                                ₱{{ number_format($unobligatedBalance, 2) }}
+                                <div>₱{{ number_format($unobligatedBalance, 2) }}</div>
+                                
+                                {{-- Visual indicator for actual savings --}}
+                                @if($extraSavingsRealized)
+                                    <span class="badge badge-success mt-1 shadow-sm" style="font-size: 10px;" title="Savings increased due to lower actual cost during disbursement">
+                                        <i class="fas fa-arrow-up mr-1"></i>Actual Savings
+                                    </span>
+                                @endif
                             </td>
                         </tr>
                         @empty
@@ -229,7 +305,9 @@
 
                             // 3. Recalculate overall rates based on the NET budget
                             $overallObligRate = $netSourceBudget > 0 ? ($source['total_obligated'] / $netSourceBudget) * 100 : 0;
-                            $overallDisbRate = $netSourceBudget > 0 ? ($source['total_disbursed'] / $netSourceBudget) * 100 : 0;
+                            $overallDisbRate = ($source['total_obligated'] > 0) 
+                                ? ($source['total_disbursed'] / $source['total_obligated']) * 100 
+                                : 0;
                             
                             // 4. Recalculate total unobligated (Net - Obligated)
                             $netTotalUnobligated = $netSourceBudget - $source['total_obligated'];

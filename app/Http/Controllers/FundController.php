@@ -66,9 +66,14 @@ class FundController extends Controller
             $mergedRemarks = $group->pluck('remarks')
                 ->filter()
                 ->unique()
-                ->implode('; '); // Or use " | " as a separator
+                ->implode('; ');
 
+            // 1. UPDATED CALCULATION LOGIC
+            // Priority: Disbursement > Obligation > Processed Amount
             $calculatedTotal = $group->sum(function($item) {
+                if (in_array($item->status, ['Disbursed', 'Completed']) && $item->disbursement_amount > 0) {
+                    return $item->disbursement_amount;
+                }
                 return ($item->obligation_amount > 0) ? $item->obligation_amount : $item->amount;
             });
 
@@ -76,9 +81,13 @@ class FundController extends Controller
             $hasCompleted = $group->contains('status', 'Completed');
             $hasObligated = $group->contains('status', 'Obligated');
 
-            // SYNC LOGIC: Check if ANY item in the group is Obligated but missing an amount
+            // 2. UPDATED SYNC LOGIC
+            // Now also checks if Disbursed items are missing their actual amount
             $needsSync = $group->contains(function ($item) {
-                return $item->status === 'Obligated' && (empty($item->obligation_amount) || $item->obligation_amount <= 0);
+                $isObligatedMissing = ($item->status === 'Obligated' && (empty($item->obligation_amount) || $item->obligation_amount <= 0));
+                $isDisbursedMissing = (in_array($item->status, ['Disbursed', 'Completed']) && (empty($item->disbursement_amount) || $item->disbursement_amount <= 0));
+                
+                return $isObligatedMissing || $isDisbursedMissing;
             });
 
             // Priority Status
@@ -100,22 +109,23 @@ class FundController extends Controller
                 'all_remarks'        => $mergedRemarks,
                 'dtrack_update_date' => $first->dtrack_update_date,
                 'total_amount'       => $calculatedTotal,
-                'is_fully_synced'    => !$needsSync, // Sync is FALSE if even ONE item needs sync
+                'is_fully_synced'    => !$needsSync,
                 'group_status'       => $priorityStatus,
                 'source_names'       => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
                 'activity_names'     => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
                 'breakdown'          => $group->map(function($item) {
                     return (object) [
-                        'id'                => $item->id,
-                        'source_name'       => $item->fundSource->name ?? 'N/A',
-                        'amount'            => $item->amount,
-                        'status'            => $item->status,
-                        'obligation_serial' => $item->obligation_serial,
-                        'remarks'           => $item->remarks,
-                        'status_date'       => $item->status_date,
-                        'disbursement_date' => $item->disbursement_date,
-                        'obligation_amount' => $item->obligation_amount, 
-                        'obligation_date'   => $item->obligation_date,
+                        'id'                  => $item->id,
+                        'source_name'         => $item->fundSource->name ?? 'N/A',
+                        'amount'              => $item->amount,
+                        'status'              => $item->status,
+                        'obligation_serial'   => $item->obligation_serial,
+                        'remarks'             => $item->remarks,
+                        'status_date'         => $item->status_date,
+                        'disbursement_date'   => $item->disbursement_date,
+                        'obligation_amount'   => $item->obligation_amount, 
+                        'obligation_date'     => $item->obligation_date,
+                        'disbursement_amount' => $item->disbursement_amount, // Key name confirmed
                     ];
                 }),
             ];
@@ -130,7 +140,21 @@ class FundController extends Controller
                     ->get();
                     
         $employees = \App\Models\Employee::orderBy('last_name')->get();
-        $activities = \App\Models\Activity::all(); 
+        
+        // Check budget vs pooled_amount for each activity
+        $activities = \App\Models\Activity::all()->map(function ($activity) {
+            $baseBudget = !is_null($activity->budget_adjusted) ? (float)$activity->budget_adjusted : (float)$activity->budget;
+            $pooled = (float)($activity->pooled_amount ?? 0);
+            
+            // Calculate remaining ceiling
+            $remainingCeiling = $baseBudget - $pooled;
+
+            // Flag as disabled if the remaining ceiling is 0 or less
+            $activity->is_disabled = ($remainingCeiling <= 0);
+            $activity->display_name = $activity->name . ($activity->is_disabled ? ' (No Budget Available)' : '');
+            
+            return $activity;
+        });
 
         // 4. Notification Badges
         $awaitingSyncCount = \App\Models\Fund::where('status', 'Obligated')
@@ -395,48 +419,59 @@ class FundController extends Controller
     public function checkBalance(Request $request)
     {
         try {
+            $sourceId = $request->query('source_of_fund_id');
             $activityId = $request->query('activity_id');
             $inputAmount = (float)$request->query('amount', 0);
+            $currentFundId = $request->query('current_fund_id');
 
-            // 1. Find the activity by ID
             $activity = Activity::find($activityId);
-
             if (!$activity) {
                 return response()->json(['error' => 'Activity not found'], 404);
             }
 
-            // 2. Determine the limit (Use budget_adjusted if available, otherwise original budget)
-            $activeLimit = !is_null($activity->budget_adjusted) 
+            // 1. Determine the Base Budget
+            $baseBudget = !is_null($activity->budget_adjusted) 
                 ? (float)$activity->budget_adjusted 
                 : (float)$activity->budget;
 
-            // 3. Calculate total spent using transaction_type_id
-            // We exclude the current fund ID in one query to be more efficient
-            $currentFundId = $request->query('current_fund_id');
-            
-            $totalSpent = Fund::where('transaction_type_id', $activity->id)
+            // 2. Apply Pooled Deduction
+            $pooledAmount = (float)($activity->pooled_amount ?? 0);
+            $adjustedLimit = $baseBudget - $pooledAmount;
+
+            // 3. Calculate Total Spent (Same priority logic)
+            $totalSpent = Fund::where('transaction_type_id', $activityId)
+                ->where('source_of_fund_id', $sourceId)
+                ->whereNotIn('status', ['Cancelled', 'cancelled']) 
                 ->when($currentFundId, function ($query) use ($currentFundId) {
                     return $query->where('id', '!=', $currentFundId);
                 })
-                ->sum('amount');
+                ->sum(\DB::raw('CASE 
+                    WHEN obligation_amount IS NOT NULL AND obligation_amount > 0 THEN obligation_amount 
+                    ELSE amount 
+                END'));
 
-            // 4. Calculate the real-time balance using our activeLimit
-            $remainingBalance = $activeLimit - (float)$totalSpent;
+            $remainingBalance = $adjustedLimit - (float)$totalSpent;
+            $displayBalance = max(0, $remainingBalance);
 
             return response()->json([
                 'status' => 'success',
-                'original_budget' => (float)$activity->budget,
-                'adjusted_budget' => $activity->budget_adjusted ? (float)$activity->budget_adjusted : null,
-                'active_limit' => $activeLimit, // This tells the JS which one was used
                 'remaining' => $remainingBalance,
-                'is_sufficient' => round($remainingBalance, 2) >= round($inputAmount, 2),
-                'formatted_remaining' => number_format($remainingBalance, 2)
+                // Flag to tell JS to disable this activity in the dropdown
+                'is_depleted' => round($remainingBalance, 2) <= 0, 
+                'is_sufficient' => round($inputAmount, 2) <= round($remainingBalance, 2),
+                'formatted_remaining' => number_format($displayBalance, 2),
+                'debug' => [
+                    'base_budget' => $baseBudget,
+                    'pooled_deducted' => $pooledAmount,
+                    'total_spent' => $totalSpent
+                ]
             ]);
 
         } catch (\Exception $e) {
-            return response()->json(['error' => 'Server Error: ' . $e->getMessage()], 500);
+            return response()->json(['error' => $e->getMessage()], 500);
         }
     }
+
 
     public function show($id)
     {
@@ -454,23 +489,22 @@ class FundController extends Controller
             $dtrackNo = $clickedFund->dtrack_no;
 
             // 1. Get the entire group and group them by Source ID
-            // This ensures we visit every spreadsheet needed for this DTrack
             $fundGroup = Fund::with('fundSource')
                 ->where('dtrack_no', $dtrackNo)
                 ->get()
                 ->groupBy('source_of_fund_id');
 
-            $updatedNames = [];
+            $syncedDetails = []; // To store rich data for the modal
 
             // 2. Iterate through each unique Source/Spreadsheet
             foreach ($fundGroup as $sourceId => $fundsInSource) {
                 $sourceConfig = SourceOfFund::find($sourceId);
                 
                 if (!$sourceConfig || !$sourceConfig->spreadsheet_id || !$sourceConfig->sheet_name) {
-                    continue; // Skip sources with missing config
+                    continue;
                 }
 
-                // 3. Download and Load Spreadsheet (Optimized)
+                // 3. Download and Load Spreadsheet
                 $client = new \Google\Client();
                 $client->setAuthConfig(storage_path('app/google-credentials.json'));
                 $client->addScope(\Google_Service_Drive::DRIVE_READONLY);
@@ -488,7 +522,7 @@ class FundController extends Controller
                 
                 if (!$sheet) continue;
 
-                // 4. Create a tracker for serials belonging ONLY to this specific source
+                // 4. Create tracker for this specific source
                 $tracker = [];
                 foreach ($fundsInSource as $f) {
                     $serial = trim($f->obligation_serial);
@@ -500,46 +534,56 @@ class FundController extends Controller
                     $tracker[$serial]['models'][] = $f;
                 }
 
-                // 5. Single pass over the sheet for this source's serials
+                // 5. Scan sheet
                 $highestRow = $sheet->getHighestRow();
                 for ($row = 1; $row <= $highestRow; $row++) {
                     $sheetSerial = trim((string)$sheet->getCell("C$row")->getValue());
-                    
                     if (isset($tracker[$sheetSerial])) {
                         $tracker[$sheetSerial]['found'] = true;
                         $this->processRowData($sheet, $row, $tracker[$sheetSerial]);
                     }
                 }
 
-                // 6. Update Database for this source
+                // 6. Update Database and build the detail list
                 foreach ($tracker as $serial => $data) {
                     if ($data['found']) {
                         foreach ($data['models'] as $model) {
+                            $finalOb = $data['netOb'];
+                            $finalDisb = min($data['netDisb'], $finalOb);
+                            $status = $finalDisb > 0 ? 'Disbursed' : 'Obligated';
+
                             $model->update([
-                                'obligation_amount'   => $data['netOb'],
+                                'obligation_amount'   => $finalOb,
                                 'obligation_date'     => $data['latestObDate'],
-                                'disbursement_amount' => min($data['netDisb'], $data['netOb']),
+                                'disbursement_amount' => $finalDisb,
                                 'disbursement_date'   => $data['latestDisbDate'],
-                                'status'              => $data['netDisb'] > 0 ? 'Disbursed' : 'Obligated',
+                                'status'              => $status,
                                 'status_date'         => now()->format('Y-m-d')
                             ]);
-                            $updatedNames[] = $model->fundSource->name ?? 'Unknown';
+
+                            // ADD TO DETAILS FOR MODAL
+                            $syncedDetails[] = [
+                                'name'   => $model->fundSource->name ?? 'Unknown',
+                                'serial' => $serial,
+                                'amount' => number_format($finalOb, 2),
+                                'status' => $status
+                            ];
                         }
                     }
                 }
 
-                // Clean up memory per source
                 $spreadsheet->disconnectWorksheets();
                 unset($spreadsheet, $sheet);
                 if (file_exists($tempFile)) @unlink($tempFile);
             }
 
+            // Return detailed array to the frontend
             return response()->json([
                 'success' => true,
                 'details' => [
                     'dtrack_no'    => $dtrackNo,
-                    'synced_names' => array_values(array_unique($updatedNames)),
-                    'count'        => count(array_unique($updatedNames))
+                    'synced_items' => $syncedDetails, // Detailed objects for JS loop
+                    'count'        => count($syncedDetails)
                 ]
             ]);
 

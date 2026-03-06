@@ -1,5 +1,5 @@
 <div class="modal fade" id="addFundModal" role="dialog" aria-labelledby="addFundModalLabel">
-    <div class="modal-dialog modal-xl" role="document"> {{-- Changed to modal-xl for more space --}}
+    <div class="modal-dialog modal-xl" role="document">
         <div class="modal-content">
             <div class="modal-header bg-success text-white">
                 <h5 class="modal-title"><i class="fas fa-file-invoice-dollar mr-2"></i>New Transaction Log</h5>
@@ -50,35 +50,24 @@
                         <table class="table table-bordered bg-light" id="allocation-table">
                             <thead class="thead-dark">
                                 <tr>
-                                    <th style="width: 30%">Source of Fund</th>
-                                    <th style="width: 30%">Activity / Line Item</th>
-                                    <th style="width: 30%">Amount Charged</th>
+                                    <th style="width: 25%">Source of Fund</th>
+                                    <th style="width: 40%">Activity / Line Item</th>
+                                    <th style="width: 25%">Amount Charged</th>
                                     <th style="width: 10%" class="text-center">Action</th>
                                 </tr>
                             </thead>
                             <tbody id="allocation-body">
-                                {{-- Default Row --}}
                                 <tr class="allocation-row">
                                     <td>
-                                        <select name="allocations[0][source_id]" class="form-control source-select" required>
-                                            <option value="">-- Select --</option>
-                                            @foreach($sources as $source)
-                                                <option value="{{ $source->id }}">{{ $source->name }}</option>
-                                            @endforeach
-                                        </select>
-                                    </td>
-                                    {{-- Update just this specific column in your allocation-table --}}
-                                    <td style="width: 40%"> {{-- Increased width slightly for readability --}}
-                                        <select name="allocations[0][activity_id]" class="form-control activity-select select2-dynamic" required disabled>
+                                        </td>
+                                    <td>
+                                        <select name="allocations[0][activity_id]" class="form-control activity-select" required disabled>
                                             <option value="">-- Select Source First --</option>
                                         </select>
+                                        <div class="budget-warning mt-1" style="min-height: 18px; font-size: 0.75rem;"></div>
                                     </td>
                                     <td>
-                                        <div class="input-group">
-                                            <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
-                                            <input type="number" name="allocations[0][amount]" class="form-control amount-field" step="0.01" placeholder="0.00" required>
-                                        </div>
-                                    </td>
+                                        </td>
                                     <td class="text-center">
                                         <button type="button" class="btn btn-danger btn-sm remove-row" disabled><i class="fas fa-trash"></i></button>
                                     </td>
@@ -96,8 +85,14 @@
                 </div>
 
                 <div class="modal-footer bg-light">
+                    <div class="mt-2 px-2">
+                        <div class="alert alert-light border-0 small text-muted py-1" style="background: #f8f9fa;">
+                            <i class="fas fa-info-circle mr-1"></i> 
+                            <strong>Note:</strong> Available balance is calculated based on obligated amounts if available; otherwise, the original processed amount is used.
+                        </div>
+                    </div>
                     <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-success shadow-sm">
+                    <button type="submit" id="submit-btn" class="btn btn-success shadow-sm">
                         <i class="fas fa-save mr-1"></i> Submit
                     </button>
                 </div>

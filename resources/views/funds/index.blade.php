@@ -3,17 +3,28 @@
 @section('content')
 
 <style>
-    /* Force the warning label to be visible and red when over budget */
-    #budget-warning {
+    /* Force the warning to be visible and occupy its own line */
+    .budget-warning {
         display: block !important;
-        margin-top: 8px;
-        min-height: 20px;
+        height: 1.2rem;
+        width: 100%;
+        clear: both;
+        visibility: visible !important;
     }
 
-    /* Standard Bootstrap invalid input styling */
+    /* Ensure the table cell expands to show the red text */
+    #allocation-table td {
+        vertical-align: top !important;
+        padding-bottom: 10px;
+    }
     .is-invalid {
         border-color: #dc3545 !important;
-        background-image: none !important; /* Removes the default bootstrap exclamation icon if preferred */
+        box-shadow: 0 0 0 0.2rem rgba(220, 53, 69, 0.25) !important;
+    }
+
+    /* Fix for the ARIA error - ensures the modal is accessible */
+    .modal.show {
+        aria-hidden: false !important;
     }
 
     select:not([disabled]) + .select2-container .select2-selection {
@@ -205,11 +216,24 @@
                                         {{ $item->source_name }}: 
                                         <span class="font-italic">
                                             @php
-                                                // Logic: Use obligation_amount if it's set and the status warrants it, 
-                                                // otherwise fallback to the original amount.
-                                                $displayAmount = ($item->status !== 'Processed' && $item->obligation_amount > 0) 
-                                                                ? $item->obligation_amount 
-                                                                : $item->amount;
+                                                /**
+                                                 * Updated Logic Hierarchy:
+                                                 * 1. If status is Disbursed/Completed -> Priority: disbursed_amount
+                                                 * 2. If status is Obligated -> Priority: obligation_amount
+                                                 * 3. Fallback -> amount (Processed)
+                                                 */
+                                                $status = $item->status;
+                                                $valDisbursed = $item->disbursement_amount ?? 0;
+                                                $valObligated = $item->obligation_amount ?? 0;
+                                                $valProcessed = $item->amount ?? 0;
+
+                                                if (($status === 'Disbursed' || $status === 'Completed') && $valDisbursed > 0) {
+                                                    $displayAmount = $valDisbursed;
+                                                } elseif ($status === 'Obligated' && $valObligated > 0) {
+                                                    $displayAmount = $valObligated;
+                                                } else {
+                                                    $displayAmount = $valProcessed;
+                                                }
                                             @endphp
                                             ₱{{ number_format($displayAmount, 2) }}
                                         </span>
@@ -278,7 +302,7 @@
                                 @endif
                             </div>
                         @else
-                            {{-- DETAILED VIEW --}}
+                            {{-- DETAILED VIEW SECTION --}}
                             @foreach($fund->breakdown as $item)
                                 <div class="allocation-row {{ !$loop->last ? 'mb-3 border-bottom pb-2' : '' }}">
                                     <div class="small font-weight-bold text-dark mb-1">
@@ -308,11 +332,33 @@
                                                     </div>
                                                 @endif
                                             @endif
+
                                         @elseif(in_array($item->status, ['Disbursed', 'Completed']))
+
+                                        {{-- 2. Original Obligation Date --}}
+                                            @if($item->obligation_date)
+                                                <div class="text-muted" style="font-size: 0.7rem;">
+                                                    <i class="far fa-calendar-alt mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($item->obligation_date)->format('M d, Y') }}
+                                                </div>
+                                            @endif
+
+                                            {{-- 1. Disbursement Date (Primary) --}}
                                             @if($item->disbursement_date)
                                                 <div class="text-success font-weight-bold">
                                                     <i class="fas fa-check-circle mr-1"></i> Disb: {{ \Carbon\Carbon::parse($item->disbursement_date)->format('M d, Y') }}
                                                 </div>
+
+                                                {{-- 3. Lead Time Calculation --}}
+                                                @if($item->disbursement_date)
+                                                    @php
+                                                        $ob = \Carbon\Carbon::parse($item->obligation_date);
+                                                        $disb = \Carbon\Carbon::parse($item->disbursement_date);
+                                                        $days = $ob->diffInDays($disb);
+                                                    @endphp
+                                                    <div class="text-info font-italic" style="font-size: 0.65rem;">
+                                                        <i class="fas fa-hourglass-half mr-1"></i> Lead Time: {{ $days }} {{ Str::plural('day', $days) }}
+                                                    </div>
+                                                @endif
                                             @endif
                                         @endif
 
@@ -323,7 +369,7 @@
                                         @endif
                                     </div>
 
-                                    {{-- Only show individual remarks if they are DIFFERENT from each other --}}
+                                    {{-- Remarks --}}
                                     @if(!$allRemarksSame && $item->remarks)
                                         <div class="mt-1 text-muted small border-left pl-2" style="font-style: italic; background-color: #f9f9f9;">
                                             <i class="fas fa-comment-dots mr-1" style="font-size: 0.7rem;"></i> {{ $item->remarks }}
@@ -344,40 +390,60 @@
 
                     <td class="text-center">
                         @php 
+                            // 1. Check if there are any serials to allow syncing
                             $hasAnySerial = $fund->breakdown->contains(fn($i) => !empty($i->obligation_serial));
-                            $isDeleteDisabled = ($firstItem->status !== 'Routed');
+                            
+                            // 2. Determine if the entire group is disbursed
                             $isDisbursed = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)
                                 ->where('status', 'Disbursed')
                                 ->exists();
+
+                            // 3. Define "Edit/Delete" locking logic
+                            // We allow editing/deleting ONLY if the status is 'Routed'
+                            $isActionDisabled = ($firstItem->status !== 'Routed');
+                            
+                            // 4. Status-specific check for the History/Update button
+                            $isStatusUpdateDisabled = in_array($firstItem->status, ['Disbursed', 'Completed']);
                         @endphp
 
+                        {{-- 1. Update Status / History Button --}}
                         <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
                             style="border-left: 3px solid #17a2b8;"
                             data-id="{{ $fund->id }}" data-dtrack="{{ $fund->dtrack_no }}"
-                            {{ $firstItem->status == 'Disbursed' ? 'disabled' : '' }}>
-                            <i class="fas fa-history {{ $firstItem->status == 'Disbursed' ? 'text-muted' : 'text-info' }}"></i> 
+                            {{ $isStatusUpdateDisabled ? 'disabled' : '' }}
+                            data-toggle="tooltip" title="Update Status">
+                            <i class="fas fa-history {{ $isStatusUpdateDisabled ? 'text-muted' : 'text-info' }}"></i> 
                         </button>
 
+                        {{-- 2. Edit Button --}}
+                        {{-- Now correctly enabled for 'Routed' status --}}
                         <button type="button" class="btn btn-sm btn-default btn-edit-transaction"
                             data-id="{{ $fund->id }}"
-                            {{ $firstItem->status !== 'Routed' ? 'disabled' : '' }}>
-                            <i class="fas fa-edit {{ $firstItem->status !== 'Routed' ? 'text-muted' : 'text-warning' }}"></i> 
+                            {{ $isActionDisabled ? 'disabled' : '' }}
+                            data-toggle="tooltip" 
+                            title="{{ $isActionDisabled ? 'Locked: Only Routed transactions can be edited' : 'Edit Transaction' }}">
+                            <i class="fas fa-edit {{ $isActionDisabled ? 'text-muted' : 'text-warning' }}"></i> 
                         </button>
 
+                        {{-- 3. Sync Button --}}
                         <button type="button" 
                                 class="btn btn-sm {{ $isDisbursed ? 'btn-outline-secondary' : 'btn-outline-info' }} btn-sync-sheet" 
                                 data-id="{{ $fund->id }}"
                                 data-dtrack="{{ $fund->dtrack_no }}"
-                                {{ ($isDisbursed || (isset($hasAnySerial) && !$hasAnySerial)) ? 'disabled' : '' }}
+                                {{ ($isDisbursed || !$hasAnySerial) ? 'disabled' : '' }}
                                 data-toggle="tooltip" 
                                 title="{{ $isDisbursed ? 'Transaction is already Disbursed' : 'Sync with Google Sheet' }}">
                             <i class="fas {{ $isDisbursed ? 'fa-check-double' : 'fa-sync-alt' }}"></i>
                         </button>
 
+                        {{-- 4. Delete Button --}}
                         <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-delete-transaction"
-                            style="border-left: 3px solid {{ $isDeleteDisabled ? '#6c757d' : '#dc3545' }};" 
-                            data-id="{{ $fund->id }}" {{ $isDeleteDisabled ? 'disabled' : '' }}>
-                            <i class="fas fa-trash {{ $isDeleteDisabled ? 'text-muted' : 'text-danger' }}"></i>
+                            style="border-left: 3px solid {{ $isActionDisabled ? '#6c757d' : '#dc3545' }};" 
+                            data-id="{{ $fund->id }}" 
+                            {{ $isActionDisabled ? 'disabled' : '' }}
+                            data-toggle="tooltip"
+                            title="{{ $isActionDisabled ? 'Locked: Only Routed transactions can be deleted' : 'Delete Transaction' }}">
+                            <i class="fas fa-trash {{ $isActionDisabled ? 'text-muted' : 'text-danger' }}"></i>
                         </button>
                     </td>
                 </tr>
@@ -529,9 +595,10 @@
                 <h4>Sync Complete</h4>
                 <p class="text-muted">DTrack: <span id="rs-serial" class="font-weight-bold"></span></p>
 
-                <div class="text-left bg-light p-3 border rounded mb-3" style="max-height: 150px; overflow-y: auto;">
-                    <small class="text-muted text-uppercase d-block mb-2" style="font-size: 0.7rem;">Sources Updated:</small>
-                    <ul id="rs-fund-list" class="list-unstyled mb-0" style="font-size: 0.85rem; color: #333;"></ul>
+                <div class="text-left bg-light p-3 border rounded mb-3" style="max-height: 250px; overflow-y: auto;">
+                    <small class="text-muted text-uppercase d-block mb-2" style="font-size: 0.7rem; letter-spacing: 1px;">Update Details per Source:</small>
+                    <div id="rs-fund-list" style="font-size: 0.8rem;">
+                        </div>
                 </div>
 
                 <div class="row">
@@ -661,14 +728,25 @@
 
     let isBudgetValid = true; // Global flag to track budget status
 
-    function checkBudgetBalance() {
-        let activityId = $('#modal_activity_select').val(); 
-        let amount = parseFloat($('#amount_input').val()) || 0;
-        let warningLabel = $('#budget-warning');
-        let saveBtn = $('#fund-form button[type="submit"], .btn-save-fund');
+    /**
+     * Checks the budget balance for a specific row via AJAX
+     */
+    function checkRowBudgetBalance($row) {
+        let sourceId = $row.find('.source-select').val();
+        let activityId = $row.find('.activity-select').val();
+        let $amountField = $row.find('.amount-field');
+        let amount = parseFloat($amountField.val()) || 0;
         
-        if (!activityId || amount <= 0) {
-            warningLabel.html('').attr('style', '');
+        // 1. Find or Inject the label
+        let warningLabel = $row.find('.budget-warning');
+        if (warningLabel.length === 0) {
+            $row.find('.activity-select').after('<div class="budget-warning mt-1" style="min-height: 18px; font-size: 0.75rem;"></div>');
+            warningLabel = $row.find('.budget-warning');
+        }
+
+        if (!sourceId || !activityId) {
+            warningLabel.html('').hide();
+            $amountField.prop('disabled', false); // Ensure enabled if selection is cleared
             return;
         }
 
@@ -676,64 +754,153 @@
             url: "{{ route('funds.check_balance') }}",
             method: "GET",
             data: {
+                source_of_fund_id: sourceId,
                 activity_id: activityId,
                 amount: amount,
                 current_fund_id: $('#edit_fund_id').val()
             },
             success: function(response) {
-                if (response.is_sufficient) {
-                    isBudgetValid = true;
-                    // Reset to Green
-                    warningLabel.html(`<i class="fas fa-check-circle"></i> Remaining Budget: ₱${response.formatted_remaining}`)
-                                .attr('style', 'color: #28a745 !important; font-weight: normal;');
-                    saveBtn.prop('disabled', false); // ENABLE BUTTON
-                    $('#amount_input').removeClass('is-invalid');
+                // Ensure the label is visible
+                warningLabel.show().css('display', 'block');
+                
+                // Check if the actual remaining balance is zero
+                const remainingBalance = parseFloat(response.remaining) || 0;
+
+                if (remainingBalance <= 0) {
+                    // We use readonly and a background color to show it's locked
+                    // but the '0' will still be submitted to satisfy Laravel
+                    $amountField.val(0)
+                        .prop('readonly', true)
+                        .addClass('bg-light text-muted') 
+                        .removeClass('is-invalid');
+                        
+                    $row.attr('data-budget-valid', 'true');
+                    warningLabel.html(`
+                        <span class="text-danger font-weight-bold">
+                            <i class="fas fa-ban"></i> No Balance Available (₱0.00)
+                        </span>
+                    `);
                 } else {
-                    isBudgetValid = false;
-                    // FORCE BOLD RED
-                    warningLabel.html(`<i class="fas fa-exclamation-triangle"></i> EXCEEDS REMAINING BUDGET: ₱${response.formatted_remaining}`)
-                                .attr('style', 'color: #dc3545 !important; font-weight: bold; font-size: 15px;');
-                    
-                    // Visual feedback on the input box
-                    $('#amount_input').addClass('is-invalid');
-                    
-                    saveBtn.prop('disabled', true); // DISABLE BUTTON
+                    // Normal state
+                    $amountField.prop('readonly', false)
+                        .removeClass('bg-light text-muted');
+                    $row.attr('data-budget-valid', response.is_sufficient ? 'true' : 'false');
+
+                    if (response.is_sufficient) {
+                        warningLabel.html(`
+                            <span class="text-success">
+                                <i class="fas fa-check-circle"></i> Available: ₱${response.formatted_remaining}
+                            </span>
+                        `);
+                        $amountField.removeClass('is-invalid');
+                    } else {
+                        warningLabel.html(`
+                            <div style="border-left: 3px solid #dc3545; padding-left: 5px; background: #fff5f5;">
+                                <span class="text-danger font-weight-bold" style="font-size: 0.75rem;">
+                                    <i class="fas fa-exclamation-triangle"></i> Exceeds! Max: ₱${response.formatted_remaining}
+                                </span>
+                            </div>
+                        `);
+                        $amountField.addClass('is-invalid');
+                    }
                 }
+                
+                // Update global submit button
+                if (typeof validateGlobalSubmit === "function") {
+                    validateGlobalSubmit();
+                }
+            },
+            error: function() {
+                warningLabel.html('<span class="text-muted">Error checking balance.</span>');
             }
         });
     }
 
-    function formatCurrency(amount) {
-        return new Intl.NumberFormat('en-PH', {
-            style: 'currency',
-            currency: 'PHP',
-            minimumFractionDigits: 2
-        }).format(amount);
+    /**
+     * Manages the Submit button state based on all row statuses
+     */
+    function validateGlobalSubmit() {
+        let hasError = false;
+        let grandTotal = 0;
+        
+        // Loop through each row to check validity and calculate the total
+        $('.allocation-row').each(function() {
+            let $row = $(this);
+            let $amountInput = $row.find('.amount-field');
+            
+            // Use a helper to get a clean number, treating empty/invalid as 0
+            let amount = parseFloat($amountInput.val()) || 0;
+
+            // 1. VALIDATION CHECK
+            if ($row.attr('data-budget-valid') === 'false' && !$amountInput.prop('readonly')) {
+                hasError = true;
+            }
+
+            // 2. GRAND TOTAL CALCULATION
+            // Only add to the total if the row is NOT readonly (available balance > 0)
+            if (!$amountInput.prop('readonly')) {
+                grandTotal += amount;
+            }
+        });
+
+        // 3. UPDATE UI
+        // Update the visual Grand Total (Assuming you have an element with this ID)
+        $('#grand-total-display').text('₱ ' + grandTotal.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        }));
+
+        // 4. SUBMIT BUTTON STATE
+        if (hasError) {
+            $('#submit-btn').prop('disabled', true);
+            $('#global-budget-error').fadeIn();
+        } else {
+            $('#submit-btn').prop('disabled', false);
+            $('#global-budget-error').fadeOut();
+        }
     }
 
+    $(document).ready(function() {
+        // 1. Handle dropdown changes immediately
+        $(document).on('change', '.source-select, .activity-select', function() {
+            const $row = $(this).closest('tr');
+            const $amountField = $row.find('.amount-field');
+            const $warningLabel = $row.find('.budget-warning');
 
-    // Trigger checks on input
-    $(document).on('change', '#modal_activity_select', checkBudgetBalance);
-    // 1. Live Formatting Logic
-    $(document).on('input', '#amount_display', function() {
-        // Remove everything except numbers and decimal point
-        let value = $(this).val().replace(/[^0-9.]/g, '');
-        
-        // Split into integer and fraction
-        let parts = value.split('.');
-        if (parts.length > 2) value = parts[0] + '.' + parts.slice(1).join('');
+            // 1. Check if both dropdowns have a value
+            if ($row.find('.source-select').val() && $row.find('.activity-select').val()) {
+                
+                // Show a "Checking..." state so the user knows something is happening
+                $warningLabel.html('<span class="text-muted"><i class="fas fa-spinner fa-spin"></i> Checking balance...</span>').show();
+                
+                // Trigger the AJAX check
+                checkRowBudgetBalance($row);
+                
+            } else {
+                // 2. RESET LOGIC: Re-enable and clear if selection is incomplete
+                $warningLabel.html('').hide();
+                $amountField.prop('disabled', false).val('').removeClass('is-invalid');
+                
+                // Ensure global submit is updated
+                $row.attr('data-budget-valid', 'true');
+                validateGlobalSubmit();
+            }
+        });
 
-        // Update the HIDDEN input with the clean number (e.g. 1500.50)
-        $('#amount_input').val(value);
-
-        // Format the DISPLAY input with commas (e.g. 1,500.50)
-        if (parts[0]) {
-            parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-        }
-        $(this).val(parts.join('.'));
-
-        // 2. Trigger your existing Budget Check
-        checkBudgetBalance();
+        // 2. Optimized Input Listener with Independent Row Debouncing
+        $(document).on('input', '.amount-field', function() {
+            const $row = $(this).closest('tr');
+            
+            // Clear previous timer for THIS row only
+            clearTimeout($row.data('typingTimer'));
+            
+            // Set new timer and save it to the row object
+            const timer = setTimeout(function() {
+                checkRowBudgetBalance($row);
+            }, 400); 
+            
+            $row.data('typingTimer', timer);
+        });
     });
 
     // 3. Update Edit Logic
@@ -808,29 +975,31 @@
             success: function (response) {
                 if (response.success) {
                     const details = response.details;
-                    
-                    // Populate Modal
                     $('#rs-serial').text(details.dtrack_no);
                     
                     const $list = $('#rs-fund-list');
                     $list.empty();
                     
-                    if (details.synced_names.length > 0) {
-                        details.synced_names.forEach(name => {
-                            $list.append(`<li><i class="fas fa-check-circle text-success mr-2"></i> ${name}</li>`);
-                        });
-                    }
+                    details.synced_items.forEach(item => {
+                        const statusBadge = item.status === 'Disbursed' ? 'badge-success' : 'badge-info';
+                        
+                        $list.append(`
+                            <div class="border-bottom pb-2 mb-2">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <span class="font-weight-bold text-dark">${item.name}</span>
+                                    <span class="badge ${statusBadge}">${item.status}</span>
+                                </div>
+                                <div class="d-flex justify-content-between text-muted" style="font-size: 0.75rem;">
+                                    <span>Serial: ${item.serial}</span>
+                                    <span>Amount: ₱${item.amount}</span>
+                                </div>
+                            </div>
+                        `);
+                    });
 
-                    $('#rs-amount').text(`${details.count} Source(s) Updated`);
-                    $('#rs-status').text('Success').addClass('badge-success');
-
+                    $('#rs-amount').text(`${details.count} Record(s)`);
+                    $('#rs-status').text('Sync Successful').addClass('badge-success');
                     $('#syncResultModal').modal('show');
-
-                    // Silent reload for DataTables
-                    if ($.fn.DataTable.isDataTable('#funds-table')) {
-                        // Re-fetch the table instance and reload
-                        $('#funds-table').DataTable().ajax.reload(null, false);
-                    }
                 }
             },
             error: function (xhr) {
@@ -1209,6 +1378,7 @@
             dtrackInput.focus();
             const len = dtrackInput.val().length;
             dtrackInput[0].setSelectionRange(len, len);
+            $(this).removeAttr('aria-hidden');
         });
 
         // 3. DTRACK Input Masking (Lock Year Prefix)
@@ -1255,137 +1425,27 @@
                     // 1. Extract the data object consistently
                     const fundData = response.data ? response.data : response;
 
-                    // 2. If it was an Edit, hide modal and reload to refresh relationships
-                    if (isEdit) {
-                        $('#addFundModal').modal('hide');
-                        $(document).Toasts('create', { class: 'bg-info', title: 'Updated', autohide: true, delay: 2000, body: 'Transaction updated successfully!' });
-                        setTimeout(() => { location.reload(); }, 1000);
-                        return;
-                    }
-
-                    // 3. Define Status and Delete Logic
-                    const currentStatus = fundData.status || 'Routed';
-                    const isDeleteDisabled = (currentStatus !== 'Routed');
-                    
-                    let statusClass = 'primary'; 
-                    if (currentStatus === 'Disbursed' || currentStatus === 'Completed') statusClass = 'success';
-                    else if (currentStatus === 'Cancelled') statusClass = 'danger';
-                    else if (currentStatus === 'Obligated') statusClass = 'navy';
-                    else if (currentStatus === 'For Signature') statusClass = 'warning';
-
-                    const deleteBtnColor = isDeleteDisabled ? '#6c757d' : '#dc3545';
-                    const deleteIconClass = isDeleteDisabled ? 'text-muted' : 'text-danger';
-                    let isSyncDisabled = (currentStatus === 'Routed' || !fundData.obligation_serial) ? 'disabled' : '';
-                    let syncIconClass = (currentStatus === 'Routed') ? 'text-muted' : 'text-success';
-
-                    // 4. UI Helpers
-                    const formatDate = (dateStr) => {
-                        if(!dateStr) return "";
-                        const d = new Date(dateStr);
-                        return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
-                    };
-
-                    const escapeHtml = (text) => {
-                        if (!text) return "";
-                        return text.toString().replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-                    };
-
-                    // 5. Build Creditor Badges
-                    let creditorHtml = '';
-                    if (fundData.creditors && Array.isArray(fundData.creditors) && fundData.creditors.length > 0) {
-                        fundData.creditors.forEach(creditor => {
-                            creditorHtml += `<span class="badge badge-info mr-1">${creditor.full_name || 'N/A'}</span>`;
-                        });
-                    } else {
-                        creditorHtml = '<span class="text-muted italic">N/A</span>';
-                    }
-
-                    // 6. Amount Display Logic
-                    let amountContent = '';
-                    let baseAmount = parseFloat(fundData.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2});
-                    if (currentStatus === 'Disbursed') {
-                        let disbAmt = parseFloat(fundData.disbursement_amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2});
-                        amountContent = `<span class="text-success">₱${disbAmt}</span><div class="text-xs text-muted" style="font-size: 0.6rem;">(DISBURSED)</div>`;
-                    } else if (currentStatus === 'Obligated') {
-                        let oblAmt = parseFloat(fundData.obligation_amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2});
-                        amountContent = `<span class="text-primary">₱${oblAmt}</span><div class="text-xs text-muted" style="font-size: 0.6rem;">(OBLIGATED)</div>`;
-                    } else {
-                        amountContent = `<span>₱${baseAmount}</span><div class="text-xs text-muted" style="font-size: 0.6rem;">(Processed)</div>`;
-                    }
-
-                    // 7. NEW: Use Activity Relationship for the name
-                    // Previously: fundData.transaction_type
-                    let activityName = fundData.activity ? fundData.activity.name : 'N/A';
-                    let sourceName = fundData.fund_source ? fundData.fund_source.name : 'N/A';
-
-                    // 8. Construct Action Buttons (Data attributes updated to match relationship IDs)
-                    let actionButtonsHtml = `
-                        <div class="text-center">
-                            <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
-                                style="border-left: 3px solid #17a2b8;" 
-                                data-id="${fundData.id}" 
-                                data-status="${currentStatus}" 
-                                data-remarks="${escapeHtml(fundData.remarks)}"
-                                data-particulars="${escapeHtml(fundData.particulars)}"> 
-                                <i class="fas fa-history text-info"></i>
-                            </button>
-                            <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-edit-transaction"
-                                style="border-left: 3px solid #ffc107;" 
-                                data-id="${fundData.id}" 
-                                data-status="${currentStatus}" 
-                                data-activity-id="${fundData.transaction_type_id}">
-                                <i class="fas fa-edit text-warning"></i>
-                            </button>
-                            <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-sync-sheet"
-                                style="border-left: 3px solid #28a745;" 
-                                data-id="${fundData.id}" 
-                                ${isSyncDisabled}>
-                                <i class="fas fa-sync-alt ${syncIconClass}"></i>
-                            </button>
-                            <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-delete-transaction"
-                                ${isDeleteDisabled ? 'disabled' : ''}
-                                style="border-left: 3px solid ${deleteBtnColor};"
-                                data-id="${fundData.id}">
-                                <i class="fas fa-trash ${deleteIconClass}"></i>
-                            </button>
-                        </div>`;
-                    
-                    // 9. ADD TO DATATABLE
-                    let rowNode = table.row.add([
-                        `<strong>${fundData.dtrack_no}</strong>`, 
-                        // CHANGE THIS: Provide both display and @data-order values
-                        {
-                            display: formatDate(fundData.transaction_date),
-                            '@data-order': fundData.transaction_date // This is the YYYY-MM-DD version
-                        },
-                        creditorHtml, 
-                        sourceName, 
-                        activityName, // Updated to use relationship-based name
-                        `<div class="text-right font-weight-bold">${amountContent}</div>`, 
-                        `<span class="badge badge-${statusClass} shadow-sm px-2">${currentStatus}</span>`, 
-                        actionButtonsHtml 
-                    ]).draw(false).node();
-
-                    // Re-sort to ensure it stays at the top
-                    table.order([1, 'desc']).draw();
-
-                    // 10. Effects and Cleanup
+                    // 2. Hide modal immediately
                     $('#addFundModal').modal('hide');
-                    $('#fund-form')[0].reset();
-                    $('.select2').val(null).trigger('change');
-                    
-                    $(rowNode).addClass('new-row-highlight').hide();
-                    $('#funds-table tbody').prepend(rowNode); 
-                    $(rowNode).fadeIn(1000);
-                    $(rowNode).find('[data-toggle="tooltip"]').tooltip();
 
-                    $(document).Toasts('create', {
-                        class: 'bg-success',
-                        title: 'Success',
-                        autohide: true,
-                        delay: 3000,
-                        body: 'Transaction ' + fundData.dtrack_no + ' logged successfully!'
+                    // 3. Show Success Toast
+                    const message = isEdit ? 'Transaction updated successfully!' : 'Transaction ' + (fundData.dtrack_no || "") + ' logged successfully!';
+                    $(document).Toasts('create', { 
+                        class: 'bg-success', 
+                        title: 'Success', 
+                        autohide: true, 
+                        delay: 2000, 
+                        body: message 
                     });
+
+                    // 4. Refresh the page after a short delay
+                    // This ensures the user sees the toast and the backend relationships are perfectly rendered
+                    setTimeout(() => { 
+                        location.reload(); 
+                    }, 1000);
+
+                    // Everything else (UI building, DataTable row.add, etc.) is removed 
+                    // because the refresh will handle the data display.
                 },
                 error: function(xhr) {
                     $('.form-control').removeClass('is-invalid');
@@ -1411,6 +1471,7 @@
             
             const dtrack = $(this).data('dtrack');
             const id = $(this).data('id');
+            $('.modal-title').html('<i class="fas fa-history mr-2 text-info"></i>Update Status: ' + dtrack);
 
             // 1. Force close and reset to prevent ghosting data
             $('#statusModal').modal('hide');
@@ -1566,14 +1627,20 @@
 
         $(document).on('click', '.btn-edit-transaction', function() {
             const id = $(this).data('id');
-            const status = ($(this).attr('data-status') || '').trim().toLowerCase();
+            
+            // Use a fallback to 'routed' if no status is found to avoid unnecessary locking
+            // Ensure we convert to lowercase for a reliable comparison
+            const status = ($(this).attr('data-status') || 'routed').trim().toLowerCase();
 
-            // 1. Safety check
-            if (status !== 'routed' && status !== 'for signature') {
+            // 1. Safety check: Added 'processed' if you consider that editable, 
+            // but kept your 'routed' and 'for signature' logic.
+            const editableStatuses = ['routed', 'for signature', 'processed'];
+            
+            if (!editableStatuses.includes(status)) {
                 $(document).Toasts('create', { 
                     class: 'bg-warning', 
-                    title: 'Locked', 
-                    body: 'This transaction is locked and cannot be edited.' 
+                    title: '<i class="fas fa-lock mr-2"></i> Transaction Locked', 
+                    body: 'This transaction has moved beyond the routing stage (' + status.toUpperCase() + ') and cannot be edited.' 
                 });
                 return false;
             }
@@ -1593,34 +1660,35 @@
                 // 3. Global Fields
                 $('#dtrack_input').val(main.dtrack_no);
                 
-                // FIX: Improved Date Parsing to ensure YYYY-MM-DD format
                 if (main.transaction_date) {
                     $('#transaction_date').val(main.transaction_date.split('T')[0]);
                 }
 
                 $('#particulars_input').val(main.particulars);
 
-                // FIX: Match the key sent from Controller (creditor_ids)
                 if (data.creditor_ids) {
                     $('#creditor_select').val(data.creditor_ids).trigger('change');
                 }
 
                 // 4. Populate Allocations
-                $('#allocation-body').empty(); // Clear existing rows
+                $('#allocation-body').empty(); 
 
                 allocations.forEach((alloc, index) => {
-                    // Add a new row for each allocation
-                    addNewAllocationRow(index, alloc.id);
-                    
-                    // Get the specific row just added
+                    addNewAllocationRow(index, alloc.id); // This calls your adder function
                     const row = $(`.allocation-row`).last();
                     
-                    // Set Source and Amount
+                    // If it's the first row being restored, hide its delete button
+                    if (index === 0) {
+                        row.find('.remove-row')
+                        .prop('disabled', true)
+                        .attr('title', 'Primary allocation cannot be removed') // Optional: Add a tooltip
+                        .css('cursor', 'not-allowed'); // Optional: Visual cue for disabled state
+                    }
+                    
                     row.find('.source-select').val(alloc.source_of_fund_id).trigger('change');
                     row.find('.amount-field').val(alloc.amount);
 
                     // 5. Dependent Dropdown Sync
-                    // Poll for the activity select to be populated via the change trigger
                     let checkExist = setInterval(function() {
                         const activitySelect = row.find('.activity-select');
                         if (activitySelect.find('option[value="' + alloc.transaction_type_id + '"]').length) {
@@ -1630,7 +1698,6 @@
                         }
                     }, 100);
                     
-                    // Stop polling after 3 seconds
                     setTimeout(() => clearInterval(checkExist), 3000);
                 });
 
@@ -1674,23 +1741,7 @@
             $('#allocation-body').append(html);
         }
 
-        function updateGrandTotal() {
-            let grandTotal = 0;
-
-            // Loop through every input with the class 'amount-field'
-            $('.amount-field').each(function() {
-                let value = parseFloat($(this).val());
-                if (!isNaN(value)) {
-                    grandTotal += value;
-                }
-            });
-
-            // Format the number to currency and update the display
-            $('#grand-total-display').text('₱ ' + grandTotal.toLocaleString('en-US', {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2
-            }));
-        }
+        
 
         $(document).on('click', '[data-target="#addFundModal"]', function() {
             // Only reset if it's NOT the edit button being clicked
@@ -1854,11 +1905,93 @@
         });
     });
 
+    function updateGrandTotal() {
+        let grandTotal = 0;
+
+        // 1. Loop through every amount field
+        $('.amount-field').each(function() {
+            const $input = $(this);
+            
+            // LOGIC: If the field is readonly (due to zero balance logic), 
+            // we exclude it from the grand total.
+            if (!$input.prop('readonly')) {
+                let value = parseFloat($input.val());
+                if (!isNaN(value)) {
+                    grandTotal += value;
+                }
+            }
+        });
+
+        // 2. Format and update the display
+        $('#grand-total-display').text('₱ ' + grandTotal.toLocaleString('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        }));
+
+        // 3. Trigger Global Validation
+        // This ensures that if the total changes, the submit button checks its state
+        if (typeof validateGlobalSubmit === "function") {
+            validateGlobalSubmit();
+        }
+    }
+
     $(document).ready(function() {
         let rowCount = 1;
 
-        // 1. Add New Row
+        /**
+        * NEW: Sync logic to disable already selected activities
+        * Only disables the activity if the Source is the same.
+        */
+        function syncDuplicateActivities() {
+            let selectedPairs = [];
+
+            // 1. Map out all currently selected Source + Activity pairs
+            $('.allocation-row').each(function() {
+                const sourceId = $(this).find('.source-select').val();
+                const activityId = $(this).find('.activity-select').val();
+                if (sourceId && activityId) {
+                    selectedPairs.push({ source: sourceId, activity: activityId });
+                }
+            });
+
+            // 2. Loop through every activity dropdown to update disabled states
+            $('.allocation-row').each(function() {
+                const $currentRow = $(this);
+                const currentSource = $currentRow.find('.source-select').val();
+                const currentActivity = $currentRow.find('.activity-select').val();
+                const $activitySelect = $currentRow.find('.activity-select');
+
+                $activitySelect.find('option').each(function() {
+                    const $option = $(this);
+                    const optionValue = $option.val();
+
+                    if (!optionValue) return;
+
+                    // Check if this specific Activity+Source combo is used in a DIFFERENT row
+                    const isUsedElsewhere = selectedPairs.some(pair => 
+                        pair.source === currentSource && 
+                        pair.activity === optionValue && 
+                        optionValue !== currentActivity
+                    );
+
+                    if (isUsedElsewhere) {
+                        $option.prop('disabled', true).css('color', '#ccc');
+                    } else {
+                        // Only re-enable if it's not disabled by other logic (like zero balance)
+                        if ($option.attr('data-depleted') !== 'true') {
+                            $option.prop('disabled', false).css('color', '');
+                        }
+                    }
+                });
+            });
+        }
+
+        // --- Updated Listeners ---
+
         $('#add-allocation-row').click(function() {
+            // 1. Check if the body is currently empty to determine if this is the "Primary" row
+            const isFirstRow = $('#allocation-body .allocation-row').length === 0;
+            
             let newRow = `
                 <tr class="allocation-row">
                     <td>
@@ -1873,6 +2006,7 @@
                         <select name="allocations[${rowCount}][activity_id]" class="form-control activity-select" required disabled>
                             <option value="">-- Select Source First --</option>
                         </select>
+                        <div class="budget-warning mt-1" style="min-height: 18px; font-size: 0.75rem;"></div>
                     </td>
                     <td>
                         <div class="input-group">
@@ -1881,55 +2015,85 @@
                         </div>
                     </td>
                     <td class="text-center">
-                        <button type="button" class="btn btn-danger btn-sm remove-row"><i class="fas fa-trash"></i></button>
+                        <button type="button" 
+                                class="btn btn-danger btn-sm remove-row" 
+                                ${isFirstRow ? 'disabled style="cursor: not-allowed;" title="First row cannot be deleted"' : ''}>
+                            <i class="fas fa-trash"></i>
+                        </button>
                     </td>
                 </tr>`;
+            
+            // 2. Append the full row
             $('#allocation-body').append(newRow);
+            
+            // 3. Increment index and refresh UI states
             rowCount++;
             updateGrandTotal();
+            
+            // 4. Run the duplicate sync to ensure selections are locked correctly
+            if (typeof syncDuplicateActivities === "function") {
+                syncDuplicateActivities();
+            }
         });
 
-        // 2. Remove Row
         $(document).on('click', '.remove-row', function() {
             $(this).closest('tr').remove();
+            
+            // If only one row remains after deletion, disable its trash button
+            if ($('#allocation-body .allocation-row').length === 1) {
+                $('#allocation-body .allocation-row').find('.remove-row')
+                    .prop('disabled', true)
+                    .css('cursor', 'not-allowed');
+            }
+
             updateGrandTotal();
+            syncDuplicateActivities();
         });
 
-        // 3. Dependent Dropdown (Source -> Activity)
+        // Handle Source Change
         $(document).on('change', '.source-select', function() {
             const sourceId = $(this).val();
-            const row = $(this).closest('tr');
-            const activitySelect = row.find('.activity-select');
+            const $row = $(this).closest('tr');
+            const activitySelect = $row.find('.activity-select');
+            const warningLabel = $row.find('.budget-warning');
+
+            warningLabel.html('').hide();
+            $row.removeAttr('data-budget-valid');
+            $row.find('.amount-field').removeClass('is-invalid');
 
             if (!sourceId) {
                 activitySelect.html('<option value="">-- Select Source First --</option>').prop('disabled', true);
+                syncDuplicateActivities();
                 return;
             }
 
-            // Fetch Activities via AJAX
             activitySelect.prop('disabled', false).html('<option value="">Loading...</option>');
+            
             $.get(`/api/sources/${sourceId}/activities`, function(data) {
                 let options = '<option value="">-- Select Activity --</option>';
                 data.forEach(act => {
                     options += `<option value="${act.id}">${act.name}</option>`;
                 });
                 activitySelect.html(options);
+                
+                syncDuplicateActivities(); // Sync after new options load
+                
+                if ($row.find('.amount-field').val() > 0) {
+                    checkRowBudgetBalance($row);
+                }
             });
         });
 
-        // 4. Calculate Grand Total
-        $(document).on('input', '.amount-field', function() {
-            updateGrandTotal();
+        // Handle Activity Change
+        $(document).on('change', '.activity-select', function() {
+            syncDuplicateActivities(); // Sync immediately when user picks an activity
+            if (typeof checkRowBudgetBalance === "function") {
+                checkRowBudgetBalance($(this).closest('tr'));
+            }
         });
 
-        function updateGrandTotal() {
-            let total = 0;
-            $('.amount-field').each(function() {
-                let val = parseFloat($(this).val()) || 0;
-                total += val;
-            });
-            $('#grand-total-display').text('₱ ' + total.toLocaleString(undefined, {minimumFractionDigits: 2}));
-        }
+        // Initial sync call for Edit mode
+        syncDuplicateActivities();
     });
 </script>
 @endsection
