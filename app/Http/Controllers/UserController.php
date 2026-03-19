@@ -2,12 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
-class UserController extends Command
+class UserController extends Controller
 {
     /**
      * Display the form to grant access to an employee.
@@ -37,7 +38,7 @@ class UserController extends Command
         $request->validate([
             'employee_id' => 'required',
             'name'        => 'required|string|max:255',
-            'email'       => 'required|email|unique:users,email',
+            'username'       => 'required|email|unique:users,email',
             'password'    => 'required|min:6',
             'is_admin'    => 'required|in:0,1',
         ]);
@@ -46,12 +47,17 @@ class UserController extends Command
         User::create([
             'employee_id' => $request->employee_id,
             'name'        => $request->name,
-            'email'       => $request->email,
+            'username'       => $request->email,
             'password'    => Hash::make($request->password), // Encrypt the password
             'is_admin'    => $request->is_admin, // 1 for Admin, 0 for User
         ]);
 
         return redirect()->route('admin.users.index')
             ->with('success', 'User access granted successfully!');
+    }
+
+    public function username()
+    {
+        return 'username';
     }
 }

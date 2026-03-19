@@ -25,10 +25,24 @@
                             <input type="date" name="transaction_date" id="transaction_date" class="form-control" value="{{ date('Y-m-d') }}" required>
                         </div>
                         <div class="col-md-6 form-group">
-                            <label class="font-weight-bold"><i class="fas fa-users mr-1"></i> Creditors / Payees</label>
-                            <select name="creditor_ids[]" id="creditor_select" class="form-control select2" multiple="multiple" style="width: 100%;">
-                                @foreach($employees as $employee)
-                                    <option value="{{ $employee->id }}">{{ $employee->full_name }}</option>
+                            <label class="font-weight-bold">
+                                <i class="fas fa-users mr-1 text-primary"></i> Creditors / Payees 
+                                <small class="text-muted ml-1">
+                                    @if(auth()->user()->is_admin)
+                                        (All Personnel)
+                                    @else
+                                        {{-- This shows the section name we joined in the controller --}}
+                                        (Section: {{ $employees->first()->secname ?? 'My Section' }})
+                                    @endif
+                                </small>
+                            </label>
+                            
+                            <select name="creditor_ids[]" id="creditor_select" class="form-control select2" multiple="multiple" style="width: 100%;" data-placeholder="Select creditors...">
+                                @foreach($employees as $emp)
+                                    {{-- We use the 'fullname' attribute created in the controller map --}}
+                                    <option value="{{ $emp->dbedid }}">
+                                        {{ $emp->fullname }} {{ $emp->suffix }}
+                                    </option>
                                 @endforeach
                             </select>
                         </div>

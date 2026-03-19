@@ -7,11 +7,17 @@ use App\Models\Activity;
 use App\Models\Fund; 
 use App\Models\ImportTemplate; 
 use App\Imports\WfpActivitiesImport;
+use App\Models\External\CommonDivision;
+use App\Models\External\CommonEmpDetail;
+use App\Models\External\CommonEmployee;
+use App\Models\External\CommonPosition;
+use App\Models\External\CommonSection;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
-
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Http\Request;
 
 class SettingsController extends Controller
@@ -21,30 +27,53 @@ class SettingsController extends Controller
         // 1. Current Year for logic checks
         $currentYear = date('Y');
 
-        // 2. Fetch all Sources (showing all years)
+        // 2. Fetch all Sources (showing all years for the list)
         $sources = SourceOfFund::orderBy('fiscal_year', 'desc')->get();
 
-        // 3. Fetch all Employees
-        $employees = Employee::orderBy('last_name')->get();
-
         // 4. Fetch ALL Activities from all years
-        // We order by source year so history is grouped logically
         $activities = Activity::with('source')
             ->join('source_of_funds', 'activities.source_of_fund_id', '=', 'source_of_funds.id')
             ->select('activities.*')
-            ->orderBy('source_of_funds.fiscaL_year', 'desc')
+            ->orderBy('source_of_funds.fiscal_year', 'desc')
             ->get();
 
         // 5. Fetch template
         $template = \App\Models\ImportTemplate::first();
 
+        // 6. Fetch helper lists for the form
+        $objectives = \App\Models\Activity::whereNotNull('objective')->distinct()->pluck('objective');
+        $budgetLineItems = \App\Models\Activity::whereNotNull('budget_line_item')->distinct()->pluck('budget_line_item');
+
+        // UPDATED: Filter fund sources to only show the current fiscal year
+        $fundSources = \App\Models\SourceOfFund::where('fiscal_year', $currentYear)
+            ->orderBy('name')
+            ->get();
+
         return view('admin.settings', compact(
             'sources', 
-            'employees', 
             'activities', 
             'template', 
-            'currentYear'
+            'currentYear', 
+            'objectives', 
+            'budgetLineItems', 
+            'fundSources'
         ));
+    }
+
+    //FOR ACCOUNT MANAGEMENT
+    public function userIndex()
+    {
+        // 1. Filter: where('is_admin', 0) excludes the administrator
+        // 2. Eager Load: loading the full 4-table chain to prevent N+1 errors
+        $users = \App\Models\User::where('is_admin', 0)
+            ->with([
+                'employeeDetail.commonDetail.employee',
+                'employeeDetail.commonDetail.position',
+                'employeeDetail.commonDetail.section'
+            ])
+            ->get();
+
+        return view('admin.settings.account_management', compact('users'));
     }
 
     public function storeSource(Request $request) 
@@ -99,7 +128,7 @@ class SettingsController extends Controller
         ]);
 
         // 1. Calculate the total budget already distributed to activities
-        $totalAllocatedToActivities = $source->activities()->sum('budget');
+        $totalAllocatedToActivities = $source->activities()->sum('budget_adjusted');
 
         // 2. Compare with the new proposed total_amount
         if ($request->total_amount < $totalAllocatedToActivities) {
@@ -322,6 +351,246 @@ class SettingsController extends Controller
         ]);
 
         return back()->with('success', 'Funds pooled and remarks recorded.');
+    }
+
+    //for manual encoding of WFP
+    public function storeWfp(Request $request)
+    {
+        $validated = $request->validate([
+            'objective' => 'required|string',
+            'budget_line_item' => 'required|string',
+            'source_of_fund_id' => 'required|exists:source_of_funds,id',
+            'uacs_code' => 'nullable|numeric',
+            'name' => 'required|string',
+            'budget_amount' => 'required|numeric',
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date',
+            'target_quarters' => 'nullable|array',
+        ]);
+
+        // 1. Check for Duplicate Entry
+        $exists = Activity::where('objective', $validated['objective'])
+            ->where('budget_line_item', $validated['budget_line_item'])
+            ->where('source_of_fund_id', $validated['source_of_fund_id'])
+            ->where('name', $validated['name'])
+            ->where('budget', $validated['budget_amount'])
+            ->exists();
+
+        if ($exists) {
+            return back()
+                ->withInput() // Keeps the user's data in the form
+                ->withErrors(['duplicate' => 'This exact activity already exists in the records.']);
+        }
+
+        // 2. Auto-fill budget_adjusted
+        $validated['budget_adjusted'] = $request->budget_amount;
+        $validated['budget'] = $request->budget_amount;
+
+        // 3. Create Activity
+        Activity::create($validated);
+
+        return back()->with('success', 'Activity saved successfully!');
+    }
+
+    // register new user account or update existing user accounts
+    public function registerEmployee(Request $request)
+    {
+        // 1. Validation
+        $request->validate([
+            'empid'    => 'required|integer', // Represents the dbedid
+            'username' => 'required|string|max:255', 
+            'password' => 'required|min:8',
+        ]);
+
+        $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
+        
+        // 2. Generate the Searchable Hash (One-way)
+        // We use strtolower to ensure "JohnDoe" and "johndoe" result in the same hash.
+        $usernameHash = hash('sha256', strtolower($request->username));
+
+        // 3. Prepare Encrypted Value for MySQL
+        // Note: We use DB::raw for the update/create to let MySQL handle the AES encryption.
+        $encryptedUsername = DB::raw("AES_ENCRYPT('{$request->username}', '{$key}')");
+
+        DB::beginTransaction();
+
+        try {
+            // CASE A: Check if this Employee (dbedid) is already linked to ANY user
+            $existingDetail = \App\Models\EmployeeDetail::where('dbedid', $request->empid)->first();
+
+            if ($existingDetail) {
+                $user = $existingDetail->user;
+                $user->update([
+                    'username'      => $encryptedUsername,
+                    'username_hash' => $usernameHash, // Store the hash for login
+                    'password'      => Hash::make($request->password),
+                ]);
+                $message = 'User account credentials updated and encrypted!';
+            } 
+            else {
+                // CASE B & C: Check if a User with this username hash already exists (unlinked)
+                $user = \App\Models\User::where('username_hash', $usernameHash)->first();
+
+                if ($user) {
+                    // Link existing unlinked user to this dbedid
+                    $user->employeeDetail()->updateOrCreate(
+                        ['user_id' => $user->id],
+                        ['dbedid' => $request->empid]
+                    );
+                    
+                    $user->update([
+                        'username' => $encryptedUsername,
+                        'password' => Hash::make($request->password)
+                    ]);
+                    
+                    $message = 'Existing user account linked and secured!';
+                } 
+                else {
+                    // CASE D: Brand new User and brand new Link
+                    $user = \App\Models\User::create([
+                        'username'      => $encryptedUsername,
+                        'username_hash' => $usernameHash,
+                        'password'      => Hash::make($request->password),
+                        'is_admin'      => 0,
+                    ]);
+
+                    $user->employeeDetail()->create([
+                        'dbedid' => $request->empid,
+                    ]);
+
+                    $message = 'New encrypted user account created and linked!';
+                }
+            }
+
+            DB::commit();
+            return redirect()->back()->with('success', $message);
+
+        } catch (\Exception $e) {
+            DB::rollback();
+            return redirect()->back()
+                ->withInput()
+                ->withErrors(['error' => 'System error: ' . $e->getMessage()]);
+        }
+    }
+
+    public function searchExternal(Request $request)
+    {
+        $term = $request->get('q');
+        $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
+
+        // 1. Subquery for latest record
+        $latestDetails = DB::connection('db_common')->table('tbl_emp_details')
+            ->select('empid', DB::raw('MAX(dbedid) as latest_id'))
+            ->groupBy('empid');
+
+        // 2. Main Query with Decryption
+        $employees = DB::connection('db_common')->table('tbl_employee')
+            ->joinSub($latestDetails, 'latest_status', function ($join) {
+                $join->on('tbl_employee.empid', '=', 'latest_status.empid');
+            })
+            ->join('tbl_emp_details', 'latest_status.latest_id', '=', 'tbl_emp_details.dbedid')
+            ->where('tbl_employee.isactive', 1)
+            ->where(function ($query) use ($term, $key) {
+                // Decrypting in the WHERE clause so we can search via plain text
+                $query->whereRaw("CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR) LIKE ?", ["%$term%"])
+                    ->orWhereRaw("CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR) LIKE ?", ["%$term%"])
+                    ->orWhereRaw("CAST(AES_DECRYPT(tbl_employee.mname, '{$key}') AS CHAR) LIKE ?", ["%$term%"]);
+            })
+            ->select(
+                'tbl_emp_details.dbedid', 
+                // This CAST is CRITICAL to prevent the Malformed UTF-8 error in JSON responses
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)) as fname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)) as lname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.mname, '{$key}') AS CHAR)) as mname")
+            )
+            ->limit(15)
+            ->get()
+            ->map(function ($item) {
+                return [
+                    'id'    => $item->dbedid, 
+                    'text'  => $item->fname . ' ' . $item->lname,
+                    'fname' => $item->fname,
+                    'lname' => $item->lname,
+                    'mname' => $item->mname,
+                ];
+            });
+
+        return response()->json($employees);
+    }
+
+    /**
+     * PREVIEW: For the Live Preview Card
+     */
+    public function getExternalDetails($dbedid)
+    {
+        $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
+
+        $details = DB::connection('db_common')->table('tbl_emp_details')
+            ->join('tbl_employee', 'tbl_emp_details.empid', '=', 'tbl_employee.empid')
+            ->leftJoin('tbl_section', 'tbl_emp_details.secid', '=', 'tbl_section.secid')
+            ->leftJoin('tbl_division', 'tbl_emp_details.divid', '=', 'tbl_division.divid')
+            ->leftJoin('tbl_position', 'tbl_emp_details.dbpid', '=', 'tbl_position.dbpid')
+            ->where('tbl_emp_details.dbedid', $dbedid)
+            ->select(
+                'tbl_emp_details.dbedid',
+                'tbl_section.secname as section',
+                'tbl_division.divname as division',
+                'tbl_position.dbposition as position_label',
+                'tbl_emp_details.dbdesignation',
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)) as fname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.mname, '{$key}') AS CHAR)) as mname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)) as lname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.suffix, '{$key}') AS CHAR)) as suffix")
+            )
+            ->first();
+
+        if (!$details) {
+            return response()->json(['error' => 'Record not found'], 404);
+        }
+
+        // Format Middle Initial and Suffix
+        $mi = $details->mname ? ' ' . substr($details->mname, 0, 1) . '.' : '';
+        $suffix = $details->suffix ? ' ' . $details->suffix : '';
+
+        return response()->json([
+            'dbedid'   => $details->dbedid,
+            'fname'    => $details->fname,
+            'mname'    => $details->mname,
+            'lname'    => $details->lname,
+            'name'     => "{$details->fname}{$mi} {$details->lname}{$suffix}",
+            'position' => $details->dbdesignation ?: ($details->position_label ?: 'N/A'),
+            'section'  => $details->section ?? 'N/A',
+            'division' => $details->division ?? 'N/A',
+        ]);
+    }
+
+    public function toggleStatus($id)
+    {
+        $user = \App\Models\User::findOrFail($id);
+        
+        // Toggle between 0 and 1
+        $user->is_active = $user->is_active == 1 ? 0 : 1;
+        $user->save();
+
+        $statusText = $user->is_active == 1 ? 'activated' : 'deactivated';
+        return redirect()->back()->with('success', "User account has been $statusText.");
+    }
+
+    // Update User Password/Details
+    public function updateUser(Request $request, $id)
+    {
+        $request->validate([
+            'password' => 'nullable|min:6|confirmed', // 'confirmed' looks for password_confirmation field
+        ]);
+
+        $user = \App\Models\User::findOrFail($id);
+        
+        if ($request->filled('password')) {
+            $user->password = \Hash::make($request->password);
+        }
+        
+        $user->save();
+        return redirect()->back()->with('success', 'User details updated successfully.');
     }
     
     

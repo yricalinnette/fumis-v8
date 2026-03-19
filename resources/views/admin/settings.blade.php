@@ -1,6 +1,82 @@
 @extends('layouts.adminlte')
 
 @section('content')
+<style>
+    /* Force Select2 to match Bootstrap Input Group height and alignment */
+    .select2-container--default .select2-selection--single {
+        border: 1px solid #ced4da !important;
+        height: calc(2.25rem + 2px) !important; /* Standard Bootstrap Height */
+        display: flex !important;
+        align-items: center !important;
+    }
+
+    /* Remove left rounded corners to connect to the icon */
+    .input-group > .select2-container--default {
+        flex: 1 1 auto !important;
+        width: 1% !important;
+    }
+
+    .input-group > .select2-container--default .select2-selection--single {
+        border-top-left-radius: 0 !important;
+        border-bottom-left-radius: 0 !important;
+    }
+
+    /* Style the text inside the search box */
+    .select2-selection__rendered {
+        color: #495057 !important;
+        padding-left: 0.75rem !important;
+    }
+
+    /* Fix the arrow position */
+    .select2-selection__arrow {
+        height: 34px !important;
+        top: 3px !important;
+    }
+
+    /* Modern Dropdown Item Look */
+    .select2-results__option {
+        padding: 10px !important;
+    }
+
+    .select2-result-employee__title {
+        font-weight: 600;
+        color: #2c3e50;
+        display: block;
+    }
+
+    .select2-result-employee__id {
+        font-size: 11px;
+        color: #007bff;
+        background: #e7f1ff;
+        padding: 1px 5px;
+        border-radius: 3px;
+        margin-top: 3px;
+        display: inline-block;
+    }
+
+    .widget-user-2 .widget-user-header {
+        padding: 1rem;
+        border-top-left-radius: .25rem;
+        border-top-right-radius: .25rem;
+    }
+
+    #preview_initials {
+        border: 2px solid rgba(255,255,255,0.2);
+        text-transform: uppercase;
+    }
+
+    .badge {
+        padding: 0.5em 0.8em;
+        font-size: 85%;
+        font-weight: 500;
+    }
+
+    .tooltip-inner {
+        max-width: 350px; 
+        text-align: left;
+        padding: 10px;
+    }
+</style>
 <div class="container-fluid">
     {{-- Notifications --}}
     @if(session('success'))
@@ -34,19 +110,14 @@
                         <i class="fas fa-university mr-1"></i> Fund Sources
                     </a>
                 </li>
-                <li class="nav-item">
+                {{-- <li class="nav-item">
                     <a class="nav-link" id="tabs-templates-tab" data-toggle="pill" href="#tabs-templates" role="tab">
                         <i class="fas fa-file-excel mr-1"></i> WFP Template Settings
                     </a>
-                </li>
+                </li> --}}
                 <li class="nav-item">
                     <a class="nav-link" id="tabs-activities-tab" data-toggle="pill" href="#tabs-activities" role="tab">
                         <i class="fas fa-tasks mr-1"></i> Activity Allocation (WFP)
-                    </a>
-                </li>
-                <li class="nav-item">
-                    <a class="nav-link" id="tabs-employees-tab" data-toggle="pill" href="#tabs-employees" role="tab">
-                        <i class="fas fa-users mr-1"></i> Employee/Staff
                     </a>
                 </li>
                 <li class="nav-item">
@@ -54,6 +125,12 @@
                         <i class="fas fa-random mr-1"></i> Budget Realignment
                     </a>
                 </li>
+                {{-- <li class="nav-item">
+                    <a class="nav-link" id="tabs-employees-tab" data-toggle="pill" href="#tabs-employees" role="tab">
+                        <i class="fas fa-users mr-1"></i> User Registration
+                    </a>
+                </li> --}}
+                
             </ul>
         </div>
 
@@ -111,10 +188,10 @@
                                     <td class="align-middle text-center">
                                         @if($totalPooled > 0)
                                             @php
-                                                // Prepare the tooltip content string
                                                 $remarksContent = "<b>Pooled Remarks:</b><br>";
                                                 foreach($source->activities->where('pooled_amount', '>', 0) as $act) {
-                                                    $remarksContent .= "• " . e($act->name) . ": " . e($act->pooled_remarks ?? 'No remarks') . "<br>";
+                                                    // Using a div wrapper for better spacing inside the tooltip
+                                                    $remarksContent .= "<div class='text-left mb-1'>• " . e($act->name) . ": " . e($act->pooled_remarks ?? 'No remarks') . "</div>";
                                                 }
                                             @endphp
                                             
@@ -122,6 +199,8 @@
                                                 style="cursor: pointer;"
                                                 data-toggle="tooltip" 
                                                 data-html="true" 
+                                                data-placement="auto" {{-- Let Bootstrap find the best open space --}}
+                                                data-container="body" {{-- Prevents the tooltip from being inside the table cell --}}
                                                 title="{{ $remarksContent }}">
                                                 <i class="fas fa-arrow-down mr-1"></i> ₱{{ number_format($totalPooled, 2) }}
                                             </span>
@@ -167,9 +246,9 @@
                     </div>
                 </div>
 
-                {{-- TAB 2: ACTIVITY ALLOCATION --}}
+                {{-- Activity Allocation --}}
                 <div class="tab-pane fade" id="tabs-activities" role="tabpanel">
-                    
+    
                     <div id="balance_info" class="alert alert-info d-none mb-3">
                         <i class="fas fa-info-circle"></i> <span id="balance_text"></span>
                     </div>
@@ -227,174 +306,405 @@
                         </div>
                     </form>
 
+                    {{-- MANUAL ENCODING SECTION --}}
+                    <div class="card card-outline card-primary shadow-sm mt-3">
+                        <div class="card-header p-0">
+                            <button class="btn btn-link btn-block text-left text-dark font-weight-bold py-2 px-3" 
+                                    type="button" 
+                                    data-toggle="collapse" 
+                                    data-target="#manualEncodingCollapse" 
+                                    aria-expanded="false" 
+                                    aria-controls="manualEncodingCollapse">
+                                <i class="fas fa-edit mr-2 text-primary"></i> 
+                                MANUAL WFP ENCODING
+                                <i class="fas fa-chevron-down float-right mt-1 text-muted"></i>
+                            </button>
+                        </div>
+
+                        <div id="manualEncodingCollapse" class="collapse">
+                            <form action="{{ route('settings.activity.storeWfp') }}" method="POST">
+                                @csrf
+                                <div class="card-body">
+                                    <div class="row">
+                                        {{-- Objective --}}
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label>Objective</label>
+                                                <select name="objective" class="form-control select2" required style="width: 100%;">
+                                                    <option value="">-- Select Objective --</option>
+                                                    @foreach($objectives as $obj)
+                                                        <option value="{{ $obj }}">{{ $obj }}</option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        {{-- Budget Line Item --}}
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label>Budget Line Item</label>
+                                                <select name="budget_line_item" class="form-control select2" required style="width: 100%;">
+                                                    <option value="">-- Select Line Item --</option>
+                                                    @foreach($budgetLineItems as $item)
+                                                        <option value="{{ $item }}">{{ $item }}</option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        {{-- Fund Source --}}
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label>Fund Source</label>
+                                                <select name="source_of_fund_id" class="form-control select2" required style="width: 100%;">
+                                                    <option value="">-- Select Fund Source --</option>
+                                                    @foreach($fundSources as $fs)
+                                                        <option value="{{ $fs->id }}">{{ $fs->name }} (FY {{ $fs->fiscal_year }})</option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        {{-- UACS Code --}}
+                                        <div class="col-md-2">
+                                            <div class="form-group">
+                                                <label>UACS Code</label>
+                                                <input type="number" name="uacs_code" class="form-control" placeholder="e.g. 5020101000">
+                                            </div>
+                                        </div>
+
+                                        {{-- Activity Name --}}
+                                        <div class="col-md-7">
+                                            <div class="form-group">
+                                                <label>Activity Name</label>
+                                                <textarea name="name" class="form-control" rows="3" placeholder="Enter activity description" required></textarea>
+                                            </div>
+                                        </div>
+
+                                        {{-- Cost/Budget --}}
+                                        <div class="col-md-3">
+                                            <div class="form-group">
+                                                <label>Cost / Budget (Original)</label>
+                                                <div class="input-group">
+                                                    <div class="input-group-prepend">
+                                                        <span class="input-group-text">₱</span>
+                                                    </div>
+                                                    <input type="number" name="budget_amount" step="0.01" class="form-control" placeholder="0.00" required>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {{-- Timeframe & Quarters --}}
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label>Start Date</label>
+                                                <input type="date" name="start_date" class="form-control" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label>End Date</label>
+                                                <input type="date" name="end_date" class="form-control" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label class="d-block">Target Quarters</label>
+                                                <div class="d-flex justify-content-between border rounded p-2 bg-light">
+                                                    @foreach(['Q1', 'Q2', 'Q3', 'Q4'] as $q)
+                                                        <div class="custom-control custom-checkbox">
+                                                            <input class="custom-control-input" type="checkbox" name="target_quarters[]" id="encoding{{ $q }}" value="{{ $q }}">
+                                                            <label for="encoding{{ $q }}" class="custom-control-label font-weight-normal">{{ $q }}</label>
+                                                        </div>
+                                                    @endforeach
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card-footer text-right">
+                                    <button type="submit" class="btn btn-primary shadow-sm">
+                                        <i class="fas fa-save mr-1"></i> Save Activity
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
                     <hr class="my-4">
 
-                    {{-- COLLAPSIBLE ACTIVITY GROUPS --}}
+                    {{-- START OF ACTIVITY GROUPS --}}
                     <div id="activitiesAccordion">
+                        {{-- FIX: Restored the Outer Loop grouping by Fiscal Year --}}
                         @foreach($activities->groupBy('source.fiscal_year') as $year => $yearGroups)
                             @php 
                                 $isCurrent = ($year == $currentYear); 
                                 $collapseId = "collapseYear" . $year;
                             @endphp
                             
-                            <div class="card card-dark card-outline mb-2">
-                                <div class="card-header p-0" id="heading{{ $year }}">
+                            <div class="card card-dark card-outline mb-4">
+                                <div class="card-header p-0">
                                     <button class="btn btn-link btn-block text-left text-dark font-weight-bold py-2 px-3" 
-                                            type="button" 
-                                            data-toggle="collapse" 
-                                            data-target="#{{ $collapseId }}" 
-                                            aria-expanded="{{ $isCurrent ? 'true' : 'false' }}">
+                                            type="button" data-toggle="collapse" data-target="#{{ $collapseId }}">
                                         <i class="fas {{ $isCurrent ? 'fa-folder-open' : 'fa-folder' }} mr-2 text-warning"></i> 
                                         FISCAL YEAR {{ $year }} 
                                         @if($isCurrent) <span class="badge badge-success ml-2">Current</span> @endif
-                                        <span class="float-right"><i class="fas fa-chevron-down small"></i></span>
                                     </button>
                                 </div>
 
-                                <div id="{{ $collapseId }}" class="collapse {{ $isCurrent ? 'show' : '' }}" data-parent="#activitiesAccordion">
+                                <div id="{{ $collapseId }}" class="collapse {{ $isCurrent ? 'show' : '' }}">
                                     <div class="card-body p-0">
-                                        <table class="table table-bordered table-sm m-0">
-                                            <thead>
-                                                <tr class="bg-light">
-                                                    <th class="pl-3">Activity Name</th>
-                                                    <th class="text-right" style="width: 250px;">Budget (Distributed / Total)</th>
-                                                    <th class="text-center" style="width: 100px;">Action</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                @foreach($yearGroups->groupBy('source.name') as $sourceName => $groupedActivities)
-                                                    @php
-                                                        // Access the SourceOfFund model from the first activity in the group
-                                                        $source = $groupedActivities->first()->source;
-                                                        
-                                                        $totalPooled = $groupedActivities->sum('pooled_amount');
-                                                        $sumDistributed = $groupedActivities->sum('budget_adjusted');
-                                                        
-                                                        // EFFECTIVE BALANCE = Total Amount(from Source Funds) - Pooled
-                                                        $effectiveSourceFund = $source->total_amount - $totalPooled;
-                                                        // BUDGET BALANCE = Total Adjusted - Pooled
-                                                        $totalAllActivities = $sumDistributed - $totalPooled;
-                                                    @endphp
-                                                    <tr class="bg-gray-light">
-                                                        <td class="font-weight-bold pl-3 italic">
-                                                            <i class="fas fa-layer-group mr-2 text-muted"></i> {{ $sourceName }}
-                                                        </td>
-                                                        <td class="text-right font-weight-bold">
-                                                            <span class="text-primary" title="Sum of all activities below">
-                                                                ₱{{ number_format($totalAllActivities, 2) }}
-                                                            </span>
-                                                            <span class="text-muted mx-1">/</span>
-                                                            <span class="text-dark" title="Effective Total (Original: ₱{{ number_format($source->total_amount, 2) }})">
-                                                                {{-- This is the 'Calculated' amount for Pooled funds --}}
-                                                                ₱{{ number_format($effectiveSourceFund, 2) }}
-                                                            </span>
-                                                        </td>
-                                                        <td class="bg-white text-center">
-                                                            @if($totalPooled > 0)
-                                                                <span class="badge badge-danger" title="Total pooled funds">
-                                                                    Pooled: ₱{{ number_format($totalPooled, 2) }}
-                                                                </span>
-                                                            @endif
-                                                        </td>
-                                                    </tr>
+                                        
+                                        {{-- Grouping by Source Name within the Year --}}
+                                        @foreach($yearGroups->groupBy('source.name') as $sourceName => $groupedActivities)
+                                            @php
+                                                $source = $groupedActivities->first()->source;
+                                                $totalPooled = $groupedActivities->sum('pooled_amount');
 
-                                                    {{-- INDIVIDUAL ACTIVITIES --}}
+                                                // 1. Get the IDs of activities belonging to this specific source group
+                                                $activityIds = $groupedActivities->pluck('id');
+
+                                                // 2. Sum obligations strictly by activity IDs and selected year
+                                                $totalObligations = \App\Models\Fund::whereIn('transaction_type_id', $activityIds)
+                                                    ->whereYear('obligation_date', $year) 
+                                                    ->sum('obligation_amount');
+
+                                                // 3. CORRECTED DISTRIBUTED CALCULATION
+                                                // Sum of all budget_adjusted for these activities
+                                                $sumDistributedRaw = $groupedActivities->sum('budget_adjusted');
+                                                
+                                                // Total Distributed minus what was pooled back
+                                                $netDistributedTotal = $sumDistributedRaw - $totalPooled;
+                                                
+                                                // If you still need to see the Source's original starting balance
+                                                $originalSourceTotal = $source->total_amount; 
+                                                $pooledAdjusted = $originalSourceTotal - $totalPooled;
+                                            @endphp
+
+                                            <div class="mx-3 mt-3 mb-2">
+                                                <div class="callout callout-danger py-2 bg-light shadow-sm border-left-3">
+                                                    <div class="row align-items-center">
+                                                        <div class="col-md-3">
+                                                            <h6 class="mb-0 font-weight-bold">
+                                                                <i class="fas fa-university mr-2 text-secondary"></i>{{ $sourceName }}
+                                                            </h6>
+                                                        </div>
+                                                        <div class="col-md-9 text-right">
+                                                            <span class="mr-3">
+                                                                <small class="text-muted font-weight-bold">DISTRIBUTED/ADJUSTED AMOUNT:</small>
+                                                                    <span class="ml-1 font-weight-bold">
+                                                                        <span class="text-primary" title="Net Distributed to Activities (Total minus Pooled)">
+                                                                            ₱{{ number_format($netDistributedTotal, 2) }}
+                                                                        </span>
+                                                                        <span class="text-muted mx-1">/</span>
+                                                                        <span class="text-dark" title="Total Original Source Fund Allotment">
+                                                                            ₱{{ number_format($pooledAdjusted, 2) }}
+                                                                        </span>
+                                                                    </span>
+                                                            </span>
+
+                                                            <span class="mr-3">
+                                                                <small class="text-muted font-weight-bold">POOLED:</small>
+                                                                <span class="text-danger font-weight-bold ml-1">₱{{ number_format($totalPooled, 2) }}</span>
+                                                            </span>
+
+                                                            <span class="mr-3">
+                                                                <small class="text-muted font-weight-bold">OBLIGATED:</small>
+                                                                <span class="text-orange font-weight-bold ml-1">₱{{ number_format($totalObligations, 2) }}</span>
+                                                            </span>
+
+                                                            {{-- <span class="badge badge-dark p-2">
+                                                                <small class="font-weight-bold">SOURCE BAL:</small>
+                                                                <span class="ml-1">₱{{ number_format($effectiveSourceFund, 2) }}</span>
+                                                            </span> --}}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <table class="table table-bordered table-sm m-0 mb-4">
+                                                <thead>
+                                                    <tr class="bg-gray-light">
+                                                        <th class="pl-3">Activity Details</th>
+                                                        <th class="text-right" style="width: 250px;">Budget (Distributed / Adjusted)</th>
+                                                        <th class="text-center" style="width: 120px;">Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
                                                     @foreach($groupedActivities as $activity)
                                                         @php
-                                                            // CALCULATE NET PER ACTIVITY: Adjusted Budget - Pooled Funds
                                                             $netAllotment = $activity->budget_adjusted - $activity->pooled_amount;
                                                             $hasTransactions = \App\Models\Fund::where('transaction_type_id', $activity->id)->exists();
                                                         @endphp
                                                         <tr>
-                                                            <td class="pl-5 text-secondary">
-                                                                <i class="fas fa-caret-right mr-1"></i> {{ $activity->name }}
-                                                                
+                                                            <td class="pl-4">
+                                                                <i class="fas fa-caret-right mr-1 text-muted"></i> {{ $activity->name }}
                                                                 @if($activity->pooled_amount > 0)
-                                                                    <small class="text-danger italic ml-2">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</small>
-                                                                    
-                                                                    @if($activity->pooled_remarks)
-                                                                        <i class="fas fa-info-circle text-muted ml-1" 
-                                                                        data-toggle="tooltip" 
-                                                                        title="Reason: {{ $activity->pooled_remarks }}"></i>
-                                                                    @endif
+                                                                    <small class="text-danger font-italic ml-2">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</small>
                                                                 @endif
                                                             </td>
                                                             <td class="text-right">
-                                                                <span class="{{ $activity->pooled_amount > 0 ? 'text-strikethrough text-muted small' : 'text-primary' }}">
-                                                                    ₱{{ number_format($activity->budget_adjusted, 2) }}
-                                                                </span>
                                                                 @if($activity->pooled_amount > 0)
+                                                                    <span class="text-muted small" style="text-decoration: line-through;">
+                                                                        ₱{{ number_format($activity->budget_adjusted, 2) }}
+                                                                    </span>
                                                                     <div class="font-weight-bold text-primary">
-                                                                        ₱{{ number_format($netAllotment, 2) }} <small class="text-muted">(Adjusted)</small>
+                                                                        ₱{{ number_format($netAllotment, 2) }}
                                                                     </div>
+                                                                @else
+                                                                    <span class="text-primary font-weight-bold">
+                                                                        ₱{{ number_format($activity->budget_adjusted, 2) }}
+                                                                    </span>
                                                                 @endif
                                                             </td>
                                                             <td class="text-center">
                                                                 @if($isCurrent && !$hasTransactions)
+                                                                    <button type="button" class="btn btn-xs btn-warning" 
+                                                                        onclick="openPoolModal({{ $activity->id }}, '{{ addslashes($activity->name) }}', {{ $activity->budget_adjusted }}, {{ $activity->pooled_amount }}, '{{ addslashes($activity->pooled_remarks) }}')">
+                                                                        <i class="fas fa-hand-holding-usd"></i>
+                                                                    </button>
                                                                     <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST" class="d-inline">
                                                                         @csrf @method('DELETE')
                                                                         <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Confirm deletion?')">
                                                                             <i class="fas fa-trash"></i>
                                                                         </button>
                                                                     </form>
-                                                                    
-                                                                    <button type="button" 
-                                                                        class="btn btn-xs btn-warning" 
-                                                                        onclick="openPoolModal({{ $activity->id }}, '{{ addslashes($activity->name) }}', {{ $activity->budget_adjusted }}, {{ $activity->pooled_amount }}, '{{ addslashes($activity->pooled_remarks) }}')"
-                                                                        title="Pool Funds">
-                                                                        <i class="fas fa-hand-holding-usd"></i>
-                                                                    </button>
                                                                 @else
-                                                                    <i class="fas fa-lock text-muted" title="{{ !$isCurrent ? 'Locked: Previous Year' : 'Locked: Transactions exist' }}"></i>
+                                                                    <i class="fas fa-lock text-muted" title="Locked"></i>
                                                                 @endif
                                                             </td>
                                                         </tr>
                                                     @endforeach
-                                                @endforeach
-                                            </tbody>
-                                        </table>
+                                                </tbody>
+                                                <tfoot>
+                                                    <tr class="bg-light">
+                                                        <td class="text-right font-weight-bold">Total Amount:</td>
+                                                        <td class="text-right font-weight-bold text-dark">
+                                                            ₱{{ number_format($netDistributedTotal, 2) }}
+                                                        </td>
+                                                        <td></td>
+                                                    </tr>
+                                                </tfoot>
+                                            </table>
+                                        @endforeach {{-- End Source Loop --}}
+
                                     </div>
                                 </div>
                             </div>
-                        @endforeach
+                        @endforeach {{-- End Year Loop --}}
                     </div>
                 </div>
 
-                {{-- TAB 3: EMPLOYEES --}}
-                <div class="tab-pane fade" id="tabs-employees" role="tabpanel">
-                    <form action="{{ route('settings.employee.store') }}" method="POST" class="bg-light p-3 border rounded mb-4">
-                        @csrf
-                        <div class="row">
-                            <div class="col-md-3"><label>First Name</label><input type="text" name="first_name" class="form-control" required></div>
-                            <div class="col-md-2"><label>Middle Name</label><input type="text" name="middle_name" class="form-control"></div>
-                            <div class="col-md-3"><label>Last Name</label><input type="text" name="last_name" class="form-control" required></div>
-                            <div class="col-md-4">
-                                <label>Position</label>
-                                <div class="input-group">
-                                    <input type="text" name="position" class="form-control" required>
-                                    <div class="input-group-append"><button type="submit" class="btn btn-info">Add Employee</button></div>
+                {{-- TAB 3: User Registration --}}
+                {{-- <div class="tab-pane fade" id="tabs-employees" role="tabpanel">
+                    <div class="row">
+                        <div class="col-md-7">
+                            <div class="card card-primary card-outline">
+                                <div class="card-header">
+                                    <h3 class="card-title"><i class="fas fa-user-plus mr-1"></i> Register New User</h3>
                                 </div>
+                                <form action="{{ route('settings.register.employee') }}" method="POST">
+                                    @csrf
+                                    <div class="card-body">
+                                        <div class="form-group">
+                                            <label for="employee_select">
+                                                <i class="fas fa-search-user mr-1 text-primary"></i> Search Employee
+                                            </label>
+                                            <div class="input-group">
+                                                <div class="input-group-prepend">
+                                                    <span class="input-group-text bg-white"><i class="fas fa-user-tie"></i></span>
+                                                </div>
+                                                <select name="empid" id="employee_select" class="form-control select2" required>
+                                                    <option value="">-- Start typing name --</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div class="card-body">
+                                            <div class="row">
+                                                <div class="col-md-6">
+                                                    <div class="form-group">
+                                                        <label for="username"><i class="fas fa-user-circle mr-1 text-primary"></i> Login Username</label>
+                                                        <input type="text" name="username" id="username" class="form-control" placeholder="Generated username..." required>
+                                                        <small class="form-text text-muted">Auto-generated based on selected employee.</small>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <div class="form-group">
+                                                        <label for="password"><i class="fas fa-lock mr-1 text-primary"></i> Password</label>
+                                                        <div class="input-group">
+                                                            <input type="password" name="password" id="password" class="form-control" required>
+                                                            <div class="input-group-append">
+                                                                <button class="btn btn-outline-secondary" type="button" id="toggle_password">
+                                                                    <i class="fas fa-eye" id="password_icon"></i>
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div class="row">
+                                                <div class="col-12">
+                                                    <div class="custom-control custom-checkbox mb-3">
+                                                        <input type="checkbox" class="custom-control-input" id="use_default_password">
+                                                        <label class="custom-control-label font-weight-normal" for="use_default_password" style="cursor: pointer;">
+                                                            Use default password <span class="badge badge-light border text-monospace">Zaq12wsx</span>
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <input type="hidden" name="password_confirmation" id="password_confirmation">
+                                        </div>
+                                    </div>
+                                    <div class="card-footer">
+                                        <button type="submit" class="btn btn-primary float-right">Create Account</button>
+                                    </div>
+                                </form>
                             </div>
                         </div>
-                    </form>
-                    <div class="table-responsive" style="max-height: 500px;">
-                        <table class="table table-sm table-hover">
-                            <thead class="bg-light sticky-top">
-                                <tr><th>Full Name</th><th>Position</th></tr>
-                            </thead>
-                            <tbody>
-                                @foreach($employees as $employee)
-                                <tr>
-                                    <td>{{ $employee->full_name }}</td>
-                                    <td><span class="badge badge-info">{{ $employee->position }}</span></td>
-                                </tr>
-                                @endforeach
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
 
-                {{-- TAB 4: WFP TEMPLATE SETTINGS (DYNAMIC TEMPLATE) --}}
+                        <div class="col-md-5">
+                            <div id="preview_card" class="card card-widget widget-user-2 shadow-sm" style="display: none;">
+                                <div class="widget-user-header bg-info">
+                                    <div class="widget-user-image">
+                                        <div id="preview_initials" class="img-circle elevation-2 d-flex align-items-center justify-content-center bg-white text-info font-weight-bold" style="width: 65px; height: 65px; font-size: 24px; float: left;">
+                                            --
+                                        </div>
+                                    </div>
+                                    <div class="ml-5 pl-4">
+                                        <h3 id="preview_name" class="widget-user-username font-weight-bold" style="font-size: 1.5rem; margin-left: 15px;">Employee Name</h3>
+                                        <h5 id="preview_position" class="widget-user-desc" style="margin-left: 15px; opacity: 0.9;">Position</h5>
+                                    </div>
+                                </div>
+                                <div class="card-footer p-0">
+                                    <ul class="nav flex-column">
+                                        <li class="nav-item">
+                                            <span class="nav-link text-dark">
+                                                Section: <span id="preview_section" class="float-right badge bg-primary">N/A</span>
+                                            </span>
+                                        </li>
+                                        <li class="nav-item">
+                                            <span class="nav-link text-dark">
+                                                Division: <span id="preview_division" class="float-right badge bg-success">N/A</span>
+                                            </span>
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+                            
+                            <div id="preview_placeholder" class="text-center p-5">
+                                <i class="fas fa-id-card fa-4x mb-3 d-block"></i>
+                                <p class="text-muted mt-2">Select an employee to see their details</p>
+                            </div>
+
+                            <div id="preview_card" class="card card-widget widget-user-2 shadow-sm" style="display: none;">
+                                </div>
+                        </div>
+                    </div>
+                </div> --}}
+
+                {{-- TAB 4: WFP TEMPLATE SETTINGS (DYNAMIC TEMPLATE)
                 <div class="tab-pane fade" id="tabs-templates" role="tabpanel">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <h5 class="text-muted mb-0"><i class="fas fa-sliders-h mr-2"></i>WFP Template Configuration</h5>
@@ -403,7 +713,7 @@
                     <form action="{{ route('settings.template.update', $template->id ?? 1) }}" method="POST">
                         @csrf
                         @method('PUT')
-                        <div class="row">
+                        <div class="row"> --}}
                             {{-- Header Settings --}}
                             {{-- <div class="col-md-4">
                                 <div class="card card-outline card-info shadow-sm">
@@ -420,7 +730,7 @@
                             </div> --}}
 
                             {{-- Column Mapping --}}
-                            <div class="col-md-12">
+                            {{-- <div class="col-md-12">
                                 <div class="card card-outline card-primary shadow-sm">
                                     <div class="card-header">
                                         <h3 class="card-title font-weight-bold">Column Mapping (Exact Excel Header Names)</h3>
@@ -447,9 +757,9 @@
                                                         <input type="text" name="budget_line_col" class="form-control form-control-sm" 
                                                             value="{{ old('budget_line_col', $template->budget_line_col ?? 'BUDGET LINE ITEM') }}">
                                                     </td>
-                                                </tr>
+                                                </tr> --}}
                                                 {{-- NEW UACS CODE ROW --}}
-                                                <tr>
+                                                {{-- <tr>
                                                     <td class="pl-3 align-middle font-weight-bold">
                                                         UACS Code <i class="fas fa-info-circle text-xs text-muted" title="Unified Accounts Code Structure"></i>
                                                     </td>
@@ -491,7 +801,7 @@
                             </div>
                         </div>
                     </form>
-                </div>
+                </div> --}}
 
                 {{-- TAB 5: BUDGET REALIGNMENT --}}
                 <div class="tab-pane fade" id="tabs-realignment" role="tabpanel">
@@ -828,6 +1138,13 @@
 @section('js')
 <script>
     $(document).ready(function() {
+
+        // Auto-hide alerts after 5 seconds
+        window.setTimeout(function() {
+            $(".alert-success").fadeTo(500, 0).slideUp(500, function(){
+                $(this).remove(); 
+            });
+        }, 5000);
         
         // Logic for preserving tab on refresh
         $('a[data-toggle="pill"]').on('shown.bs.tab', function (e) {
@@ -1012,6 +1329,167 @@
         });
     });
 
+    // $(document).ready(function() {
+    //     // 1. Initialize Select2 with AJAX Search
+    //     const employeeSelect = $('#employee_select').select2({
+    //         minimumInputLength: 3,
+    //         placeholder: 'Search by First Name or Last Name...',
+    //         allowClear: true,
+    //         theme: 'bootstrap4', 
+    //         width: '95%', // Changed to 100% to ensure it fills the container
+    //         ajax: {
+    //             url: "{{ route('employees.external.search') }}",
+    //             dataType: 'json',
+    //             delay: 250,
+    //             data: function (params) {
+    //                 return { q: params.term };
+    //             },
+    //             processResults: function (data) {
+    //                 return { results: data };
+    //             },
+    //             cache: true
+    //         }
+    //     });
+
+    //     // --- AUTO-FOCUS SEARCH BOX ON OPEN ---
+    //     $(document).on('select2:open', function() {
+    //         setTimeout(() => {
+    //             document.querySelector('.select2-search__field').focus();
+    //         }, 10);
+    //     });
+
+    //     // --- AUTO-OPEN SELECT2 WHEN TAB IS CLICKED ---
+    //     $('a[data-toggle="pill"], a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
+    //         if ($(e.target).attr('href') === '#tabs-employees') {
+    //             employeeSelect.select2('open');
+    //         }
+    //     });
+
+    //     // 2. Listen for Selection to Update Preview
+    //     $('#employee_select').on('select2:select', function (e) {
+    //         let empid = e.params.data.id; // This is the dbedid
+
+    //         $.get("{{ url('settings/employees/external/details') }}/" + empid, function(data) {
+                
+    //             // UI Toggle
+    //             $('#preview_placeholder').hide();
+    //             $('#preview_card').fadeIn();
+
+    //             /**
+    //              * Cleaning Helper
+    //              * Now handles the UPPERCASE strings returned from the encrypted DB
+    //              */
+    //             const clean = (str) => {
+    //                 if (!str || str === null) return ""; 
+    //                 return str.toString()
+    //                     .normalize("NFD")
+    //                     .replace(/[\u0300-\u036f]/g, "") // Remove accents
+    //                     .replace(/[^a-zA-Z\s]/g, "");    // Keep only letters and spaces
+    //             };
+
+    //             // --- USERNAME GENERATION (Force Lowercase) ---
+    //             // Example: "JUAN DELA" -> ["JUAN", "DELA"] -> "jd"
+    //             let firstNames = clean(data.fname).trim().split(/\s+/); 
+    //             let fInitials = firstNames.map(name => name.charAt(0)).join('').toLowerCase();
+                
+    //             // Middle Initial logic
+    //             let mInitial = data.mname ? clean(data.mname).trim().charAt(0).toLowerCase() : '';
+                
+    //             // Last Name logic: "CRUZ" -> "cruz"
+    //             let lName = clean(data.lname).replace(/\s+/g, '').toLowerCase();
+
+    //             // Result: jdccruz
+    //             let username = fInitials + mInitial + lName;
+    //             $('input[name="username"]').val(username);
+
+    //             // --- Update Preview Card ---
+    //             // Initials for Avatar (Always Uppercase)
+    //             let avatarInitials = (clean(data.fname).charAt(0) + clean(data.lname).charAt(0)).toUpperCase();
+    //             $('#preview_initials').text(avatarInitials);
+
+    //             // Display Name and Details (Using data directly from AES_DECRYPT)
+    //             $('#preview_name').text(data.name);
+    //             $('#preview_position').text(data.position);
+    //             $('#preview_section').text(data.section);
+    //             $('#preview_division').text(data.division);
+    //         });
+    //     });
+
+    //     // 3. Handle Clear
+    //     $('#employee_select').on('select2:clear', function (e) {
+    //         $('#preview_card').hide();
+    //         $('#preview_placeholder').fadeIn();
+    //         $('input[name="username"]').val('');
+    //         $('#use_default_password').prop('checked', false).trigger('change');
+    //     });
+
+    //     // 4. Default Password Logic
+    //     $('#use_default_password').on('change', function() {
+    //         const passFields = $('#password, #password_confirmation');
+    //         if ($(this).is(':checked')) {
+    //             passFields.val("Zaq12wsx").attr('readonly', true);
+    //             $('#password').attr('type', 'text');
+    //             $('#password_icon').removeClass('fa-eye').addClass('fa-eye-slash');
+    //         } else {
+    //             passFields.val('').attr('readonly', false);
+    //             $('#password').attr('type', 'password');
+    //             $('#password_icon').removeClass('fa-eye-slash').addClass('fa-eye');
+    //         }
+    //     });
+
+    //     // 5. Toggle Password Visibility
+    //     $('#toggle_password').on('click', function() {
+    //         if ($('#use_default_password').is(':checked')) return;
+    //         let input = $('#password');
+    //         let icon = $('#password_icon');
+            
+    //         if (input.attr('type') === 'password') {
+    //             input.attr('type', 'text');
+    //             icon.removeClass('fa-eye').addClass('fa-eye-slash');
+    //         } else {
+    //             input.attr('type', 'password');
+    //             icon.removeClass('fa-eye-slash').addClass('fa-eye');
+    //         }
+    //     });
+    // });
+
+    // $(document).ready(function() {
+    //     const defaultPass = "Zaq12wsx";
+
+    //     // 1. Default Password Checkbox Logic
+    //     $('#use_default_password').on('change', function() {
+    //         const isChecked = $(this).is(':checked');
+            
+    //         if (isChecked) {
+    //             // Fill both fields (confirmation included for backend validation)
+    //             $('#password, #password_confirmation').val(defaultPass).attr('readonly', true);
+    //             // Change to text so user can see it's filled correctly
+    //             $('#password').attr('type', 'text');
+    //             $('#password_icon').removeClass('fa-eye').addClass('fa-eye-slash');
+    //         } else {
+    //             $('#password, #password_confirmation').val('').attr('readonly', false);
+    //             $('#password').attr('type', 'password');
+    //             $('#password_icon').removeClass('fa-eye-slash').addClass('fa-eye');
+    //         }
+    //     });
+
+    //     // 2. Show/Hide Password Toggle Logic
+    //     $('#toggle_password').on('click', function() {
+    //         // Don't toggle if default password is being used (optional)
+    //         if ($('#use_default_password').is(':checked')) return;
+
+    //         const passInput = $('#password');
+    //         const icon = $('#password_icon');
+
+    //         if (passInput.attr('type') === 'password') {
+    //             passInput.attr('type', 'text');
+    //             icon.removeClass('fa-eye').addClass('fa-eye-slash');
+    //         } else {
+    //             passInput.attr('type', 'password');
+    //             icon.removeClass('fa-eye-slash').addClass('fa-eye');
+    //         }
+    //     });
+    // });
 
 </script>
 @endsection

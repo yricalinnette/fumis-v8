@@ -116,7 +116,12 @@
 
             $netTotalUnobligated = $netSourceBudget - $source['total_obligated'];
         @endphp
-        
+        <div class="d-flex justify-content-end p-2">
+            {{-- Added 'btn-copy-card' class so the script can find it --}}
+            <button type="button" class="btn btn-sm btn-outline-primary btn-copy-card">
+                <i class="fas fa-camera mr-1"></i> Copy
+            </button>
+        </div>
         <div class="card-header bg-white py-3" style="cursor: pointer;" data-card-widget="collapse">
             <div class="d-flex justify-content-between align-items-center">
                 <h3 class="card-title text-navy font-weight-bold">
@@ -137,7 +142,7 @@
             </div>
         </div>
         
-        <div class="card-body p-0">
+        <div class="card-body p-0" >
             <div class="p-4 bg-light border-bottom">
                 <div class="row align-items-center">
                     <div class="col-md-6">
@@ -370,3 +375,71 @@
     @endforeach
 </div>
 @endsection
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+<script>
+    $(document).ready(function() {
+        $('.btn-copy-card').on('click', function() {
+            const btn = $(this);
+            const originalHtml = btn.html();
+            
+            // Find the parent card relative to the clicked button
+            const element = btn.closest('.card')[0]; 
+
+            if (!element) {
+                console.error("Could not find the card container to capture.");
+                return;
+            }
+
+            // UI Feedback
+            btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Processing Full Report...');
+
+            html2canvas(element, {
+                scale: 2, 
+                useCORS: true, 
+                logging: false,
+                backgroundColor: "#ffffff",
+                onclone: (clonedDoc) => {
+                    // 1. Hide ALL copy buttons in the captured image
+                    const clonedButtons = clonedDoc.querySelectorAll('.btn-copy-card');
+                    clonedButtons.forEach(b => b.style.visibility = 'hidden');
+
+                    // 2. FORCE the table-responsive container to show all rows
+                    // This targets the div that usually has the scrollbar
+                    const scrollContainer = clonedDoc.querySelector('.table-responsive');
+                    if (scrollContainer) {
+                        scrollContainer.style.maxHeight = 'none'; 
+                        scrollContainer.style.overflow = 'visible';
+                        scrollContainer.style.height = 'auto';
+                    }
+
+                    // 3. Ensure the table itself isn't constricted
+                    const table = clonedDoc.querySelector('table');
+                    if (table) {
+                        table.style.marginBottom = '0';
+                    }
+                }
+            }).then(canvas => {
+                canvas.toBlob(blob => {
+                    try {
+                        const item = new ClipboardItem({ "image/png": blob });
+                        navigator.clipboard.write([item]).then(() => {
+                            // Success Feedback
+                            btn.removeClass('btn-outline-primary').addClass('btn-success').html('<i class="fas fa-check"></i> Full Report Copied!');
+                            
+                            setTimeout(() => {
+                                btn.prop('disabled', false).removeClass('btn-success').addClass('btn-outline-primary').html(originalHtml);
+                            }, 2000);
+                        });
+                    } catch (err) {
+                        console.error("Clipboard API failed: ", err);
+                        alert("Browser error: Could not copy image to clipboard.");
+                        btn.prop('disabled', false).html(originalHtml);
+                    }
+                }, 'image/png');
+            });
+        });
+    });
+</script>

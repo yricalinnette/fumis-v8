@@ -15,6 +15,9 @@ class Activity extends Model {
     'budget_adjusted',
     'pooled_amount',
     'pooled_remarks',
+    'start_date',
+    'end_date',
+    'target_quarters',
 ];
 
     public function source() {
@@ -30,4 +33,10 @@ class Activity extends Model {
     {
         return $this->hasMany(Fund::class, 'transaction_type_id');
     }
+
+    protected $casts = [
+        'start_date' => 'date',
+        'end_date' => 'date',
+        'target_quarters' => 'array', // This is crucial for multiple selection
+    ];
 }

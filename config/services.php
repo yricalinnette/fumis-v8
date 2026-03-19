@@ -35,4 +35,9 @@ return [
         ],
     ],
 
+    'db_common' => [
+        'key' => env('DB_COMMON_ENCRYPTION_KEY'),
+        'iv'  => env('DB_COMMON_IV'),
+    ],
+
 ];

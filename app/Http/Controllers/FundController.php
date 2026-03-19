@@ -7,7 +7,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Auth;
 use App\Models\SourceOfFund;
-use App\Models\Employee;
 use App\Models\Activity;
 use Google\Client;            
 use Google\Service\Sheets; 
@@ -16,6 +15,7 @@ use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class MyReadFilter implements \PhpOffice\PhpSpreadsheet\Reader\IReadFilter
 {
@@ -48,28 +48,89 @@ class FundController extends Controller
 
     public function index()
     {
-        // 1. Fetch base data
+        // --- 1. FETCH BASE DATA ---
         $baseQuery = auth()->user()->is_admin 
             ? \App\Models\Fund::query()
             : \App\Models\Fund::where('user_id', auth()->id());
 
-        $fundsCollection = $baseQuery->with(['fundSource', 'activity', 'creditors'])
+        // Eager load the creditors relationship
+        $fundsCollection = $baseQuery->with(['fundSource', 'activity', 'creditors.employeeDetail'])
             ->whereNotNull('dtrack_no')
             ->where('dtrack_no', '!=', '')
             ->latest()
             ->get();
 
-        // 2. Group and Map
-        $funds = $fundsCollection->groupBy('dtrack_no')->map(function ($group) {
+        // --- 2. EMPLOYEE LOGIC 
+        $currentUser = auth()->user(); 
+        $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
+
+        // Get section for label
+        $myDetails = DB::connection('db_common')->table('tbl_emp_details')
+            ->leftJoin('tbl_section', 'tbl_emp_details.secid', '=', 'tbl_section.secid')
+            ->where('tbl_emp_details.empid', $currentUser->empid)
+            ->select('tbl_section.secname', 'tbl_emp_details.secid')
+            ->orderBy('tbl_emp_details.dbedid', 'desc')
+            ->first();
+
+        $latestDetails = DB::connection('db_common')->table('tbl_emp_details')
+            ->select('empid', DB::raw('MAX(dbedid) as latest_id'))
+            ->groupBy('empid');
+
+        $query = DB::connection('db_common')->table('tbl_employee')
+            ->joinSub($latestDetails, 'latest_status', function ($join) {
+                $join->on('tbl_employee.empid', '=', 'latest_status.empid');
+            })
+            ->join('tbl_emp_details', 'latest_status.latest_id', '=', 'tbl_emp_details.dbedid')
+            ->leftJoin('tbl_section', 'tbl_emp_details.secid', '=', 'tbl_section.secid')
+            ->where('tbl_employee.isactive', 1)
+            ->select(
+                'tbl_emp_details.dbedid',
+                'tbl_section.secname', 
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)) as fname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.mname, '{$key}') AS CHAR)) as mname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)) as lname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.suffix, '{$key}') AS CHAR)) as suffix")
+            );
+
+        $assignedDbedids = \DB::table('employee_fund')->pluck('user_id')->unique()->toArray();
+
+        if (!$currentUser->is_admin) {
+            $mySectionId = $currentUser->live_info->secid ?? ($myDetails->secid ?? null);
+            
+            $query->where(function($q) use ($mySectionId, $assignedDbedids) {
+                $q->where('tbl_emp_details.secid', '=', $mySectionId)
+                ->orWhereIn('tbl_emp_details.dbedid', $assignedDbedids);
+            });
+        }
+
+        // Process and index by DBEDID
+        $employees = $query->get()->map(function($emp) {
+            $middleInitial = $emp->mname ? ' ' . substr($emp->mname, 0, 1) . '.' : '';
+            $suffix = $emp->suffix ? ' ' . $emp->suffix : '';
+            $emp->fullname = "{$emp->lname}, {$emp->fname}{$middleInitial}{$suffix}";
+            return $emp;
+        })->keyBy('dbedid'); //use dbedid as the array key
+
+        // --- 3. GROUP AND MAP (NOW USING $employees) ---
+        $funds = $fundsCollection->groupBy('dtrack_no')->map(function ($group) use ($employees) {
             $first = $group->first();
 
-            $mergedRemarks = $group->pluck('remarks')
-                ->filter()
-                ->unique()
-                ->implode('; ');
+            $dbedids = \DB::table('employee_fund')
+                ->whereIn('fund_id', $group->pluck('id'))
+                ->pluck('user_id')
+                ->unique();
 
-            // 1. UPDATED CALCULATION LOGIC
-            // Priority: Disbursement > Obligation > Processed Amount
+            // 2. Map those IDs to the Names from your $employees collection
+            $mappedCreditors = $dbedids->map(function($id) use ($employees) {
+                // Look for the employee in the collection we fetched from db_common
+                $emp = $employees->get($id);
+
+                return (object) [
+                    'full_name' => $emp ? $emp->fullname : "ID: $id (Not found in section)"
+                ];
+            });
+
+            // Calculations and Status logic
             $calculatedTotal = $group->sum(function($item) {
                 if (in_array($item->status, ['Disbursed', 'Completed']) && $item->disbursement_amount > 0) {
                     return $item->disbursement_amount;
@@ -81,16 +142,6 @@ class FundController extends Controller
             $hasCompleted = $group->contains('status', 'Completed');
             $hasObligated = $group->contains('status', 'Obligated');
 
-            // 2. UPDATED SYNC LOGIC
-            // Now also checks if Disbursed items are missing their actual amount
-            $needsSync = $group->contains(function ($item) {
-                $isObligatedMissing = ($item->status === 'Obligated' && (empty($item->obligation_amount) || $item->obligation_amount <= 0));
-                $isDisbursedMissing = (in_array($item->status, ['Disbursed', 'Completed']) && (empty($item->disbursement_amount) || $item->disbursement_amount <= 0));
-                
-                return $isObligatedMissing || $isDisbursedMissing;
-            });
-
-            // Priority Status
             if ($hasDisbursed || $hasCompleted) {
                 $priorityStatus = 'Disbursed';
             } elseif ($hasObligated) {
@@ -104,77 +155,49 @@ class FundController extends Controller
                 'dtrack_no'          => $first->dtrack_no,
                 'transaction_date'   => $first->transaction_date,
                 'particulars'        => $first->particulars,
-                'creditors'          => $first->creditors,
-                'remarks'            => $first->remarks,
-                'all_remarks'        => $mergedRemarks,
-                'dtrack_update_date' => $first->dtrack_update_date,
+                'creditors'          => $mappedCreditors, 
                 'total_amount'       => $calculatedTotal,
-                'is_fully_synced'    => !$needsSync,
                 'group_status'       => $priorityStatus,
                 'source_names'       => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
                 'activity_names'     => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
+                'is_fully_synced'    => !$group->contains(function ($item) {
+                        $isObligatedMissing = ($item->status === 'Obligated' && (empty($item->obligation_amount) || $item->obligation_amount <= 0));
+                        $isDisbursedMissing = (in_array($item->status, ['Disbursed', 'Completed']) && (empty($item->disbursement_amount) || $item->disbursement_amount <= 0));
+                        return $isObligatedMissing || $isDisbursedMissing;
+                    }),
                 'breakdown'          => $group->map(function($item) {
                     return (object) [
-                        'id'                  => $item->id,
-                        'source_name'         => $item->fundSource->name ?? 'N/A',
+                        'id'     => $item->id,
+                        'source_name'         => $item->fundSource->name ?? 'N/A', 
+                        'activity_name'       => $item->activity->name ?? 'N/A',
                         'amount'              => $item->amount,
                         'status'              => $item->status,
-                        'obligation_serial'   => $item->obligation_serial,
                         'remarks'             => $item->remarks,
-                        'status_date'         => $item->status_date,
-                        'disbursement_date'   => $item->disbursement_date,
-                        'obligation_amount'   => $item->obligation_amount, 
+                        'obligation_serial'   => $item->obligation_serial,
+                        'obligation_amount'   => $item->obligation_amount,
                         'obligation_date'     => $item->obligation_date,
-                        'disbursement_amount' => $item->disbursement_amount, // Key name confirmed
+                        'disbursement_amount' => $item->disbursement_amount,
+                        'disbursement_date'   => $item->disbursement_date,
+                        'status_date'         => $item->status_date,
                     ];
                 }),
             ];
         });
 
-        // 3. Define the Missing Variables (CRITICAL)
-        $currentYear = date('Y');
-        
-        // Make sure this is "sources" (matching your compact call)
-        $sources = \App\Models\SourceOfFund::where('fiscal_year', $currentYear)
-                    ->orderBy('name')
-                    ->get();
-                    
-        $employees = \App\Models\Employee::orderBy('last_name')->get();
-        
-        // Check budget vs pooled_amount for each activity
-        $activities = \App\Models\Activity::all()->map(function ($activity) {
-            $baseBudget = !is_null($activity->budget_adjusted) ? (float)$activity->budget_adjusted : (float)$activity->budget;
-            $pooled = (float)($activity->pooled_amount ?? 0);
-            
-            // Calculate remaining ceiling
-            $remainingCeiling = $baseBudget - $pooled;
+        $userSectionName = ($currentUser->is_admin) ? 'All Personnel' : ($myDetails->secname ?? 'Assigned Section');
+        $sources = \App\Models\SourceOfFund::where('fiscal_year', date('Y'))->orderBy('name')->get();
 
-            // Flag as disabled if the remaining ceiling is 0 or less
-            $activity->is_disabled = ($remainingCeiling <= 0);
-            $activity->display_name = $activity->name . ($activity->is_disabled ? ' (No Budget Available)' : '');
-            
-            return $activity;
-        });
-
-        // 4. Notification Badges
         $awaitingSyncCount = \App\Models\Fund::where('status', 'Obligated')
-                                ->whereNull('disbursement_date')
-                                ->whereNotNull('obligation_serial')
-                                ->count();
+                            ->whereNull('disbursement_date')
+                            ->whereNotNull('obligation_serial')
+                            ->count();
 
         $awaitingOBRN = \App\Models\Fund::where('status', 'For CAF/Obligation')
-                                ->whereNull('obligation_serial')
-                                ->count();
-        
-        // 5. Final Return
-        return view('funds.index', compact(
-            'funds', 
-            'sources',      // This matches the variable defined in Step 3
-            'employees', 
-            'activities', 
-            'awaitingSyncCount', 
-            'awaitingOBRN'
-        ));
+                            ->whereNull('obligation_serial')
+                            ->count();
+
+        return view('funds.index', compact('funds', 'sources', 'employees', 'userSectionName', 'awaitingSyncCount', 
+        'awaitingOBRN'));
     }
 
     public function store(Request $request)
@@ -201,7 +224,7 @@ class FundController extends Controller
             'allocations.*.amount'      => 'required|numeric|min:0.01',
         ]);
 
-        // PRE-CHECK: Ensure this DTrack isn't already in the DB from a PREVIOUS day/transaction
+        // Ensure this DTrack isn't already in the DB from a PREVIOUS day/transaction
         // This prevents a user from accidentally using a DTrack from last week.
         $exists = \App\Models\Fund::where('dtrack_no', $request->dtrack_no)->exists();
         if ($exists) {
@@ -246,7 +269,11 @@ class FundController extends Controller
 
     public function create()
     {
-        return view('funds.create');
+        // Fetch users who have an employee detail link
+        // We 'eager load' employeeDetail to avoid N+1 query issues
+        $users = \App\Models\User::has('employeeDetail')->with('employeeDetail')->get();
+
+        return view('your-view-name', compact('users'));
     }
 
     public function updateStatus(Request $request, $id)
@@ -324,8 +351,9 @@ class FundController extends Controller
 
     public function edit(\App\Models\Fund $fund) 
     {
-        // 1. Validation (Same as before, ensures data integrity)
-        if ($fund->status !== 'Routed') {
+        // 1. Validation (matches your JS editableStatuses)
+        // Using strtolower to be safe with casing
+        if (strtolower($fund->status) !== 'routed') {
             return response()->json([
                 'success' => false,
                 'message' => 'Editing is only allowed for transactions in Routed status.'
@@ -333,20 +361,28 @@ class FundController extends Controller
         }
 
         // 2. Fetch all allocations sharing the same DTrack Number
-        // We load fundSource and activity so the frontend can display their names/IDs
         $allAllocations = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)
             ->with(['fundSource', 'activity'])
             ->get();
 
-        // 3. Load Creditors (Pivot table)
-        $fund->load('creditors');
+        /**
+         * 3. Load Creditors (Pivot table)
+         * We bypass the Eloquent relationship because the IDs (1077, etc.) 
+         * don't exist in the local users table.
+         */
+        $creditorIds = \DB::table('employee_fund')
+            ->whereIn('fund_id', $allAllocations->pluck('id'))
+            ->pluck('user_id') // user_id column stores the dbedid
+            ->unique()
+            ->values()
+            ->toArray();
 
         // 4. Return as a structured JSON object
         return response()->json([
-            'success'     => true,
-            'main'        => $fund,            // The primary transaction details
-            'allocations' => $allAllocations,  // The array of all fund sources
-            'creditor_ids'=> $fund->creditors->pluck('id')->toArray() // For Select2 auto-select
+            'success'      => true,
+            'main'         => $fund,
+            'allocations'  => $allAllocations,
+            'creditor_ids' => $creditorIds // This will now correctly contain [1077, ...]
         ]);
     }
 

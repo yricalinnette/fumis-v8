@@ -56,12 +56,16 @@
         </a>
 
         <div class="sidebar">
-            <div class="user-panel mt-3 pb-3 mb-3 d-flex">
+            <div class="user-panel mt-3 pb-3 mb-3 d-flex align-items-center">
                 <div class="image">
-                    <i class="fas fa-user-circle fa-2x text-light"></i>
+                    {{-- Using a slightly larger icon with better centering --}}
+                    <i class="fas fa-user-circle fa-2x text-white-50 mt-1"></i>
                 </div>
-                <div class="info">
-                    <a href="#" class="d-block">{{ Auth::user()->name ?? 'Administrator' }}</a>
+                <div class="info ml-2">
+                    <a href="#" class="d-block text-white font-weight-bold mb-0" style="line-height: 1.2; font-size: 0.9rem;">
+                        {{-- Safely handle the name display --}}
+                        {{ Auth::user()->username ?? 'User Account' }}
+                    </a>
                 </div>
             </div>
 
@@ -128,10 +132,21 @@
                             </p>
                         </a>
                         <ul class="nav nav-treeview">
+                            {{-- Submenu 1: WFP --}}
                             <li class="nav-item">
-                                <a href="{{ route('settings.index') }}" class="nav-link {{ request()->is('settings*') ? 'active' : '' }}">
+                                <a href="{{ route('settings.index') }}" 
+                                class="nav-link {{ request()->routeIs('settings.index') ? 'active' : '' }}">
                                     <i class="fas fa-database nav-icon text-warning"></i>
-                                    <p>Admin Settings</p>
+                                    <p>WFP Configuration</p>
+                                </a>
+                            </li>
+                            
+                            {{-- Submenu 2: Account Management --}}
+                            <li class="nav-item">
+                                <a href="{{ route('settings.accounts') }}" 
+                                class="nav-link {{ request()->routeIs('settings.accounts') ? 'active' : '' }}">
+                                    <i class="fas fa-user-shield nav-icon text-success"></i>
+                                    <p>Account Management</p>
                                 </a>
                             </li>
                         </ul>
@@ -154,7 +169,7 @@
     <div class="content-wrapper">
         <div class="content-header">
             <div class="container-fluid">
-                @yield('header') {{-- Add this line here --}}
+                @yield('header') 
             </div>
         </div>
         <div class="content-header"></div>

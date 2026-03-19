@@ -191,12 +191,14 @@
                         {{ \Carbon\Carbon::parse($fund->transaction_date)->format('M d, Y') }}
                     </td>
                     <td>
-                        @if($fund->creditors->count() > 0)
+                        @if($fund->creditors->isNotEmpty())
                             @foreach($fund->creditors as $creditor)
-                                <span class="badge badge-info mr-1">{{ $creditor->full_name }}</span>
+                                <div class="badge badge-info mb-1">
+                                    {{ $creditor->full_name }}
+                                </div>
                             @endforeach
                         @else
-                            <span class="text-muted italic">N/A</span>
+                            <span class="text-muted small">No Creditor</span>
                         @endif
                     </td>
                     
@@ -393,16 +395,20 @@
                             // 1. Check if there are any serials to allow syncing
                             $hasAnySerial = $fund->breakdown->contains(fn($i) => !empty($i->obligation_serial));
                             
-                            // 2. Determine if the entire group is disbursed
-                            $isDisbursed = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)
-                                ->where('status', 'Disbursed')
-                                ->exists();
+                            // 2. NEW LOGIC: Determine if the ENTIRE group is fully disbursed
+                            // We count total items in this DTrack vs how many are actually 'Disbursed'
+                            $groupItems
+                             = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)->get();
+                            $totalInGroup = $groupItems->count();
+                            $disbursedInGroup = $groupItems->where('status', 'Disbursed')->count();
 
-                            // 3. Define "Edit/Delete" locking logic
-                            // We allow editing/deleting ONLY if the status is 'Routed'
+                            // Only lock the sync button if EVERY fund source is Disbursed
+                            $isFullyDisbursed = ($totalInGroup > 0 && $totalInGroup === $disbursedInGroup);
+
+                            // 3. Define "Edit/Delete" locking logic (Remains the same)
                             $isActionDisabled = ($firstItem->status !== 'Routed');
                             
-                            // 4. Status-specific check for the History/Update button
+                            // 4. Status-specific check for the History/Update button (Remains the same)
                             $isStatusUpdateDisabled = in_array($firstItem->status, ['Disbursed', 'Completed']);
                         @endphp
 
@@ -416,7 +422,6 @@
                         </button>
 
                         {{-- 2. Edit Button --}}
-                        {{-- Now correctly enabled for 'Routed' status --}}
                         <button type="button" class="btn btn-sm btn-default btn-edit-transaction"
                             data-id="{{ $fund->id }}"
                             {{ $isActionDisabled ? 'disabled' : '' }}
@@ -425,15 +430,16 @@
                             <i class="fas fa-edit {{ $isActionDisabled ? 'text-muted' : 'text-warning' }}"></i> 
                         </button>
 
-                        {{-- 3. Sync Button --}}
+                        {{-- 3. Sync Button (UPDATED) --}}
                         <button type="button" 
-                                class="btn btn-sm {{ $isDisbursed ? 'btn-outline-secondary' : 'btn-outline-info' }} btn-sync-sheet" 
+                                class="btn btn-sm {{ $isFullyDisbursed ? 'btn-outline-secondary' : 'btn-outline-info' }} btn-sync-sheet" 
                                 data-id="{{ $fund->id }}"
                                 data-dtrack="{{ $fund->dtrack_no }}"
-                                {{ ($isDisbursed || !$hasAnySerial) ? 'disabled' : '' }}
+                                {{-- Button is disabled only if ALL are disbursed OR if there's no serial to check --}}
+                                {{ ($isFullyDisbursed || !$hasAnySerial) ? 'disabled' : '' }}
                                 data-toggle="tooltip" 
-                                title="{{ $isDisbursed ? 'Transaction is already Disbursed' : 'Sync with Google Sheet' }}">
-                            <i class="fas {{ $isDisbursed ? 'fa-check-double' : 'fa-sync-alt' }}"></i>
+                                title="{{ $isFullyDisbursed ? 'All fund sources in this transaction are Disbursed' : 'Sync with Google Sheet' }}">
+                            <i class="fas {{ $isFullyDisbursed ? 'fa-check-double' : 'fa-sync-alt' }}"></i>
                         </button>
 
                         {{-- 4. Delete Button --}}
@@ -1078,25 +1084,35 @@
                     url: `/funds/${currentItem.id}/sync`,
                     method: "GET",
                     success: function(response) {
-                        if (response.success) {
+                        if (response.success && response.details) {
                             const d = response.details;
-                            results.success++;
+                            
+                            // IMPORTANT: The data lives inside the first item of synced_items array
+                            const itemData = (d.synced_items && d.synced_items.length > 0) 
+                                            ? d.synced_items[0] 
+                                            : null;
 
-                            let duplicateRows = [];
-                            if (d.has_duplicates) {
-                                results.duplicateCount++;
-                                duplicateRows = [...(d.duplicate_ob_rows || []), ...(d.duplicate_disb_rows || [])];
+                            if (itemData) {
+                                results.success++;
+
+                                let duplicateRows = [];
+                                if (d.has_duplicates) {
+                                    results.duplicateCount++;
+                                    duplicateRows = [...(d.duplicate_ob_rows || []), ...(d.duplicate_disb_rows || [])];
+                                }
+
+                                results.successList.push({
+                                    serial: itemData.serial, // Using itemData instead of d
+                                    status: itemData.status, // Using itemData instead of d
+                                    amount: itemData.amount, // Using itemData instead of d
+                                    duplicates: duplicateRows
+                                });
+                            } else {
+                                // Handle case where sync worked but no item data was returned
+                                recordFailure(currentItem.serial, "No sync details returned");
                             }
-
-                            results.successList.push({
-                                serial: d.serial,
-                                status: d.new_status,
-                                amount: d.new_amount,
-                                duplicates: duplicateRows
-                            });
                         } else {
-                            // Logic for "success: false" but 200 status (if any)
-                            recordFailure(currentItem.serial, response.message || "Unknown Error");
+                            recordFailure(currentItem.serial, response.message || "Sync Failed");
                         }
                         
                         finishItem();

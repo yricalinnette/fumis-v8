@@ -60,9 +60,11 @@ class Fund extends Model
     /**
      * Relationship: Many-to-Many with Employees (Creditors)
      */
-    public function creditors() 
+    public function creditors()
     {
-        return $this->belongsToMany(Employee::class, 'employee_fund');
+        // Change from Employee::class to User::class
+        // We specify 'employee_fund' as the table and 'user_id' as the new foreign key
+        return $this->belongsToMany(User::class, 'employee_fund', 'fund_id', 'user_id');
     }
 
     public function groupAllocations()
@@ -73,6 +75,12 @@ class Fund extends Model
 
     public function fund_sources() {
         return $this->belongsToMany(FundSource::class, 'fund_fund_source');
+    }
+
+    public function users()
+    {
+        // Change from Employee::class to User::class
+        return $this->belongsToMany(User::class, 'employee_fund', 'fund_id', 'user_id');
     }
   
 }

@@ -23,9 +23,10 @@ Route::get('/dashboard', function () {
 
 // Admin Only Routes
 Route::middleware(['auth', 'can:admin-access'])->group(function () {
-
     //settings
-    Route::get('/settings', [SettingsController::class, 'index'])->name('settings.index');
+    // Route::get('/settings', [SettingsController::class, 'index'])->name('settings.index');
+    Route::get('/settings/accounts', [SettingsController::class, 'userIndex'])->name('settings.accounts');
+    Route::get('/settings/wfp', [SettingsController::class, 'index'])->name('settings.index');
     Route::post('/settings/source', [SettingsController::class, 'storeSource'])->name('settings.source.store');
     Route::delete('settings/source/{id}', [SettingsController::class, 'destroySource'])->name('settings.source.destroy');
     Route::post('/settings/employee', [SettingsController::class, 'storeEmployee'])->name('settings.employee.store');
@@ -39,6 +40,13 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::post('/settings/realign', [SettingsController::class, 'updateAllocation'])->name('settings.realign');
     Route::get('/admin/settings/get-realignment-table/{id}', [App\Http\Controllers\SettingsController::class, 'getRealignmentTable']);
     Route::post('/settings/activities/pool', [SettingsController::class, 'poolFunds'])->name('settings.activity.pool');
+    Route::post('/settings/activities', [SettingsController::class, 'storeWfp'])->name('settings.activity.storeWfp');
+    
+    Route::get('/settings/employees/search', [SettingsController::class, 'searchExternal'])->name('employees.external.search');
+    Route::get('/settings/employees/details/{dbedid}', [SettingsController::class, 'getExternalDetails'])->name('employees.details');
+    Route::post('/settings/register-employee', [SettingsController::class, 'registerEmployee'])->name('register.employee');
+    Route::patch('/settings/users/{id}/toggle', [SettingsController::class, 'toggleStatus'])->name('users.toggle-status');
+    Route::put('/settings/users/{id}', [SettingsController::class, 'updateUser'])->name('users.update');
 
     //funds transactions
     Route::get('funds/group/{dtrack}', [FundController::class, 'getGroupByDtrack']);
@@ -66,9 +74,7 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
         $activities = \App\Models\Activity::where('source_of_fund_id', $sourceId)
             ->select('id', 'name', 'pooled_amount') // only fetch what we need
             ->get();
-            return response()->json($activities);
-    
-});
+            return response()->json($activities);});
 
     //dashboard
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
@@ -94,6 +100,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/funds/create', [FundController::class, 'create'])->name('funds.create');
     Route::post('/funds/store', [FundController::class, 'store'])->name('funds.store');
     Route::get('/funds', [FundController::class, 'index'])->name('funds.index'); // Table View
+    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 });
 
 require __DIR__.'/auth.php';

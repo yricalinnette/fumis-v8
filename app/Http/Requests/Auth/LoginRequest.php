@@ -21,31 +21,47 @@ class LoginRequest extends FormRequest
 
     /**
      * Get the validation rules that apply to the request.
-     *
-     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
      */
     public function rules(): array
     {
         return [
-            'email' => ['required', 'string', 'email'],
+            'username' => ['required', 'string'], // Changed from email
             'password' => ['required', 'string'],
         ];
     }
 
     /**
      * Attempt to authenticate the request's credentials.
-     *
-     * @throws \Illuminate\Validation\ValidationException
      */
     public function authenticate(): void
     {
         $this->ensureIsNotRateLimited();
 
-        if (! Auth::attempt($this->only('email', 'password'), $this->boolean('remember'))) {
+        // 1. Convert the input username to the searchable hash
+        $usernameHash = hash('sha256', strtolower($this->input('username')));
+
+        // 2. Prepare the credentials - ADD is_active HERE
+        $credentials = [
+            'username_hash' => $usernameHash, 
+            'password'      => $this->input('password'),
+            'is_active'     => 1, // <--- Only allow Active users
+        ];
+
+        // 3. Attempt authentication
+        if (! Auth::attempt($credentials, $this->boolean('remember'))) {
             RateLimiter::hit($this->throttleKey());
 
+            // Check if the user exists but is simply inactive to give a better error
+            $userExists = \App\Models\User::where('username_hash', $usernameHash)->first();
+            
+            if ($userExists && $userExists->is_active == 0) {
+                throw ValidationException::withMessages([
+                    'username' => 'This account has been deactivated. Please contact the administrator.',
+                ]);
+            }
+
             throw ValidationException::withMessages([
-                'email' => trans('auth.failed'),
+                'username' => trans('auth.failed'),
             ]);
         }
 
@@ -54,8 +70,6 @@ class LoginRequest extends FormRequest
 
     /**
      * Ensure the login request is not rate limited.
-     *
-     * @throws \Illuminate\Validation\ValidationException
      */
     public function ensureIsNotRateLimited(): void
     {
@@ -68,7 +82,7 @@ class LoginRequest extends FormRequest
         $seconds = RateLimiter::availableIn($this->throttleKey());
 
         throw ValidationException::withMessages([
-            'email' => trans('auth.throttle', [
+            'username' => trans('auth.throttle', [
                 'seconds' => $seconds,
                 'minutes' => ceil($seconds / 60),
             ]),
@@ -80,6 +94,7 @@ class LoginRequest extends FormRequest
      */
     public function throttleKey(): string
     {
-        return Str::transliterate(Str::lower($this->string('email')).'|'.$this->ip());
+        // Updated to use 'username' for the throttle key
+        return Str::transliterate(Str::lower($this->string('username')).'|'.$this->ip());
     }
 }

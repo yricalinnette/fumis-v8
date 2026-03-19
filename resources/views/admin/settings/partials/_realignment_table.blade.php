@@ -21,26 +21,52 @@
                         <tr>
                             <th class="pl-4">Activity</th>
                             <th class="text-right">Current Allotted</th>
-                            <th class="text-right">Obligated (Locked)</th>
-                            <th class="text-right">Savings/Unobligated</th>
+                            <th class="text-right">Obligations/Pooled (Locked)</th>
+                            <th class="text-right">Available for Realignment</th>
                             <th class="text-right" width="250">New Adjusted Budget</th>
                         </tr>
                     </thead>
                     <tbody>
                         @foreach($source->activities as $activity)
                         @php
-                            $obligated = $activity->funds()->sum('obligation_amount');
+                            // 1. Sum obligations from the 'funds' table via your defined relationship
+                            $obligatedSum = $activity->transactions()->sum('obligation_amount') ?? 0;
+                            
+                            // 2. Access 'pooled_amount' directly from the 'activities' table
+                            $pooledAmount = $activity->pooled_amount ?? 0;
+
+                            // 3. The "Floor": You cannot adjust a budget lower than what is already 
+                            // spent (obligated) PLUS what has been moved to savings (pooled).
+                            $totalLocked = $obligatedSum + $pooledAmount;
+
                             $currentBudget = $activity->budget_adjusted ?? $activity->budget;
-                            $savings = $currentBudget - $obligated;
+                            
+                            // Available for realignment is the surplus above the locked amount
+                            $availableForRealignment = $currentBudget - $totalLocked;
                         @endphp
                         <tr>
                             <td class="pl-4">
                                 <span class="font-weight-bold d-block">{{ $activity->name }}</span>
                                 <small class="text-muted">Original: ₱{{ number_format($activity->budget, 2) }}</small>
                             </td>
-                            <td class="text-right text-muted">₱{{ number_format($currentBudget, 2) }}</td>
-                            <td class="text-right text-danger font-italic">₱{{ number_format($obligated, 2) }}</td>
-                            <td class="text-right text-success font-weight-bold">₱{{ number_format($savings, 2) }}</td>
+                            
+                            <td class="text-right text-muted">
+                                ₱{{ number_format($currentBudget, 2) }}
+                            </td>
+
+                            <td class="text-right text-danger font-italic">
+                                <div class="d-flex flex-column">
+                                    <span class="font-weight-bold">₱{{ number_format($totalLocked, 2) }}</span>
+                                    @if($pooledAmount > 0)
+                                        <small class="text-xs text-secondary">(Incl. ₱{{ number_format($pooledAmount, 2) }} Pooled)</small>
+                                    @endif
+                                </div>
+                            </td>
+
+                            <td class="text-right {{ $availableForRealignment > 0 ? 'text-success' : 'text-muted' }} font-weight-bold">
+                                ₱{{ number_format($availableForRealignment, 2) }}
+                            </td>
+
                             <td class="pr-4">
                                 <div class="input-group input-group-sm">
                                     <div class="input-group-prepend">
@@ -50,10 +76,12 @@
                                         name="adjustments[{{ $activity->id }}]" 
                                         class="form-control text-right realign-input font-weight-bold" 
                                         value="{{ number_format($currentBudget, 2, '.', ',') }}" 
-                                        data-min="{{ $obligated }}" 
+                                        data-min="{{ $totalLocked }}" 
                                         placeholder="0.00">
                                 </div>
-                                <small class="text-xs float-right text-muted mt-1">Cannot be less than ₱{{ number_format($obligated, 2) }}</small>
+                                <small class="text-xs float-right text-muted mt-1">
+                                    Min. Limit: ₱{{ number_format($totalLocked, 2) }}
+                                </small>
                             </td>
                         </tr>
                         @endforeach
@@ -66,12 +94,12 @@
             <div class="row align-items-center">
                 <div class="col-sm-6">
                     <div id="realign-calc-info">
-                        <span class="text-uppercase small d-block opacity-75">Status</span>
+                        <span class="text-uppercase small d-block opacity-75">Budget Balance Status</span>
                         <span id="realign-status-text" class="h5 font-weight-bold text-warning">Initializing...</span>
                     </div>
                 </div>
                 <div class="col-sm-6 text-right">
-                    <button type="submit" id="realign-save-btn" class="btn btn-success" disabled>
+                    <button type="submit" id="realign-save-btn" class="btn btn-success px-4" disabled>
                         <i class="fas fa-check-circle mr-1"></i> Apply Realignment
                     </button>
                 </div>

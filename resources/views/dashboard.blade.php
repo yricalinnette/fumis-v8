@@ -116,7 +116,7 @@
                                 </div>
                                 <div class="mt-2">
                                     <h4 class="mb-0 font-weight-bold">{{ $data['percent'] }}%</h4>
-                                    <small class="text-muted text-uppercase">Utilization</small>
+                                    <small class="text-muted text-uppercase">Transactions</small>
                                 </div>
                             </div>
 
@@ -141,7 +141,11 @@
                     <div class="card-footer bg-light py-2">
                         <div class="row text-center small">
                             <div class="col-4">
-                                <span class="text-muted">Processed by the unit</span><br>
+                                <span class="text-muted" 
+                                    style="cursor: help; border-bottom: 1px dotted #adb5bd;" 
+                                    title="Sum of all transactions: Includes the Obligated Amount if finalized; otherwise, uses the initial Processed Amount.">
+                                    Transactions from the unit
+                                </span><br>
                                 <div class="text-bold">₱{{ number_format($data['processed_total'], 2) }}</div>
                             </div>
                             <div class="col-4 border-left">
