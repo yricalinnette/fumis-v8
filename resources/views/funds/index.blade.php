@@ -114,11 +114,166 @@
     .is-invalid + .invalid-feedback {
         display: block;
     }
+    /* Premium Glass Badge */
+    .glass-badge {
+        background: rgba(255, 255, 255, 0.6);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(226, 232, 240, 0.8);
+        border-radius: 16px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+        transition: all 0.3s ease;
+    }
+
+    .glass-badge:hover {
+        background: rgba(255, 255, 255, 0.9);
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.07);
+    }
+
+    /* Typography Utility */
+    .font-black { font-weight: 900 !important; }
+    .tracking-tighter { letter-spacing: -0.05em !important; }
+    .text-slate-200\/60 { border-color: rgba(226, 232, 240, 0.6) !important; }
+
+    /* Section Text coloring */
+    .text-primary { color: #004a99 !important; } /* DOH Blue */
+
+    /* Professional Select Styling */
+    .custom-select-pill {
+        border-radius: 50px !important;
+        border: 1px solid #d1d9e6 !important;
+        padding-left: 1.25rem !important;
+        background-color: #f8f9fa !important;
+        font-weight: 500;
+        color: #495057;
+        transition: all 0.2s ease;
+    }
+
+    .custom-select-pill:focus {
+        border-color: #007bff !important;
+        box-shadow: 0 0 0 0.2rem rgba(0,123,255,.15) !important;
+        background-color: #fff !important;
+    }
+
+    /* Typography for filters */
+    .tracking-wider {
+        letter-spacing: 0.05em;
+    }
+
+    /* Subtle row highlighting when filtered */
+    .fund-row {
+        transition: opacity 0.3s ease;
+    }
+
+    /* 1. Reset the wrapper to handle horizontal alignment */
+    .dataTables_wrapper .dataTables_length {
+        float: left; /* Keep it on the left */
+        margin-top: 15px !important; /* Adjust this value to move the whole unit up or down */
+        margin-bottom: 10px !important;
+    }
+
+    /* 2. Fix the Label - This is the key for the horizontal look */
+    .dataTables_wrapper .dataTables_length label {
+        display: flex !important; /* Use flex to align items in a row */
+        flex-direction: row !important;
+        align-items: center !important;
+        white-space: nowrap !important; /* Forces 'Show', select, and 'entries' to stay on 1 line */
+        margin-bottom: 0 !important;
+        font-weight: 700;
+        color: #8898aa;
+        font-size: 0.80rem;
+        text-transform: uppercase;
+    }
+
+    /* 3. The Select Dropdown - Modern Pill Style */
+    .dataTables_wrapper .dataTables_length select {
+        width: auto !important;
+        height: 32px !important;
+        padding: 0 28px 0 12px !important; /* Extra right padding for the custom arrow */
+        margin: 0 10px !important; /* Horizontal margin ONLY */
+        border-radius: 12px !important;
+        background-color: #f6f9fc !important;
+        border: 1px solid #e9ecef !important;
+        color: #32325d !important;
+        cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238898aa' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'%3E%3C/path%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        transition: all 0.2s ease;
+    }
+
+    /* 4. Ensure the text after the select ('entries') has no weird top margin */
+    .dataTables_wrapper .dataTables_length label span {
+        margin-top: 0 !important;
+    }
 
 </style>
 
 <div class="row mb-3">
     <div class="col-12 text-right">
+        <div class="d-flex align-items-center justify-content-between pt-4 pb-4 mb-2">
+            <div class="d-flex align-items-center">
+                {{-- Floating Icon Pod --}}
+                <div class="bg-white shadow-sm border border-slate-200 rounded-lg d-flex align-items-center justify-content-center mr-3" style="width: 45px; height: 45px;">
+                    <i class="fas fa-exchange-alt text-primary"></i>
+                </div>
+                
+                <div class="d-flex align-items-baseline">
+                    <h4 class="m-0 font-black text-slate-800 italic tracking-tighter" style="font-size: 1.8rem; line-height: 1;">
+                        TRANSACTIONS
+                    </h4>
+                    <span class="mx-3 text-slate-300 font-weight-light" style="font-size: 1.4rem;">/</span>
+                    <span class="text-xs font-black uppercase tracking-widest text-slate-500">
+                        {{ Auth::user()->username === 'admin' ? 'System Admin' : Auth::user()->section_name }}
+                    </span>
+                </div>
+            </div>
+
+            <div class="glass-badge px-3 py-2 d-flex align-items-center">
+                <small class="font-weight-bold text-slate-600 mr-2">{{ Auth::user()->username }}</small>
+                <div class="rounded-circle bg-primary d-flex align-items-center justify-content-center" style="width: 28px; height: 28px;">
+                    <i class="fas fa-user text-white" style="font-size: 10px;"></i>
+                </div>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                {{-- <span class="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] ml-1">
+                    Fund Utilization Monitoring Portal
+                </span> --}}
+            </div>
+            
+            <div class="d-flex align-items-center">
+                {{-- Auto-Sync Status --}}
+                <div class="mr-4 d-flex align-items-center text-[10px] font-bold text-success uppercase tracking-tighter">
+                    <i class="fas fa-sync fa-spin mr-2 opacity-50"></i> DTrack Auto-Sync: Active
+                </div>
+
+                {{-- Action Buttons --}}
+                <div class="btn-group shadow-sm rounded-lg overflow-hidden">
+                    <button class="btn btn-white btn-sm font-weight-bold border-right px-3">
+                        <i class="fas fa-history mr-2 text-warning"></i> Awaiting ORSN 
+                        @if(isset($awaitingOBRN) && $awaitingOBRN > 0)
+                            <span class="badge badge-warning ml-1">{{ $awaitingOBRN }}</span>
+                        @endif
+                    </button>
+                    <button type="button" id="btn-bulk-sync" class="btn btn-white btn-sm font-weight-bold border-right px-3">
+                        <i class="fas fa-cloud-download-alt mr-2 text-info"></i> Bulk Sync
+                        @if(isset($awaitingSyncCount) && $awaitingSyncCount > 0)
+                            <span class="badge badge-warning ml-1">{{ $awaitingSyncCount }}</span>
+                        @endif
+                    </button>
+                    <button type="button" class="btn btn-success btn-sm font-weight-bold px-4 btn-add-new">
+                        <i class="fas fa-plus mr-2"></i> Add Transaction
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        {{-- <hr class="border-slate-100 mb-4">
         <div class="text-muted small mb-2">
             <i class="fas fa-sync-alt fa-spin text-success mr-1"></i> 
             DTrack Auto-Sync: <span id="sync-status">Active</span>
@@ -137,10 +292,10 @@
             </button>
         {{-- <button type="button" id="btn-sync-all" class="btn btn-primary   shadow-sm">
             <i class="fas fa-sync-alt mr-1"></i> Bulk Sync (DTRACK)
-        </button> --}}
+        </button>
         <button type="button" class="btn btn-success btn-add-new">
             <i class="fas fa-plus"></i> Add New Transaction
-        </button>
+        </button> --}}
     </div>
 </div>
 
@@ -162,11 +317,42 @@
                 </div>
             </div>
         </div>
+        {{-- FOR SECTION/UNIT FILTERING --}}
+        @if($isAdmin)
+            <div class="card card-outline card-primary shadow-sm mb-4 border-0">
+                <div class="card-body py-3 px-4">
+                    <div class="row align-items-center">
+                        <div class="col-auto">
+                            <h6 class="text-uppercase text-muted font-weight-bold mb-0 small tracking-wider">
+                                <i class="fas fa-filter mr-1 text-primary"></i> Data Filtering
+                            </h6>
+                        </div>
+                        <div class="col-md-4">
+                            <select id="sectionFilter" class="form-control select2-modern custom-select-pill">
+                                <option value="">All Administrative Sections</option>
+                                @foreach($allSections as $id => $name)
+                                    {{-- Use the exact name for the search value --}}
+                                    <option value="{{ $name }}">{{ $name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col text-right">
+                            <span id="filterStatus" class="badge badge-pill badge-light border text-muted py-2 px-3">
+                                <i class="fas fa-list-ul mr-1"></i> Showing all records
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        @endif
         <table class="table table-bordered table-striped table-hover" id="funds-table">
             <thead>
                 <tr>
                     <th>DTRACK NO.</th>
                     <th>Date</th>
+                    @if(auth()->user()->is_admin)
+                        <th>Section</th>
+                    @endif
                     <th>Creditor</th> 
                     <th>Source</th>
                     <th>Activity</th> 
@@ -179,7 +365,7 @@
                 @foreach($funds as $fund)
                 @php $firstItem = $fund->breakdown->first(); @endphp
                 
-                <tr class="{{ $firstItem->status == 'Disbursed' ? 'table-light' : '' }}">
+                <tr class="{{ $firstItem->status == 'Disbursed' ? 'table-light' : '' }} fund-row" data-section="{{ $allSections[$fund->secid] ?? 'Admin' }}">
                     <td>
                         <a href="#" class="view-dtrack font-weight-bold" 
                         data-particulars="{{ e($fund->particulars ?? 'No particulars') }}" 
@@ -190,6 +376,23 @@
                     <td data-order="{{ \Carbon\Carbon::parse($fund->transaction_date)->format('Y-m-d') }}">
                         {{ \Carbon\Carbon::parse($fund->transaction_date)->format('M d, Y') }}
                     </td>
+                    @if(auth()->user()->is_admin)
+                        <td>
+                            @php
+                                // Look up the name in the $allSections array passed from the controller
+                                $sectionName = $allSections[$fund->secid] ?? 'Admin';
+                            @endphp
+
+                            <span class="badge {{ $fund->secid ? 'bg-info text-dark' : 'bg-secondary' }}">
+                                {{ $sectionName }}
+                            </span>
+                            
+                            {{-- Optional: Show the ID on hover for debugging --}}
+                            {{-- <small class="d-block text-muted" style="font-size: 0.6rem;">
+                                ID: {{ $fund->secid ?? '0' }}
+                            </small> --}}
+                        </td>
+                    @endif
                     <td>
                         @if($fund->creditors->isNotEmpty())
                             @foreach($fund->creditors as $creditor)
@@ -2111,5 +2314,41 @@
         // Initial sync call for Edit mode
         syncDuplicateActivities();
     });
+
+    // 1. Get your existing DataTable instance
+    var table = $('#funds-table').DataTable();
+    var filterDropdown = $('#sectionFilter');
+    var statusBadge = $('#filterStatus');
+
+    if (filterDropdown.length) {
+        // 2. When the dropdown changes, tell DataTables to filter the Section column (Column index 2)
+        filterDropdown.on('change', function() {
+            var selectedSection = $(this).val();
+            // Search column 2 and redraw the table
+            table.column(2).search(selectedSection).draw();
+        });
+
+        // 3. Update the badge ONLY when DataTables finishes drawing/filtering
+        table.on('draw', function() {
+            var info = table.page.info(); // Gets current table stats
+            var selectedSection = filterDropdown.val();
+
+            if (!selectedSection) {
+                // If "Show All" is selected
+                statusBadge.html(`<i class="fas fa-list-ul mr-1"></i> Showing all ${info.recordsTotal} records`);
+                statusBadge.attr('class', 'badge badge-pill badge-light border text-muted py-2 px-3');
+            } else {
+                // If a specific section is selected, use info.recordsDisplay for the exact filtered count
+                if (info.recordsDisplay === 0) {
+                    statusBadge.html(`<i class="fas fa-exclamation-triangle mr-1"></i> Found 0 records for ${selectedSection}`);
+                    statusBadge.attr('class', 'badge badge-pill badge-danger text-white py-2 px-3 shadow-sm');
+                } else {
+                    statusBadge.html(`<i class="fas fa-check mr-1 text-success"></i> Found ${info.recordsDisplay} records for ${selectedSection}`);
+                    statusBadge.attr('class', 'badge badge-pill badge-primary text-white py-2 px-3 shadow-sm');
+                }
+            }
+        });
+    }
+
 </script>
 @endsection

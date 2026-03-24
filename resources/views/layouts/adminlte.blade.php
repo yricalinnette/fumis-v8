@@ -3,13 +3,14 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Fund Monitoring System</title>
+    <title>FUMS | DOH-EVCHD</title>
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/admin-lte@3.2/dist/css/adminlte.min.css">
     <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@ttskch/select2-bootstrap4-theme@1.1.0/dist/select2-bootstrap4.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
+    <link rel="icon" type="image/x-icon" href="{{ asset('images/doh_logo.jpg') }}">
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
@@ -50,9 +51,12 @@
     </nav>
 
     <aside class="main-sidebar sidebar-dark-primary elevation-4">
-        <a href="{{ route('dashboard') }}" class="brand-link bg-navy">
-            <i class="fas fa-vault brand-image mt-1 ml-3"></i>
-            <span class="brand-text font-weight-light">Fund Utilization </span>
+        <a href="{{ url('/dashboard') }}" class="brand-link">
+            <img src="{{ asset('images/doh_logo.jpg') }}" 
+                alt="DOH Logo" 
+                class="brand-image img-circle elevation-3" 
+                style="opacity: .8">
+            <span class="brand-text font-weight-bold">FUMS</span>
         </a>
 
         <div class="sidebar">

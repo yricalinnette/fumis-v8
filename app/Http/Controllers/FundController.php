@@ -48,15 +48,19 @@ class FundController extends Controller
 
     public function index()
     {
-        // --- 1. FETCH BASE DATA ---
-        $baseQuery = auth()->user()->is_admin 
-            ? \App\Models\Fund::query()
-            : \App\Models\Fund::where('user_id', auth()->id());
+        $currentUser = auth()->user();
+        // DEFINE IT HERE AT THE TOP
+        $isAdmin = ($currentUser->is_admin || $currentUser->id == 1 || $currentUser->username === 'admin');
 
+        // --- 1. FETCH BASE DATA ---
+        $baseQuery = $isAdmin 
+            ? \App\Models\Fund::query()
+            : \App\Models\Fund::where('user_id', $currentUser->id);
         // Eager load the creditors relationship
         $fundsCollection = $baseQuery->with(['fundSource', 'activity', 'creditors.employeeDetail'])
             ->whereNotNull('dtrack_no')
             ->where('dtrack_no', '!=', '')
+            ->orderBy('created_at', 'desc')
             ->latest()
             ->get();
 
@@ -155,6 +159,8 @@ class FundController extends Controller
                 'dtrack_no'          => $first->dtrack_no,
                 'transaction_date'   => $first->transaction_date,
                 'particulars'        => $first->particulars,
+                'secid'              => $first->secid,
+                'created_at'         => $first->created_at,
                 'creditors'          => $mappedCreditors, 
                 'total_amount'       => $calculatedTotal,
                 'group_status'       => $priorityStatus,
@@ -187,19 +193,63 @@ class FundController extends Controller
         $userSectionName = ($currentUser->is_admin) ? 'All Personnel' : ($myDetails->secname ?? 'Assigned Section');
         $sources = \App\Models\SourceOfFund::where('fiscal_year', date('Y'))->orderBy('name')->get();
 
-        $awaitingSyncCount = \App\Models\Fund::where('status', 'Obligated')
-                            ->whereNull('disbursement_date')
-                            ->whereNotNull('obligation_serial')
-                            ->count();
+        $user = auth()->user();
 
-        $awaitingOBRN = \App\Models\Fund::where('status', 'For CAF/Obligation')
-                            ->whereNull('obligation_serial')
-                            ->count();
+        // 1. Determine the Section Filter
+        // If admin (ID 1), we don't apply a section filter (show all)
+        // Otherwise, we filter by the user's specific secid
+        $isSectionAdmin = ($user->id == 1 || $user->username === 'admin');
+
+        // 2. Base Query for Awaiting Sync
+        $syncQuery = \App\Models\Fund::where('status', 'Obligated')
+                        ->whereNull('disbursement_date')
+                        ->whereNotNull('obligation_serial');
+
+        // 3. Base Query for Awaiting OBRN
+        $obrnQuery = \App\Models\Fund::where('status', 'For CAF/Obligation')
+                        ->whereNull('obligation_serial');
+
+        // 4. Apply Section Filter if NOT Admin
+        if (!$isSectionAdmin) {
+            // We need to find the user's secid to filter their view
+            // Using the same logic from your store/update methods
+            $localDetail = \DB::table('employee_details')
+                ->where('user_id', $user->id)
+                ->select('dbedid')
+                ->first();
+
+            if ($localDetail && $localDetail->dbedid) {
+                $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+                
+                // Apply the filter to both queries
+                $syncQuery->where('secid', $userSecId);
+                $obrnQuery->where('secid', $userSecId);
+            } else {
+                // Fallback: If no mapping found, show 0 counts to prevent data leakage
+                $syncQuery->where('id', 0); 
+                $obrnQuery->where('id', 0);
+            }
+        }
+
+        // 5. Execute the counts
+        $awaitingSyncCount = $syncQuery->count();
+        $awaitingOBRN = $obrnQuery->count();
+
+        $allSections = $isAdmin 
+            ? \DB::connection('db_common')
+                ->table('tbl_section')
+                ->where('isactive', 1) // Only pull records where isactive is 1
+                ->orderBy('secname', 'asc')
+                ->pluck('secname', 'secid')
+                ->toArray() 
+            : [];
 
         return view('funds.index', compact('funds', 'sources', 'employees', 'userSectionName', 'awaitingSyncCount', 
-        'awaitingOBRN'));
+        'awaitingOBRN', 'allSections', 'isAdmin'));
     }
-
+        
     public function store(Request $request)
     {
         $yearPrefix = date('Y') . '-';
@@ -213,7 +263,6 @@ class FundController extends Controller
 
         // VALIDATION
         $validated = $request->validate([
-            // Removed 'unique' because we now allow multiple rows for one DTrack
             'dtrack_no'         => ['required', 'regex:/^\d{4}-\d{6}$/'],
             'transaction_date'  => 'required|date',
             'particulars'       => 'required|string',
@@ -224,15 +273,47 @@ class FundController extends Controller
             'allocations.*.amount'      => 'required|numeric|min:0.01',
         ]);
 
-        // Ensure this DTrack isn't already in the DB from a PREVIOUS day/transaction
-        // This prevents a user from accidentally using a DTrack from last week.
+        // Ensure this DTrack isn't already in the DB
         $exists = \App\Models\Fund::where('dtrack_no', $request->dtrack_no)->exists();
         if ($exists) {
-            return response()->json(['message' => 'This DTrack number has already been used in a previous transaction.'], 422);
+            return response()->json(['message' => 'This DTrack number has already been used.'], 422);
         }
 
+        // --- FETCH SECID LOGIC ---
+        // 1. Initialize variables
+        $userId = auth()->id();
+        $secid = null;
+
+        // 2. CHECK: If user is admin, they might not need a secid (or set a default)
+        if (auth()->user()->username === 'admin') {
+            $secid = 0; // Or whatever ID you use for 'Regional Office'
+        } else {
+            // 3. Get dbedid from your LOCAL table 'employee_details'
+            $localDetail = \DB::table('employee_details')
+                ->where('user_id', $userId)
+                ->select('dbedid')
+                ->first();
+
+            if ($localDetail && $localDetail->dbedid) {
+                // 4. Get secid from db_common.tbl_emp_details
+                // IMPORTANT: Ensure your db_common connection is working in config/database.php
+                $secid = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+            }
+        }
+
+        // 5. CRITICAL PROTECTION: Stop if secid is still null for non-admins
+        if (is_null($secid) && auth()->user()->username !== 'admin') {
+            return response()->json([
+                'success' => false, 
+                'message' => 'System Error: Your account is not correctly linked to a DOH Section. Please contact ICT to update your Employee Profile.'
+            ], 422);
+        }
+        // -------------------------
+
         try {
-            return \DB::transaction(function () use ($request, $validated) {
+            return \DB::transaction(function () use ($request, $validated, $secid) {
                 foreach ($request->allocations as $index => $allocation) {
                     $activity = \App\Models\Activity::findOrFail($allocation['activity_id']);
 
@@ -246,14 +327,18 @@ class FundController extends Controller
 
                     // Create individual fund row
                     $fund = new \App\Models\Fund();
-                    $fund->dtrack_no          = $validated['dtrack_no'];
-                    $fund->transaction_date   = $validated['transaction_date'];
-                    $fund->particulars        = $validated['particulars'];
-                    $fund->amount             = $allocation['amount'];
-                    $fund->source_of_fund_id  = $allocation['source_id'];
+                    $fund->dtrack_no           = $validated['dtrack_no'];
+                    $fund->transaction_date    = $validated['transaction_date'];
+                    $fund->particulars         = $validated['particulars'];
+                    $fund->amount              = $allocation['amount'];
+                    $fund->source_of_fund_id   = $allocation['source_id'];
                     $fund->transaction_type_id = $activity->id; 
-                    $fund->user_id            = auth()->id();
-                    $fund->status             = 'Routed';
+                    $fund->user_id             = auth()->id();
+                    
+                    // STAMP THE SECTION ID
+                    $fund->secid               = $secid; 
+                    
+                    $fund->status              = 'Routed';
                     $fund->save();
 
                     // Sync creditors for this specific fund row
@@ -386,22 +471,51 @@ class FundController extends Controller
         ]);
     }
 
+    //FOR UPDATE TRANSACTION
     public function update(Request $request, $id)
     {
         $primaryFund = Fund::findOrFail($id);
         $oldDtrack = $primaryFund->dtrack_no;
 
         $validated = $request->validate([
-            'dtrack_no'        => 'required|regex:/^\d{4}-\d{6}$/', 
-            'transaction_date' => 'required|date',
-            'particulars'      => 'required|string',
-            'creditor_ids'     => 'nullable|array',
-            'allocations'             => 'required|array|min:1',
-            'allocations.*.id'        => 'nullable|exists:funds,id', // Track existing rows
-            'allocations.*.source_id' => 'required|exists:source_of_funds,id',
+            'dtrack_no'         => 'required|regex:/^\d{4}-\d{6}$/', 
+            'transaction_date'  => 'required|date',
+            'particulars'       => 'required|string',
+            'creditor_ids'      => 'nullable|array',
+            'allocations'               => 'required|array|min:1',
+            'allocations.*.id'          => 'nullable|exists:funds,id', 
+            'allocations.*.source_id'   => 'required|exists:source_of_funds,id',
             'allocations.*.activity_id' => 'required|exists:activities,id',
-            'allocations.*.amount'    => 'required|numeric|min:0',
+            'allocations.*.amount'      => 'required|numeric|min:0',
         ]);
+
+        // --- FETCH SECID LOGIC ---
+        $userId = auth()->id();
+        $secid = null;
+
+        // Handle Admin exception - usually Admin is secid 0
+        if (auth()->user()->username === 'admin') {
+            $secid = 0; 
+        } else {
+            // 1. Get dbedid from local table
+            $localDetail = \DB::table('employee_details')
+                ->where('user_id', $userId)
+                ->select('dbedid')
+                ->first();
+
+            if ($localDetail && $localDetail->dbedid) {
+                // 2. Get secid from db_common.tbl_emp_details
+                $secid = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+            }
+        }
+
+        // Safety check: if it's still null and NOT admin, prevent saving to avoid "orphaned" data
+        if (is_null($secid) && auth()->user()->username !== 'admin') {
+            return response()->json(['message' => 'Unable to determine your Section Assignment. Please update your profile.'], 422);
+        }
+        // -------------------------
 
         try {
             DB::beginTransaction();
@@ -426,6 +540,7 @@ class FundController extends Controller
                     'transaction_type_id' => $alloc['activity_id'],
                     'amount'              => $alloc['amount'],
                     'status'              => $primaryFund->status,
+                    'secid'               => $secid, // Apply the fetched secid
                 ];
 
                 if (!empty($alloc['id'])) {
@@ -433,8 +548,7 @@ class FundController extends Controller
                     $row = Fund::find($alloc['id']);
                     $row->update($data);
                 } else {
-                    // CREATE new row (if user added a row in the modal)
-                    // Add the user_id here to satisfy the database constraint
+                    // CREATE new row (for multi-fund splits added during edit)
                     $data['user_id'] = auth()->id(); 
                     $row = Fund::create($data);
                 }

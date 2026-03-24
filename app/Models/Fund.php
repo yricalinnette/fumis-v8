@@ -16,6 +16,7 @@ class Fund extends Model
         'remarks',
         'document_updates',
         'user_id',
+        'secid',
         'status',
         'status_date',
         'obligation_serial',
