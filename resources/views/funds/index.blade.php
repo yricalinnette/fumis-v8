@@ -348,17 +348,17 @@
         <table class="table table-bordered table-striped table-hover" id="funds-table">
             <thead>
                 <tr>
-                    <th>DTRACK NO.</th>
-                    <th>Date</th>
+                    <th style="width: 120px;">DTRACK NO.</th>
+                    <th style="width: 80px;">Date</th>
                     @if(auth()->user()->is_admin)
-                        <th>Section</th>
+                        <th style="width: 100px;">Section</th>
                     @endif
-                    <th>Creditor</th> 
-                    <th>Source</th>
-                    <th>Activity</th> 
-                    <th class="text-right">Amount</th>
-                    <th>Status & Remarks</th>
-                    <th class="text-center">Action</th>
+                    <th style="width: 160px;">Creditor</th> 
+                    <th style="width: 90px;">Source</th>
+                    <th style="width: 140px;">Activity</th> 
+                    <th class="text-right" style="width: 110px;">Amount</th>
+                    <th style="width: 140px;">Status & Remarks</th>
+                    <th class="text-center" style="width: 80px;">Action</th>
                 </tr>
             </thead>
             <tbody>
@@ -366,14 +366,14 @@
                 @php $firstItem = $fund->breakdown->first(); @endphp
                 
                 <tr class="{{ $firstItem->status == 'Disbursed' ? 'table-light' : '' }} fund-row" data-section="{{ $allSections[$fund->secid] ?? 'Admin' }}">
-                    <td>
+                    <td class="text-center col-dtrack" data-order="{{ \Carbon\Carbon::parse($fund->created_at)->timestamp }}">
                         <a href="#" class="view-dtrack font-weight-bold" 
                         data-particulars="{{ e($fund->particulars ?? 'No particulars') }}" 
                         data-remarks="{{ e($fund->all_remarks ?? 'No remarks') }}">
                             {{ $fund->dtrack_no }}
                         </a>
                     </td>
-                    <td data-order="{{ \Carbon\Carbon::parse($fund->transaction_date)->format('Y-m-d') }}">
+                    <td class="col-date" data-order="{{ \Carbon\Carbon::parse($fund->transaction_date)->format('Y-m-d') }}">
                         {{ \Carbon\Carbon::parse($fund->transaction_date)->format('M d, Y') }}
                     </td>
                     @if(auth()->user()->is_admin)
@@ -393,7 +393,7 @@
                             </small> --}}
                         </td>
                     @endif
-                    <td>
+                    <td class="col-creditor">
                         @if($fund->creditors->isNotEmpty())
                             @foreach($fund->creditors as $creditor)
                                 <div class="badge badge-info mb-1">
@@ -405,15 +405,15 @@
                         @endif
                     </td>
                     
-                    <td style="font-size: 0.85rem; line-height: 1.2;">
+                    <td class="col-source" style="font-size: 0.85rem; line-height: 1.2;">
                         {!! $fund->source_names !!}
                     </td>
                     
-                    <td style="font-size: 0.85rem; line-height: 1.2;">
+                    <td class="col-activity" style="font-size: 0.85rem; line-height: 1.2;">
                         {!! $fund->activity_names !!}
                     </td>
                     
-                    <td class="text-right">
+                    <td class="col-amount text-right">
                         @if(count($fund->breakdown) > 1)
                             <div class="mb-1" style="border-bottom: 1px dashed #ddd; padding-bottom: 2px;">
                                 @foreach($fund->breakdown as $item)
@@ -474,7 +474,7 @@
                         </div>
                     </td>
 
-                    <td>
+                    <td class="col-status">
                         @php
                             // 1. Determine if we use Merged or Detailed view for Status
                             $hasSignificantStatus = $fund->breakdown->contains(function($item) {
@@ -921,6 +921,9 @@
 <script src="https://cdn.datatables.net/buttons/2.2.2/js/buttons.html5.min.js"></script>
 <script src="https://cdn.datatables.net/buttons/2.2.2/js/buttons.print.min.js"></script>
 
+<script>
+    var isAdmin = {{ auth()->user()->is_admin ? 'true' : 'false' }};
+</script>
 <script>
     function formatDate(dateString) {
         if(!dateString) return "";
@@ -1469,41 +1472,31 @@
         $.fn.dataTable.ext.errMode = 'none';
 
         let table = $('#funds-table').DataTable({
-            "processing": true, // Show indicator while loading
-            "serverSide": false, // Change to true if using server-side processing
+            "destroy": true,
+            "processing": true,
+            "serverSide": false,
             "responsive": true,
             "lengthChange": false,
             "autoWidth": false,
             "ordering": true,
-            "order": [[1, 'desc']], 
+            "stateSave": false, 
+            "order": [[0, 'desc']], 
             "dom": '<"row"<"col-md-6"B><"col-md-6"f>>rtip',
             "buttons": ["copy", "excel", "pdf", "print", "colvis"],
             "columnDefs": [
+                { "targets": 0, "width": "120px", "className": "text-center", "type": "num" },
+                { "targets": 1, "width": "80px" },
+                
+                // Use a conditional spread or a logic check for the rest
+                { "targets": (isAdmin ? 2 : 2), "width": "100px" }, // Section (if admin) or Creditor (if not)
+                
+                // To be safe, target the LAST column (Action) using -1
                 { 
-                    "width": "120px", 
-                    "targets": 0, 
-                    "className": "text-center",
-                    "render": function(data, type, row) {
-                        return `<span class="view-dtrack text-primary font-weight-bold" 
-                                    style="cursor:pointer; text-decoration:underline;">${data}</span>`;
-                    }
-                },
-                { 
-                    "width": "100px", 
-                    "targets": 1, 
-                    "render": function(data, type, row) {
-                        if (type === 'sort' || type === 'type') {
-                            return (Array.isArray(row)) ? row[1] : data;
-                        }
-                        return typeof formatDate === 'function' ? formatDate(data) : data;
-                    }
-                },
-                { "width": "180px", "targets": 2 },
-                { "width": "100px", "targets": 3 },
-                { "width": "150px", "targets": 4 }, 
-                { "width": "110px", "targets": 5 }, 
-                { "width": "180px", "targets": 6 }, 
-                { "width": "100px", "targets": 7, "orderable": false }
+                    "targets": -1, 
+                    "width": "80px", 
+                    "orderable": false,
+                    "className": "text-center" 
+                }
             ],
             "language": {
                 "searchPlaceholder": "Search transactions...",
@@ -1977,43 +1970,49 @@
         // For viewing of transaction info
         $(document).on('click', '.view-dtrack', function (e) {
             e.preventDefault();
-            
             const $link = $(this);
             const modal = $('#viewTransactionModal');
-            
-            // Extraction
-            let particulars = $link.attr('data-particulars');
-            let remarks = $link.attr('data-remarks');
 
-            // Responsive fallback
-            if (particulars === undefined) {
-                const tr = $link.closest('tr');
-                particulars = tr.find('[data-particulars]').attr('data-particulars') || "";
-                remarks = tr.find('[data-remarks]').attr('data-remarks') || "";
+            // 1. Find the parent row
+            // If the table is responsive (mobile view), the row might be a 'child' row
+            let tr = $link.closest('tr');
+            if (tr.hasClass('child')) { 
+                tr = tr.prev(); 
             }
 
-            // Header
-            modal.find('#view_dtrack').text($link.text().trim());
+            // 2. Extract Data using Classes (NOT Indexes)
+            // This ensures that even if 'Section' is missing, we get the right data.
+            const dtrackNo = $link.text().trim();
+            const date     = tr.find('.col-date').text().trim();
+            const creditor = tr.find('.col-creditor').html(); // Using .html() to keep badges
+            const source   = tr.find('.col-source').html();
+            const activity = tr.find('.col-activity').html();
+            const amount   = tr.find('.col-amount').html();
+            const status   = tr.find('.col-status').html();
+
+            // 3. Extract Data Attributes for Particulars and Remarks
+            // We use .data() to get the 'e()' escaped strings from your Blade file
+            const particulars = $link.data('particulars');
+            const remarks     = $link.data('remarks');
+
+            // 4. Update Modal Content
+            modal.find('#view_dtrack').text(dtrackNo);
+            modal.find('#v_date').text(date);
+            modal.find('#v_creditors').html(creditor);
+            modal.find('#v_source').html(source);
+            modal.find('#v_activity').html(activity);
+            modal.find('#v_amount').html(amount);
+            modal.find('#v_status').html(status);
+
+            // 5. Handle Particulars & Remarks Display
+            // Using .text() for particulars to prevent XSS, .html() for remarks to allow <br>
+            modal.find('#v_particulars').text(particulars || 'No particulars provided.');
             
-            // Inject and format
-            // Replace semicolons with line breaks if you want them stacked in the modal
+            // Replace semicolons with line breaks for better readability in the modal
             const formattedRemarks = remarks ? remarks.replace(/; /g, '<br>') : 'No remarks provided.';
+            modal.find('#v_remarks').html(formattedRemarks);
 
-            $('#v_particulars').text(particulars || 'No particulars provided.');
-            $('#v_remarks').html(formattedRemarks); // Use .html() if you added <br>
-
-            // Populate remaining row data
-            const tr = $link.closest('tr');
-            const rowData = table.row(tr).data();
-            if (rowData) {
-                $('#v_date').html(rowData[1].display || rowData[1]);
-                $('#v_creditors').html(rowData[2]);
-                $('#v_source').html(rowData[3]);
-                $('#v_activity').html(rowData[4]);
-                $('#v_amount').html(rowData[5]);
-                $('#v_status').html(rowData[6]);
-            }
-
+            // 6. Show the Modal
             modal.modal('show');
         });
 

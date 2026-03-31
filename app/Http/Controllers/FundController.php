@@ -94,17 +94,15 @@ class FundController extends Controller
                 DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.mname, '{$key}') AS CHAR)) as mname"),
                 DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)) as lname"),
                 DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.suffix, '{$key}') AS CHAR)) as suffix")
-            );
-
-        $assignedDbedids = \DB::table('employee_fund')->pluck('user_id')->unique()->toArray();
+            )
+            ->orderBy(DB::raw("CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)"), 'asc')
+            ->orderBy(DB::raw("CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)"), 'asc');
 
         if (!$currentUser->is_admin) {
             $mySectionId = $currentUser->live_info->secid ?? ($myDetails->secid ?? null);
             
-            $query->where(function($q) use ($mySectionId, $assignedDbedids) {
-                $q->where('tbl_emp_details.secid', '=', $mySectionId)
-                ->orWhereIn('tbl_emp_details.dbedid', $assignedDbedids);
-            });
+            // Strictly filter by section ID only
+            $query->where('tbl_emp_details.secid', '=', $mySectionId);
         }
 
         // Process and index by DBEDID
@@ -188,7 +186,7 @@ class FundController extends Controller
                     ];
                 }),
             ];
-        });
+        })->sortByDesc('created_at')->values();
 
         $userSectionName = ($currentUser->is_admin) ? 'All Personnel' : ($myDetails->secname ?? 'Assigned Section');
         $sources = \App\Models\SourceOfFund::where('fiscal_year', date('Y'))->orderBy('name')->get();

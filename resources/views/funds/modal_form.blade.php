@@ -28,11 +28,11 @@
                             <label class="font-weight-bold">
                                 <i class="fas fa-users mr-1 text-primary"></i> Creditors / Payees 
                                 <small class="text-muted ml-1">
-                                    @if(auth()->user()->is_admin)
+                                    @if(auth()->user()->is_admin || auth()->user()->username === 'admin')
                                         (All Personnel)
                                     @else
-                                        {{-- This shows the section name we joined in the controller --}}
-                                        (Section: {{ $employees->first()->secname ?? 'My Section' }})
+                                        {{-- Use the same property used in your Header --}}
+                                        (Section: {{ auth()->user()->section_name }})
                                     @endif
                                 </small>
                             </label>
