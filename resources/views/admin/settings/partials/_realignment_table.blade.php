@@ -1,5 +1,3 @@
-
-                
 <form action="{{ route('settings.realign') }}" method="POST" id="realignForm">
     @csrf
     <input type="hidden" name="source_id" value="{{ $source->id }}">
@@ -10,7 +8,7 @@
                 <i class="fas fa-edit mr-2"></i> Adjusting: {{ $source->name }}
             </h3>
             <div class="card-tools">
-                <span class="badge badge-info">Total Fund: ₱{{ number_format($source->total_amount, 2) }}</span>
+                <span class="badge badge-info p-2">Total Fund: ₱{{ number_format($source->total_amount, 2) }}</span>
             </div>
         </div>
         
@@ -21,27 +19,36 @@
                         <tr>
                             <th class="pl-4">Activity</th>
                             <th class="text-right">Current Allotted</th>
-                            <th class="text-right">Obligations/Pooled (Locked)</th>
-                            <th class="text-right">Available for Realignment</th>
-                            <th class="text-right" width="250">New Adjusted Budget</th>
+                            <th class="text-right text-orange">Pending Transactions (Routed)</th>
+                            <th class="text-right text-danger">Obligated</th>
+                            <th class="text-right text-info">Pooled</th>
+                            <th class="text-right">Available</th>
+                            <th class="text-right" width="200">New Adjusted Budget</th>
                         </tr>
                     </thead>
                     <tbody>
                         @foreach($source->activities as $activity)
                         @php
-                            // 1. Sum obligations from the 'funds' table via your defined relationship
+                            // 1. Transactions already officially obligated
                             $obligatedSum = $activity->transactions()->sum('obligation_amount') ?? 0;
                             
-                            // 2. Access 'pooled_amount' directly from the 'activities' table
+                            // 2. Transactions routed/processed but NOT YET obligated
+                            // We use 'amount' from the funds table for these
+                            $pendingSum = $activity->transactions()
+                                ->where(function($q) {
+                                    $q->whereNull('obligation_amount')
+                                      ->orWhere('obligation_amount', 0);
+                                })
+                                ->sum('amount') ?? 0;
+
+                            // 3. Savings/Pooled
                             $pooledAmount = $activity->pooled_amount ?? 0;
 
-                            // 3. The "Floor": You cannot adjust a budget lower than what is already 
-                            // spent (obligated) PLUS what has been moved to savings (pooled).
-                            $totalLocked = $obligatedSum + $pooledAmount;
+                            // 4. THE ABSOLUTE FLOOR: 
+                            // Current Budget cannot go below (Obligated + Pending + Pooled)
+                            $totalLocked = $obligatedSum + $pendingSum + $pooledAmount;
 
                             $currentBudget = $activity->budget_adjusted ?? $activity->budget;
-                            
-                            // Available for realignment is the surplus above the locked amount
                             $availableForRealignment = $currentBudget - $totalLocked;
                         @endphp
                         <tr>
@@ -54,13 +61,17 @@
                                 ₱{{ number_format($currentBudget, 2) }}
                             </td>
 
-                            <td class="text-right text-danger font-italic">
-                                <div class="d-flex flex-column">
-                                    <span class="font-weight-bold">₱{{ number_format($totalLocked, 2) }}</span>
-                                    @if($pooledAmount > 0)
-                                        <small class="text-xs text-secondary">(Incl. ₱{{ number_format($pooledAmount, 2) }} Pooled)</small>
-                                    @endif
-                                </div>
+                            <td class="text-right text-orange">
+                                <span class="font-weight-bold">₱{{ number_format($pendingSum, 2) }}</span>
+                                <br><small class="text-xs">Unobligated</small>
+                            </td>
+
+                            <td class="text-right text-danger">
+                                <span class="font-weight-bold">₱{{ number_format($obligatedSum, 2) }}</span>
+                            </td>
+
+                            <td class="text-right text-info">
+                                <span class="font-weight-bold">₱{{ number_format($pooledAmount, 2) }}</span>
                             </td>
 
                             <td class="text-right {{ $availableForRealignment > 0 ? 'text-success' : 'text-muted' }} font-weight-bold">
@@ -74,7 +85,7 @@
                                     </div>
                                     <input type="text" 
                                         name="adjustments[{{ $activity->id }}]" 
-                                        class="form-control text-right realign-input font-weight-bold" 
+                                        class="form-control text-right realign-input font-weight-bold {{ $availableForRealignment < 0 ? 'is-invalid' : '' }}" 
                                         value="{{ number_format($currentBudget, 2, '.', ',') }}" 
                                         data-min="{{ $totalLocked }}" 
                                         placeholder="0.00">

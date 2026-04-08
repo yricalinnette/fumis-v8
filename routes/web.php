@@ -26,14 +26,30 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     //settings
     // Route::get('/settings', [SettingsController::class, 'index'])->name('settings.index');
     Route::get('/settings/accounts', [SettingsController::class, 'userIndex'])->name('settings.accounts');
+    // BUDGET LINE ITEM ROUTES
+    Route::get('/settings/budget_line_items', [SettingsController::class, 'budgetLineItems'])->name('settings.budget_line_items');
+    Route::post('/settings/budget_line_items/store', [SettingsController::class, 'storeBudgetLineItem'])->name('settings.budget_line_items.store');
+    Route::put('/settings/budget_line_items/{id}', [SettingsController::class, 'updateBudgetLineItem'])->name('settings.budget_line_items.update');
+    Route::delete('/settings/budget_line_items/{id}', [SettingsController::class, 'destroyBudgetLineItem'])->name('settings.budget_line_items.destroy');
+    // FUND SOURCE ROUTES
+    Route::get('/settings/fund_sources', [SettingsController::class, 'fundSources'])->name('settings.fund_sources');
+    Route::post('/settings/fund_sources', [SettingsController::class, 'storeSource'])->name('settings.fund_sources.store');
+    Route::delete('/settings/fund_sources/{id}', [SettingsController::class, 'destroyFundSource'])->name('settings.fund_sources.destroy');
+    Route::put('/settings/fund_sources/{id}', [SettingsController::class, 'updateSource'])->name('settings.fund_sources.update');
+    //UACS CODE ROUTES
+    Route::get('/settings/uacs_codes', [SettingsController::class, 'uacsCodes'])->name('settings.uacs_codes');
+    Route::post('/settings/uacs_codes/store', [SettingsController::class, 'storeUACSCodes'])->name('settings.uacs_codes.store');
+    Route::put('/settings/uacs_codes/{id}', [SettingsController::class, 'updateUACSCodes'])->name('settings.uacs_codes.update');
+    Route::delete('/settings/uacs_codes/{id}', [SettingsController::class, 'destroyUACSCodes'])->name('settings.uacs_codes.destroy');
+    
     Route::get('/settings/wfp', [SettingsController::class, 'index'])->name('settings.index');
-    Route::post('/settings/source', [SettingsController::class, 'storeSource'])->name('settings.source.store');
-    Route::delete('settings/source/{id}', [SettingsController::class, 'destroySource'])->name('settings.source.destroy');
+    Route::delete('/settings/source/{id}', [SettingsController::class, 'destroySource'])->name('settings.source.destroy');
     Route::post('/settings/employee', [SettingsController::class, 'storeEmployee'])->name('settings.employee.store');
     Route::post('/settings/activity', [SettingsController::class, 'storeActivity'])->name('settings.activity.store');
+    Route::get('/settings/activity/{id}/edit', [SettingsController::class, 'editWfp'])->name('settings.activity.edit');
     Route::put('/settings/source/{id}', [SettingsController::class, 'updateSource'])->name('settings.source.update');
     Route::post('settings/import', [ActivityController::class, 'importWFP'])->name('settings.activity.import');
-    Route::get('/settings/source/{id}/test-connection', [SettingsController::class, 'testConnection'])->name('settings.source.test');
+    // Route::get('/settings/source/{id}/test-connection', [SettingsController::class, 'testConnection'])->name('settings.source.test');
     Route::match(['get', 'post', 'put'], '/settings/template/{id}', [SettingsController::class, 'updateTemplate'])->name('settings.template.update');
     Route::delete('/settings/activity/{id}', [SettingsController::class, 'destroyActivity'])->name('settings.activity.destroy');
     Route::get('settings/download-template', [ActivityController::class, 'downloadTemplate'])->name('settings.template.download');

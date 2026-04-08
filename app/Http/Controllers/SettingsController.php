@@ -19,6 +19,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Http\Request;
+use App\Models\BudgetLineItem;
+use App\Models\UacsCode;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache;
 
 class SettingsController extends Controller
 {
@@ -42,13 +46,52 @@ class SettingsController extends Controller
 
         // 6. Fetch helper lists for the form
         $objectives = \App\Models\Activity::whereNotNull('objective')->distinct()->pluck('objective');
-        $budgetLineItems = \App\Models\Activity::whereNotNull('budget_line_item')->distinct()->pluck('budget_line_item');
+        $budgetLineItems = \App\Models\BudgetLineItem::where('is_active', 1)
+                        ->orderBy('budget_line_item_name', 'asc')
+                        ->get();
 
         // UPDATED: Filter fund sources to only show the current fiscal year
         $fundSources = \App\Models\SourceOfFund::where('fiscal_year', $currentYear)
             ->orderBy('name')
             ->get();
 
+        $uacsCodes = \App\Models\UacsCode::orderBy('uacs_code', 'asc')->get();
+
+        //CONNECT TO SPMS API to get the list of objectives for the dropdown
+        // Change this flag to true to enable live API fetching. Remember to set the SPMS_API_URL, SPMS_SYSTEM_NAME, and SPMS_KEY in your .env file for it to work.
+        $isSpmsOnline = false; 
+
+        if ($isSpmsOnline) {
+            $objectives = Cache::remember('spms_objectives', 86400, function () {
+                try {
+                    $response = Http::timeout(5)->post(env('SPMS_API_URL'), [
+                        'systemname' => env('SPMS_SYSTEM_NAME'),
+                        'key'        => env('SPMS_KEY'),
+                    ]);
+                    return $response->successful() ? $response->json()['data'] : [];
+                } catch (\Exception $e) {
+                    return [];
+                }
+            });
+        } else {
+            // MOCK DATA: Exactly how the SPMS JSON is expected to look
+            $objectives = [
+                ['objectives' => 'To provide LGUs with competencies and resources for health system strengthening in support of the Health Sector 8-Point Action Agenda'],
+                ['objectives' => 'To catalyze the transformation of local health systems to province-wide and city-wide health system'],
+                ['objectives' => 'To strengthen engagements with stakeholders towards a well-coordinated and aligned implementation of the 8-Point Action Agenda'],
+                ['objectives' => 'To ensure that relevant policies, guidelines, and programs are cascaded to LGUs and other health partners'],
+                ['objectives' => 'To ensure efficacy on the provision of technical assistance to LGUs and other health partners towards the achievement of UHC'],
+                ['objectives' => 'To ensure systematic preventive and corrective maintenance of all IT equipment and the effective delivery of other related ICT services.'],
+                ['objectives' => 'To ensure that internal clients are effectively supported through the transformation of office processes and that external clients receive reliable, high-quality information via the agency website, thereby enhancing operational efficiency and service delivery.'],
+                ['objectives' => 'To ensure the cybersecurity posture of DOH-EVCHD digital solutions and applications, safeguarding data integrity, confidentiality, and availability.'],
+                ['objectives' => 'To ensure alignment of policies, programs and standards towards sectoral goals on equity, access and quality of care'],
+                ['objectives' => 'To ensure efficient utilization of DOH funds'],
+                ['objectives' => 'To increase capacity of DOH personnel in order to improve workplace performance.'],
+                ['objectives' => 'To ensure compliance with cross-cutting requirements based on standard procedures and timelines in accordance to Anti-Red Tape Authority (ARTA) and other relevant laws'],
+                ['objectives' => 'Submission of reportorial requirements.'],
+                ['objectives' => 'To ensure delivery of quality service through performance of other task assigned in Committees (As clearing house and Inspection for ICT Supplies / Equipment and Licenses).']
+            ];
+        }
         return view('admin.settings', compact(
             'sources', 
             'activities', 
@@ -56,7 +99,9 @@ class SettingsController extends Controller
             'currentYear', 
             'objectives', 
             'budgetLineItems', 
-            'fundSources'
+            'fundSources',
+            'uacsCodes',
+            'objectives'
         ));
     }
 
@@ -76,37 +121,119 @@ class SettingsController extends Controller
         return view('admin.settings.account_management', compact('users'));
     }
 
+    //FOR BUDGET LINE ITEM MANAGEMENT
+    public function budgetLineItems()
+    {
+        // Fetch only the budget line items for simplified management
+        $items = \App\Models\BudgetLineItem::orderBy('budget_line_item_name', 'asc')
+                    ->get();
+
+        return view('admin.settings.budget_line_items', compact('items'));
+    }
+
+    //FOR ADDING OF BUDGET LINE ITEM
+    public function storeBudgetLineItem(Request $request)
+    {
+        $request->validate([
+            'budget_line_item_name' => 'required|unique:budget_line_items,budget_line_item_name',
+        ]);
+
+        \App\Models\BudgetLineItem::create([
+            'budget_line_item_name' => $request->budget_line_item_name,
+            // If the checkbox 'is_active' is missing, default to false (0)
+            'is_active' => $request->has('is_active'), 
+        ]);
+
+        return redirect()->back()->with('success', 'Line Item added!');
+    }
+
+    // Update Budget Line Item
+    public function updateBudgetLineItem(Request $request, $id) 
+    {
+        // Validate
+        $request->validate([
+            'budget_line_item_name' => 'required|unique:budget_line_items,budget_line_item_name,' . $id,
+        ]);
+
+        // Find and Update
+        $item = \App\Models\BudgetLineItem::findOrFail($id);
+        $item->update([
+            'budget_line_item_name' => $request->budget_line_item_name,
+            'is_active' => $request->has('is_active') ? 1 : 0,
+        ]);
+
+        return redirect()->back()->with('success', 'Updated successfully!');
+    }
+
+    // Delete Budget Line Item
+    public function destroyBudgetLineItem($id)
+    {
+        BudgetLineItem::findOrFail($id)->delete();
+        return redirect()->back()->with('success', 'Item deleted successfully!');
+    }
+
+    //FOR FUND SOURCE MANAGEMENT
+    public function fundSources()
+    {
+        // 1. Fetch Fund Sources with relationships to avoid N+1 query issues in the table
+        // 'budgetLineItem' allows us to see the name in the badge
+        // 'activities' allows us to sum the pooled_amount
+        $sources = \App\Models\SourceOfFund::with(['budgetLineItem', 'activities'])
+                    ->orderBy('name', 'asc')
+                    ->get();
+
+        // 2. Fetch all Budget Line Items for the "Add/Edit" modal dropdowns
+        // This is the variable that was missing!
+        $budgetLineItems = \App\Models\BudgetLineItem::orderBy('budget_line_item_name', 'asc')->get();
+
+        // 3. Pass both variables to the view
+        return view('admin.settings.fund_sources', compact('sources', 'budgetLineItems'));
+    }
+
+    // Delete Fund Sources
+    public function destroyFundSource($id)
+    {
+        SourceOfFund::findOrFail($id)->delete();
+        return redirect()->back()->with('success', 'Fund source deleted successfully!');
+    }
+
+
     public function storeSource(Request $request) 
     {
-        // 1. Validation with composite unique check
+        // 1. Validation with updated composite unique check
         $validated = $request->validate([
             'name' => [
                 'required',
                 'string',
                 'max:255',
-                // This checks if the 'name' + 'fiscal_year' combination already exists
+                // Check if 'name' + 'fiscal_year' + 'budget_line_item_id' combination already exists
                 Rule::unique('source_of_funds')->where(function ($query) use ($request) {
-                    return $query->where('fiscal_year', $request->fiscal_year);
+                    return $query->where('fiscal_year', $request->fiscal_year)
+                                ->where('budget_line_item_id', $request->budget_line_item_id);
                 }),
             ],
-            'fiscal_year'    => 'required|integer',
-            'total_amount'   => 'required|numeric',
-            'spreadsheet_id' => 'nullable|string',
-            'sheet_name'     => 'nullable|string',
+            'budget_line_item_id' => 'required|exists:budget_line_items,id', // Added validation
+            'fiscal_year'         => 'required|integer',
+            'total_amount'        => 'required|numeric|min:0',
+            'spreadsheet_id'      => 'nullable|string',
+            'sheet_name'          => 'nullable|string',
         ], [
-            // Custom error message for the unique constraint
-            'name.unique' => "The fund source '{$request->name}' already exists for the year {$request->fiscal_year}."
+            // Custom error messages
+            'name.unique' => "The fund source '{$request->name}' already exists for this budget line in {$request->fiscal_year}.",
+            'budget_line_item_id.required' => "Please select a Budget Line Item.",
         ]);
 
         try {
-            // 2. Simple creation (Validation already handled the duplicate check)
+            // 2. Creation 
+            // $validated now includes budget_line_item_id
             SourceOfFund::create($validated);
+
             return back()->with('success', 'Fund source added successfully!');
 
         } catch (\Exception $e) {
-            // 3. Catch only genuine system failures (DB down, etc.)
+            // 3. Log genuine system failures
             Log::error("Fund Source Storage Error: " . $e->getMessage());
-            return back()->withErrors(['error' => "A system error occurred while saving. Please try again."]);
+            return back()->withErrors(['error' => "A system error occurred while saving: " . $e->getMessage()]);
         }
     }
 
@@ -116,33 +243,102 @@ class SettingsController extends Controller
         
         $validated = $request->validate([
             'name' => [
-                'required', 'string',
+                'required', 
+                'string',
+                'max:255',
+                // Composite unique check: Name + Year + Budget Line Item
                 Rule::unique('source_of_funds')->where(function ($query) use ($request) {
-                    return $query->where('fiscal_year', $request->fiscal_year);
+                    return $query->where('fiscal_year', $request->fiscal_year)
+                                ->where('budget_line_item_id', $request->budget_line_item_id);
                 })->ignore($id),
             ],
-            'fiscal_year' => 'required|integer',
-            'total_amount'   => 'required|numeric|min:0', // Ensure it's not negative
-            'spreadsheet_id' => 'nullable|string',
-            'sheet_name'     => 'nullable|string',
+            'budget_line_item_id' => 'required|exists:budget_line_items,id', // Added validation
+            'fiscal_year'         => 'required|integer',
+            'total_amount'        => 'required|numeric|min:0',
+            'spreadsheet_id'      => 'nullable|string',
+            'sheet_name'          => 'nullable|string',
+        ], [
+            'name.unique' => "This fund source name already exists for the selected budget line and year.",
+            'budget_line_item_id.required' => "Please select a Budget Line Item.",
         ]);
 
         // 1. Calculate the total budget already distributed to activities
+        // (Ensure your SourceOfFund model has the 'activities' relationship defined)
         $totalAllocatedToActivities = $source->activities()->sum('budget_adjusted');
 
-        // 2. Compare with the new proposed total_amount
+        // 2. Safeguard: Prevent reducing Source Amount below what is already promised to activities
         if ($request->total_amount < $totalAllocatedToActivities) {
             return back()->withErrors([
-                'total_amount' => "Cannot reduce the total amount to ₱" . number_format($request->total_amount, 2) . 
-                                ". Currently, ₱" . number_format($totalAllocatedToActivities, 2) . 
-                                " is already allocated to activities. Please reduce activity budgets first."
+                'total_amount' => "Constraint Error: Total amount (₱" . number_format($request->total_amount, 2) . 
+                                ") is less than already allocated funds (₱" . number_format($totalAllocatedToActivities, 2) . 
+                                "). Please adjust activity budgets before reducing the source allotment."
             ])->withInput();
         }
 
-        // 3. If check passes, update
+        // 3. Update the record
         $source->update($validated);
 
         return back()->with('success', 'Fund source updated successfully!');
+    }
+
+    //FOR UACS CODE MANAGEMENT
+    public function uacsCodes(Request $request)
+    {
+        $query = UacsCode::query();
+
+        if ($request->has('search')) {
+            $search = $request->get('search');
+            $query->where('uacs_code', 'like', "%{$search}%")
+                ->orWhere('account_title', 'like', "%{$search}%");
+        }
+
+        $uacs = $query->paginate(15)->withQueryString(); // withQueryString keeps the search term when you click "Next"
+        return view('admin.settings.uacs_code', compact('uacs'));
+    }
+
+    public function storeUACSCodes(Request $request)
+    {
+        $validated = $request->validate([
+            'uacs_code' => 'required|string|max:50|unique:uacs_codes,uacs_code',
+            'account_title' => 'required|string|max:255',
+            'allotment_class' => 'required|in:PS,MOOE,CO,FinEx',
+        ], [
+            'uacs_code.unique' => 'This UACS code already exists in the system.',
+        ]);
+
+        UacsCode::create($validated);
+
+        return redirect()->back()->with('success', 'UACS Code added successfully!');
+    }
+
+    public function updateUACSCodes(Request $request, $id)
+    {
+        $uacs = UacsCode::findOrFail($id);
+
+        $validated = $request->validate([
+            // unique check ignores the current record ID
+            'uacs_code' => 'required|string|max:50|unique:uacs_codes,uacs_code,' . $id,
+            'account_title' => 'required|string|max:255',
+            'allotment_class' => 'required|in:PS,MOOE,CO,FinEx',
+        ]);
+
+        $uacs->update($validated);
+
+        return redirect()->back()->with('success', 'UACS Code updated successfully!');
+    }
+
+    public function destroyUACSCodes($id)
+    {
+        $uacs = UacsCode::findOrFail($id);
+        
+        // Optional: Add a check to see if this code is being used by activities
+        // if ($uacs->activities()->exists()) {
+        //     return redirect()->back()->with('error', 'Cannot delete! This code is linked to existing activities.');
+        // }
+
+        $uacs->delete();
+
+        return redirect()->back()->with('success', 'UACS Code deleted successfully!');
     }
 
     public function storeEmployee(Request $request)
@@ -286,31 +482,47 @@ class SettingsController extends Controller
                 return (float) str_replace(',', '', $value);
             })->toArray();
 
-            // 2. Validate Total Sum against Fund Source (using sanitized numbers)
-            if (round(array_sum($adjustments), 2) > round($source->total_amount, 2)) {
-                return back()->with('error', 'The total exceeds the available Fund Source limit.');
+            // 2. Validate Total Sum against Fund Source (Strict Balance Check)
+            // We use round to 2 decimals to handle float precision issues
+            if (round(array_sum($adjustments), 2) !== round($source->total_amount, 2)) {
+                return back()->with('error', 'The total adjusted budget (₱' . number_format(array_sum($adjustments), 2) . ') must exactly match the Source Total (₱' . number_format($source->total_amount, 2) . ').');
             }
 
             // 3. Process Adjustments
             foreach ($adjustments as $activityId => $newAmount) {
                 $activity = Activity::findOrFail($activityId);
                 
-                // Check against obligation_amount (matching your frontend calculation)
-                $obligated = $activity->funds()->sum('obligation_amount');
+                // --- NEW: MATCHING FRONTEND LOCK LOGIC ---
+                
+                // A. Officially Obligated
+                $obligated = $activity->transactions()->sum('obligation_amount') ?? 0;
 
-                // Safety check: Don't allow reduction below already spent/obligated funds
-                if (round($newAmount, 2) < round($obligated, 2)) {
-                    return back()->with('error', "Cannot reduce {$activity->name} below its obligations (₱" . number_format($obligated, 2) . ").");
+                // B. Pending/Routed (Unobligated transactions)
+                $pending = $activity->transactions()
+                    ->where(function($q) {
+                        $q->whereNull('obligation_amount')
+                        ->orWhere('obligation_amount', 0);
+                    })
+                    ->sum('amount') ?? 0;
+
+                // C. Pooled amount
+                $pooled = $activity->pooled_amount ?? 0;
+
+                // The Absolute Floor
+                $minLimit = $obligated + $pending + $pooled;
+
+                // Safety check: Don't allow reduction below the "Locked" funds
+                if (round($newAmount, 2) < round($minLimit, 2)) {
+                    return back()->with('error', "Cannot reduce {$activity->name} below its locked limit of ₱" . number_format($minLimit, 2) . " (Includes Pending, Obligated, and Pooled funds).");
                 }
 
-                // CORE LOGIC: If the activity was newly uploaded with 0 budget
+                // 4. Update the activity
                 if ((float)$activity->budget == 0) {
                     $activity->update([
-                        'budget' => $newAmount,          // Set the "Base" budget
-                        'budget_adjusted' => $newAmount  // Set the "Current" budget
+                        'budget' => $newAmount,
+                        'budget_adjusted' => $newAmount
                     ]);
                 } else {
-                    // For existing activities, only update the adjusted column
                     $activity->update([
                         'budget_adjusted' => $newAmount
                     ]);
@@ -318,11 +530,12 @@ class SettingsController extends Controller
             }
 
             DB::commit();
-            return redirect(url()->previous() . '#tabs-realignment')->with('success', 'Budget replanned successfully.');
+            // Redirect back to the specific tab
+            return redirect(url()->previous() . '#tabs-realignment')->with('success', 'Budget realignment applied successfully.');
 
         } catch (\Exception $e) {
             DB::rollBack();
-            return back()->with('error', 'Error: ' . $e->getMessage());
+            return back()->with('error', 'Critical Error: ' . $e->getMessage());
         }
     }
 
@@ -356,40 +569,136 @@ class SettingsController extends Controller
     //for manual encoding of WFP
     public function storeWfp(Request $request)
     {
+        // 1. Unified Validation
+        // We make fields nullable if 'id' is present because disabled fields are not submitted
+        $isEdit = $request->filled('id');
+
         $validated = $request->validate([
-            'objective' => 'required|string',
-            'budget_line_item' => 'required|string',
-            'source_of_fund_id' => 'required|exists:source_of_funds,id',
-            'uacs_code' => 'nullable|numeric',
-            'name' => 'required|string',
-            'budget_amount' => 'required|numeric',
-            'start_date' => 'required|date',
-            'end_date' => 'required|date|after_or_equal:start_date',
-            'target_quarters' => 'nullable|array',
+            'id'                  => 'nullable|exists:activities,id',
+            'objective'           => $isEdit ? 'nullable|string' : 'required|string',
+            'budget_line_item_id' => $isEdit ? 'nullable|exists:budget_line_items,id' : 'required|exists:budget_line_items,id', 
+            'source_of_fund_id'   => $isEdit ? 'nullable|exists:source_of_funds,id' : 'required|exists:source_of_funds,id',
+            'uacs_code_id'        => $isEdit ? 'nullable|exists:uacs_codes,id' : 'required|exists:uacs_codes,id',
+            'name'                => $isEdit ? 'nullable|string' : 'required|string',
+            'budget_amount'       => $isEdit ? 'nullable|numeric|min:0' : 'required|numeric|min:0',
+            'start_date'          => 'required|date',
+            'end_date'            => 'required|date|after_or_equal:start_date',
+            'target_quarters'     => 'required|array|min:1',
+            'targets'             => 'required|array',
+        ], [
+            'target_quarters.required' => 'Please select at least one target quarter.',
         ]);
 
-        // 1. Check for Duplicate Entry
-        $exists = Activity::where('objective', $validated['objective'])
-            ->where('budget_line_item', $validated['budget_line_item'])
-            ->where('source_of_fund_id', $validated['source_of_fund_id'])
-            ->where('name', $validated['name'])
-            ->where('budget', $validated['budget_amount'])
-            ->exists();
-
-        if ($exists) {
-            return back()
-                ->withInput() // Keeps the user's data in the form
-                ->withErrors(['duplicate' => 'This exact activity already exists in the records.']);
+        // 2. Validate numeric targets
+        foreach ($request->target_quarters as $q) {
+            if (!isset($request->targets[$q]) || $request->targets[$q] <= 0) {
+                return back()->withInput()->withErrors(['targets' => "Please enter a valid numeric target for {$q}."]);
+            }
         }
 
-        // 2. Auto-fill budget_adjusted
-        $validated['budget_adjusted'] = $request->budget_amount;
-        $validated['budget'] = $request->budget_amount;
+        // Prepare shared data (Physical Targets)
+        $selectedQuarters = $request->target_quarters ?? [];
+        $physicalTargets = [];
+        foreach ($selectedQuarters as $q) {
+            $physicalTargets[$q] = $request->targets[$q];
+        }
 
-        // 3. Create Activity
-        Activity::create($validated);
+        // 3. Handle Update Logic
+        if ($isEdit) {
+            $activity = Activity::findOrFail($request->id);
+            
+            // Check for transactions or lock status
+            // Replace 'transactions' with your actual relationship name
+            $hasTransactions = $activity->transactions()->exists(); 
+            $isLocked = $activity->is_locked ?? false;
 
-        return back()->with('success', 'Activity saved successfully!');
+            if ($hasTransactions || $isLocked) {
+                /**
+                 * SCENARIO: Has Transactions or Locked
+                 * ONLY update timeframe and targets. Ignore everything else.
+                 */
+                $activity->update([
+                    'start_date'       => $validated['start_date'],
+                    'end_date'         => $validated['end_date'],
+                    'target_quarters'  => $selectedQuarters,
+                    'physical_targets' => $physicalTargets,
+                ]);
+                $msg = 'Activity timeframe and targets updated. Other fields were locked due to existing transactions.';
+            } else {
+                /**
+                 * SCENARIO: No Transactions
+                 * Update everything EXCEPT Budget Line and Fund Source
+                 */
+                $uacsRecord = \App\Models\UacsCode::findOrFail($request->uacs_code_id);
+                
+                $activity->update([
+                    'objective'        => $request->objective,
+                    'uacs_code_id'     => $request->uacs_code_id,
+                    'uacs_code'        => $uacsRecord->uacs_code,
+                    'name'             => $request->name,
+                    'budget'           => $request->budget_amount,
+                    'budget_adjusted'  => $request->budget_amount,
+                    'start_date'       => $validated['start_date'],
+                    'end_date'         => $validated['end_date'],
+                    'target_quarters'  => $selectedQuarters,
+                    'physical_targets' => $physicalTargets,
+                ]);
+                $msg = 'Activity updated successfully!';
+            }
+        } 
+        // 4. Handle Create Logic
+        else {
+            $fundSource = SourceOfFund::findOrFail($validated['source_of_fund_id']);
+            $uacsRecord = \App\Models\UacsCode::findOrFail($validated['uacs_code_id']);
+
+            // Budget Balance Check
+            $totalSpent = Activity::where('source_of_fund_id', $fundSource->id)->sum('budget_adjusted');
+            $remainingBalance = $fundSource->total_amount - $totalSpent;
+
+            if ($validated['budget_amount'] > $remainingBalance) {
+                return back()->withInput()->withErrors(['budget_amount' => "Insufficient funds. Remaining: ₱" . number_format($remainingBalance, 2)]);
+            }
+
+            // Duplicate Check
+            $exists = Activity::where([
+                ['objective', $validated['objective']],
+                ['budget_line_item_id', $validated['budget_line_item_id']],
+                ['source_of_fund_id', $validated['source_of_fund_id']],
+                ['uacs_code_id', $validated['uacs_code_id']],
+                ['name', $validated['name']],
+                ['budget', $validated['budget_amount']],
+            ])->exists();
+
+            if ($exists) {
+                return back()->withInput()->withErrors(['duplicate' => 'This exact activity already exists.']);
+            }
+
+            Activity::create([
+                'objective'           => $validated['objective'],
+                'budget_line_item_id' => $validated['budget_line_item_id'],
+                'source_of_fund_id'   => $validated['source_of_fund_id'],
+                'uacs_code_id'        => $validated['uacs_code_id'],
+                'uacs_code'           => $uacsRecord->uacs_code,
+                'name'                => $validated['name'],
+                'budget'              => $validated['budget_amount'],
+                'budget_adjusted'     => $validated['budget_amount'],
+                'start_date'          => $validated['start_date'],
+                'end_date'            => $validated['end_date'],
+                'target_quarters'     => $selectedQuarters,
+                'physical_targets'    => $physicalTargets,
+            ]);
+            $msg = 'Activity saved successfully!';
+        }
+
+        return back()->with('success', $msg);
+    }
+
+    public function editWfp($id)
+    {
+        $activity = Activity::findOrFail($id);
+        
+        // Return as JSON so your JavaScript $.get() can read it
+        return response()->json($activity);
     }
 
     // register new user account or update existing user accounts

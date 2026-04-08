@@ -76,6 +76,31 @@
         text-align: left;
         padding: 10px;
     }
+
+    /* Styling Select2 result rows */
+    .select2-results__option {
+        padding: 10px 15px !important;
+        border-bottom: 1px solid #f8f9fa;
+        font-size: 0.9rem;
+    }
+
+    .select2-results__option--highlighted {
+        background-color: #007bff !important;
+    }
+
+    /* Ensure the badge looks consistent */
+    .select2-results__option .badge {
+        font-size: 0.7rem;
+        padding: 4px 6px;
+        letter-spacing: 0.5px;
+    }
+
+    /* Match the height with your other modal inputs */
+    .select2-container--bootstrap4 .select2-selection--single {
+        height: calc(2.25rem + 2px) !important;
+        display: flex;
+        align-items: center;
+    }
 </style>
 <div class="container-fluid">
     {{-- Notifications --}}
@@ -105,11 +130,6 @@
     <div class="card card-primary card-outline card-tabs">
         <div class="card-header p-0 pt-1 border-bottom-0">
             <ul class="nav nav-tabs" id="settingsCustomTab" role="tablist">
-                <li class="nav-item">
-                    <a class="nav-link active" id="tabs-sources-tab" data-toggle="pill" href="#tabs-sources" role="tab">
-                        <i class="fas fa-university mr-1"></i> Fund Sources
-                    </a>
-                </li>
                 {{-- <li class="nav-item">
                     <a class="nav-link" id="tabs-templates-tab" data-toggle="pill" href="#tabs-templates" role="tab">
                         <i class="fas fa-file-excel mr-1"></i> WFP Template Settings
@@ -131,115 +151,6 @@
         <div class="card-body">
             <div class="tab-content" id="settingsCustomTabContent">
 
-                {{-- TAB 1: Fund Source Registry --}}
-                <div class="tab-pane fade show active" id="tabs-sources" role="tabpanel">
-                    <div class="d-flex justify-content-between align-items-center mb-3">
-                        <h5 class="text-muted mb-0"><i class="fas fa-database mr-2"></i>Fund Source Registry</h5>
-                        <button type="button" class="btn btn-primary btn-sm" data-toggle="modal" data-target="#modal-add-source">
-                            <i class="fas fa-plus-circle mr-1"></i> Add New Source
-                        </button>
-                    </div>
-
-                    <div class="table-responsive">
-                        <table class="table table-hover table-striped bg-white border">
-                            <thead class="bg-light">
-                                <tr>
-                                    <th style="width: 15%">Source Name</th>
-                                    <th style="width: 15%">Sync Info</th>
-                                    <th style="width: 15%" class="text-right">Original Allotment</th>
-                                    <th style="width: 10%" class="text-center">Pooled Funds</th>
-                                    <th style="width: 20%" class="text-center">Net Allotment</th>
-                                    <th style="width: 5%" class="text-center">FY</th> 
-                                    <th style="width: 10%" class="text-center">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @foreach($sources as $source)
-                                @php
-                                    $totalPooled = $source->activities->sum('pooled_amount');
-                                    $netAmount = $source->total_amount - $totalPooled;
-                                @endphp
-                                <tr>
-                                    <td class="align-middle">
-                                        <strong>{{ $source->name }}</strong>
-                                    </td>
-                                    
-                                    <td class="align-middle small">
-                                        @if($source->spreadsheet_id)
-                                            <div class="text-info mb-1"><i class="fas fa-link mr-1"></i> Linked</div>
-                                            <code class="text-truncate d-block"title="{{ $source->spreadsheet_id }}">
-                                                {{ $source->spreadsheet_id }}
-                                            </code>
-                                        @else
-                                            <span class="text-muted"><i class="fas fa-keyboard mr-1"></i> Manual</span>
-                                        @endif
-                                    </td>
-
-                                    <td class="align-middle text-right text-muted">
-                                        ₱{{ number_format($source->total_amount, 2) }}
-                                    </td>
-
-                                    <td class="align-middle text-center">
-                                        @if($totalPooled > 0)
-                                            @php
-                                                $remarksContent = "<b>Pooled Remarks:</b><br>";
-                                                foreach($source->activities->where('pooled_amount', '>', 0) as $act) {
-                                                    // Using a div wrapper for better spacing inside the tooltip
-                                                    $remarksContent .= "<div class='text-left mb-1'>• " . e($act->name) . ": " . e($act->pooled_remarks ?? 'No remarks') . "</div>";
-                                                }
-                                            @endphp
-                                            
-                                            <span class="badge badge-danger p-2" 
-                                                style="cursor: pointer;"
-                                                data-toggle="tooltip" 
-                                                data-html="true" 
-                                                data-placement="auto" {{-- Let Bootstrap find the best open space --}}
-                                                data-container="body" {{-- Prevents the tooltip from being inside the table cell --}}
-                                                title="{{ $remarksContent }}">
-                                                <i class="fas fa-arrow-down mr-1"></i> ₱{{ number_format($totalPooled, 2) }}
-                                            </span>
-                                        @else
-                                            <span class="text-muted small">—</span>
-                                        @endif
-                                    </td>
-
-                                    <td class="align-middle text-center font-weight-bold text-navy">
-                                        ₱{{ number_format($netAmount, 2) }}
-                                    </td>
-
-                                    <td class="align-middle text-center">
-                                        <span class="badge badge-info">{{ $source->fiscal_year }}</span>
-                                    </td> 
-
-                                    <td class="align-middle text-center">
-                                        <div class="btn-group">
-                                            <button type="button" class="btn btn-sm btn-outline-info edit-source-btn" 
-                                                data-id="{{ $source->id }}" 
-                                                data-name="{{ $source->name }}" 
-                                                data-fiscal_year="{{ $source->fiscal_year }}"
-                                                data-amount="{{ $source->total_amount }}" 
-                                                data-sheetid="{{ $source->spreadsheet_id }}" 
-                                                data-sheetname="{{ $source->sheet_name }}">
-                                                <i class="fas fa-edit"></i>
-                                            </button>
-
-                                            <form action="{{ route('settings.source.destroy', $source->id) }}" method="POST" class="d-inline" 
-                                                onsubmit="return confirm('Are you sure you want to delete this source?')">
-                                                @csrf
-                                                @method('DELETE')
-                                                <button type="submit" class="btn btn-sm btn-outline-danger">
-                                                    <i class="fas fa-trash"></i>
-                                                </button>
-                                            </form>
-                                        </div>
-                                    </td>
-                                </tr>
-                                @endforeach
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
                 {{-- Activity Allocation --}}
                 <div class="tab-pane fade" id="tabs-activities" role="tabpanel">
     
@@ -248,7 +159,7 @@
                     </div>
 
                     {{-- IMPORT SECTION --}}
-                    <form action="{{ route('settings.activity.import') }}" method="POST" enctype="multipart/form-data" id="importForm">
+                    {{-- <form action="{{ route('settings.activity.import') }}" method="POST" enctype="multipart/form-data" id="importForm">
                         @csrf
                         <div class="card card-outline card-success shadow-sm">
                             <div class="card-header">
@@ -298,133 +209,15 @@
                                 </div>
                             </div>
                         </div>
-                    </form>
+                    </form> --}}
 
-                    {{-- MANUAL ENCODING SECTION --}}
-                    <div class="card card-outline card-primary shadow-sm mt-3">
-                        <div class="card-header p-0">
-                            <button class="btn btn-link btn-block text-left text-dark font-weight-bold py-2 px-3" 
-                                    type="button" 
-                                    data-toggle="collapse" 
-                                    data-target="#manualEncodingCollapse" 
-                                    aria-expanded="false" 
-                                    aria-controls="manualEncodingCollapse">
-                                <i class="fas fa-edit mr-2 text-primary"></i> 
-                                MANUAL WFP ENCODING
-                                <i class="fas fa-chevron-down float-right mt-1 text-muted"></i>
+                    <div class="row mb-3">
+                        <div class="col-12 text-right">
+                            <button type="button" class="btn btn-success btn-add-wfp">
+                                <i class="fas fa-plus"></i> Add New WFP
                             </button>
                         </div>
-
-                        <div id="manualEncodingCollapse" class="collapse">
-                            <form action="{{ route('settings.activity.storeWfp') }}" method="POST">
-                                @csrf
-                                <div class="card-body">
-                                    <div class="row">
-                                        {{-- Objective --}}
-                                        <div class="col-md-4">
-                                            <div class="form-group">
-                                                <label>Objective</label>
-                                                <select name="objective" class="form-control select2" required style="width: 100%;">
-                                                    <option value="">-- Select Objective --</option>
-                                                    @foreach($objectives as $obj)
-                                                        <option value="{{ $obj }}">{{ $obj }}</option>
-                                                    @endforeach
-                                                </select>
-                                            </div>
-                                        </div>
-
-                                        {{-- Budget Line Item --}}
-                                        <div class="col-md-4">
-                                            <div class="form-group">
-                                                <label>Budget Line Item</label>
-                                                <select name="budget_line_item" class="form-control select2" required style="width: 100%;">
-                                                    <option value="">-- Select Line Item --</option>
-                                                    @foreach($budgetLineItems as $item)
-                                                        <option value="{{ $item }}">{{ $item }}</option>
-                                                    @endforeach
-                                                </select>
-                                            </div>
-                                        </div>
-
-                                        {{-- Fund Source --}}
-                                        <div class="col-md-4">
-                                            <div class="form-group">
-                                                <label>Fund Source</label>
-                                                <select name="source_of_fund_id" class="form-control select2" required style="width: 100%;">
-                                                    <option value="">-- Select Fund Source --</option>
-                                                    @foreach($fundSources as $fs)
-                                                        <option value="{{ $fs->id }}">{{ $fs->name }} (FY {{ $fs->fiscal_year }})</option>
-                                                    @endforeach
-                                                </select>
-                                            </div>
-                                        </div>
-
-                                        {{-- UACS Code --}}
-                                        <div class="col-md-2">
-                                            <div class="form-group">
-                                                <label>UACS Code</label>
-                                                <input type="number" name="uacs_code" class="form-control" placeholder="e.g. 5020101000">
-                                            </div>
-                                        </div>
-
-                                        {{-- Activity Name --}}
-                                        <div class="col-md-7">
-                                            <div class="form-group">
-                                                <label>Activity Name</label>
-                                                <textarea name="name" class="form-control" rows="3" placeholder="Enter activity description" required></textarea>
-                                            </div>
-                                        </div>
-
-                                        {{-- Cost/Budget --}}
-                                        <div class="col-md-3">
-                                            <div class="form-group">
-                                                <label>Cost / Budget (Original)</label>
-                                                <div class="input-group">
-                                                    <div class="input-group-prepend">
-                                                        <span class="input-group-text">₱</span>
-                                                    </div>
-                                                    <input type="number" name="budget_amount" step="0.01" class="form-control" placeholder="0.00" required>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        {{-- Timeframe & Quarters --}}
-                                        <div class="col-md-4">
-                                            <div class="form-group">
-                                                <label>Start Date</label>
-                                                <input type="date" name="start_date" class="form-control" required>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-4">
-                                            <div class="form-group">
-                                                <label>End Date</label>
-                                                <input type="date" name="end_date" class="form-control" required>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-4">
-                                            <div class="form-group">
-                                                <label class="d-block">Target Quarters</label>
-                                                <div class="d-flex justify-content-between border rounded p-2 bg-light">
-                                                    @foreach(['Q1', 'Q2', 'Q3', 'Q4'] as $q)
-                                                        <div class="custom-control custom-checkbox">
-                                                            <input class="custom-control-input" type="checkbox" name="target_quarters[]" id="encoding{{ $q }}" value="{{ $q }}">
-                                                            <label for="encoding{{ $q }}" class="custom-control-label font-weight-normal">{{ $q }}</label>
-                                                        </div>
-                                                    @endforeach
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="card-footer text-right">
-                                    <button type="submit" class="btn btn-primary shadow-sm">
-                                        <i class="fas fa-save mr-1"></i> Save Activity
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
                     </div>
-
                     <hr class="my-4">
 
                     {{-- START OF ACTIVITY GROUPS --}}
@@ -475,110 +268,134 @@
                                                 $pooledAdjusted = $originalSourceTotal - $totalPooled;
                                             @endphp
 
-                                            <div class="mx-3 mt-3 mb-2">
-                                                <div class="callout callout-danger py-2 bg-light shadow-sm border-left-3">
-                                                    <div class="row align-items-center">
-                                                        <div class="col-md-3">
-                                                            <h6 class="mb-0 font-weight-bold">
-                                                                <i class="fas fa-university mr-2 text-secondary"></i>{{ $sourceName }}
-                                                            </h6>
-                                                        </div>
-                                                        <div class="col-md-9 text-right">
-                                                            <span class="mr-3">
-                                                                <small class="text-muted font-weight-bold">DISTRIBUTED/ADJUSTED AMOUNT:</small>
-                                                                    <span class="ml-1 font-weight-bold">
-                                                                        <span class="text-primary" title="Net Distributed to Activities (Total minus Pooled)">
-                                                                            ₱{{ number_format($netDistributedTotal, 2) }}
-                                                                        </span>
-                                                                        <span class="text-muted mx-1">/</span>
-                                                                        <span class="text-dark" title="Total Original Source Fund Allotment">
+                                            <div class="mx-3 mt-4 mb-3">
+                                                {{-- Header Container for the Fund Source --}}
+                                                <div class="card card-outline card-primary shadow-sm">
+                                                    <div class="card-header bg-navy py-2">
+                                                        <div class="row align-items-center">
+                                                            {{-- Prominent Fund Source Name --}}
+                                                            <div class="col-md-4">
+                                                                <h5 class="mb-0 font-weight-bold text-white">
+                                                                    <i class="fas fa-university mr-2 text-warning"></i>
+                                                                    {{ strtoupper($sourceName) }}
+                                                                </h5>
+                                                            </div>
+
+                                                            {{-- Financial Summary Stats --}}
+                                                            <div class="col-md-8 text-right">
+                                                                <div class="d-flex justify-content-end align-items-center">
+                                                                    <div class="px-3 border-right border-secondary">
+                                                                        <small class="text-gray d-block text-uppercase font-weight-bold" style="font-size: 0.65rem;">Distributed / Adjusted</small>
+                                                                        <span class="text-white font-weight-bold">
+                                                                            <span class="text-warning">₱{{ number_format($netDistributedTotal, 2) }}</span>
+                                                                            <small class="mx-1">/</small>
                                                                             ₱{{ number_format($pooledAdjusted, 2) }}
                                                                         </span>
-                                                                    </span>
-                                                            </span>
+                                                                    </div>
+                                                                    
+                                                                    <div class="px-3 border-right border-secondary text-center">
+                                                                        <small class="text-gray d-block text-uppercase font-weight-bold" style="font-size: 0.65rem;">Pooled</small>
+                                                                        <span class="text-danger font-weight-bold">₱{{ number_format($totalPooled, 2) }}</span>
+                                                                    </div>
 
-                                                            <span class="mr-3">
-                                                                <small class="text-muted font-weight-bold">POOLED:</small>
-                                                                <span class="text-danger font-weight-bold ml-1">₱{{ number_format($totalPooled, 2) }}</span>
-                                                            </span>
-
-                                                            <span class="mr-3">
-                                                                <small class="text-muted font-weight-bold">OBLIGATED:</small>
-                                                                <span class="text-orange font-weight-bold ml-1">₱{{ number_format($totalObligations, 2) }}</span>
-                                                            </span>
-
-                                                            {{-- <span class="badge badge-dark p-2">
-                                                                <small class="font-weight-bold">SOURCE BAL:</small>
-                                                                <span class="ml-1">₱{{ number_format($effectiveSourceFund, 2) }}</span>
-                                                            </span> --}}
+                                                                    <div class="pl-3 text-center">
+                                                                        <small class="text-gray d-block text-uppercase font-weight-bold" style="font-size: 0.65rem;">Obligated</small>
+                                                                        <span class="text-orange font-weight-bold">₱{{ number_format($totalObligations, 2) }}</span>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 </div>
                                             </div>
 
-                                            <table class="table table-bordered table-sm m-0 mb-4">
+                                            <table class="table table-bordered table-sm m-0 mb-4 shadow-sm">
                                                 <thead>
-                                                    <tr class="bg-gray-light">
-                                                        <th class="pl-3">Activity Details</th>
-                                                        <th class="text-right" style="width: 250px;">Budget (Distributed / Adjusted)</th>
-                                                        <th class="text-center" style="width: 120px;">Actions</th>
+                                                    <tr class="bg-gray-light text-center">
+                                                        <th rowspan="2" style="width: 20%; vertical-align: middle;">OBJECTIVE</th>
+                                                        <th rowspan="2" style="width: 25%; vertical-align: middle;">ACTIVITIES TO ATTAIN THE SUCCESS INDICATORS</th>
+                                                        <th colspan="2" style="width: 15%;">TIMEFRAME</th>
+                                                        <th colspan="4" style="width: 20%;">TARGETS</th>
+                                                        <th rowspan="2" style="width: 10%; vertical-align: middle;">COST</th>
+                                                        <th rowspan="2" style="width: 10%; vertical-align: middle;">ACTIONS</th>
+                                                    </tr>
+                                                    <tr class="bg-gray-light text-center">
+                                                        <th>Start</th>
+                                                        <th>End</th>
+                                                        <th>Q1</th>
+                                                        <th>Q2</th>
+                                                        <th>Q3</th>
+                                                        <th>Q4</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                    @foreach($groupedActivities as $activity)
-                                                        @php
-                                                            $netAllotment = $activity->budget_adjusted - $activity->pooled_amount;
-                                                            $hasTransactions = \App\Models\Fund::where('transaction_type_id', $activity->id)->exists();
-                                                        @endphp
-                                                        <tr>
-                                                            <td class="pl-4">
-                                                                <i class="fas fa-caret-right mr-1 text-muted"></i> {{ $activity->name }}
-                                                                @if($activity->pooled_amount > 0)
-                                                                    <small class="text-danger font-italic ml-2">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</small>
+                                                    {{-- 1. Group by Objective --}}
+                                                    @foreach($groupedActivities->groupBy('objective') as $objective => $activitiesByObjective)
+                                                        @foreach($activitiesByObjective as $index => $activity)
+                                                            @php
+                                                                $hasTransactions = \App\Models\Fund::where('transaction_type_id', $activity->id)->exists();
+                                                                $targets = is_array($activity->physical_targets) ? $activity->physical_targets : json_decode($activity->physical_targets, true) ?? [];
+                                                            @endphp
+                                                            <tr>
+                                                                {{-- 2. Objective Column (Merged/Rowspan) --}}
+                                                                @if($index === 0)
+                                                                    <td rowspan="{{ $activitiesByObjective->count() }}" class="align-top font-weight-bold p-2 bg-white">
+                                                                        {{ $objective }}
+                                                                    </td>
                                                                 @endif
-                                                            </td>
-                                                            <td class="text-right">
-                                                                @if($activity->pooled_amount > 0)
-                                                                    <span class="text-muted small" style="text-decoration: line-through;">
-                                                                        ₱{{ number_format($activity->budget_adjusted, 2) }}
-                                                                    </span>
-                                                                    <div class="font-weight-bold text-primary">
-                                                                        ₱{{ number_format($netAllotment, 2) }}
-                                                                    </div>
-                                                                @else
-                                                                    <span class="text-primary font-weight-bold">
-                                                                        ₱{{ number_format($activity->budget_adjusted, 2) }}
-                                                                    </span>
-                                                                @endif
-                                                            </td>
-                                                            <td class="text-center">
-                                                                @if($isCurrent && !$hasTransactions)
-                                                                    <button type="button" class="btn btn-xs btn-warning" 
-                                                                        onclick="openPoolModal({{ $activity->id }}, '{{ addslashes($activity->name) }}', {{ $activity->budget_adjusted }}, {{ $activity->pooled_amount }}, '{{ addslashes($activity->pooled_remarks) }}')">
-                                                                        <i class="fas fa-hand-holding-usd"></i>
-                                                                    </button>
-                                                                    <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST" class="d-inline">
-                                                                        @csrf @method('DELETE')
-                                                                        <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Confirm deletion?')">
-                                                                            <i class="fas fa-trash"></i>
+
+                                                                {{-- 3. Activity Name --}}
+                                                                <td class="p-2">
+                                                                    {{ $activity->name }}
+                                                                    @if($activity->pooled_amount > 0)
+                                                                        <div class="small text-danger font-italic">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</div>
+                                                                    @endif
+                                                                </td>
+
+                                                                {{-- 4. Timeframe Columns --}}
+                                                                <td class="text-center">{{ \Carbon\Carbon::parse($activity->start_date)->format('d M Y') }}</td>
+                                                                <td class="text-center">{{ \Carbon\Carbon::parse($activity->end_date)->format('d M Y') }}</td>
+
+                                                                {{-- 5. Quarterly Target Columns --}}
+                                                                <td class="text-center">{{ $targets['Q1'] ?? '' }}</td>
+                                                                <td class="text-center">{{ $targets['Q2'] ?? '' }}</td>
+                                                                <td class="text-center">{{ $targets['Q3'] ?? '' }}</td>
+                                                                <td class="text-center">{{ $targets['Q4'] ?? '' }}</td>
+
+                                                                {{-- 6. Cost --}}
+                                                                <td class="text-right font-weight-bold">
+                                                                    ₱{{ number_format($activity->budget_adjusted - $activity->pooled_amount, 2) }}
+                                                                </td>
+
+                                                                {{-- 7. Actions --}}
+                                                                <td class="text-center">
+                                                                    <div class="btn-group">
+                                                                        <button type="button" 
+                                                                                class="btn btn-xs btn-info" 
+                                                                                onclick="openEditWfpModal({{ $activity->id }}, {{ $hasTransactions ? 'true' : 'false' }})">
+                                                                            <i class="fas fa-edit"></i>
                                                                         </button>
-                                                                    </form>
-                                                                @else
-                                                                    <i class="fas fa-lock text-muted" title="Locked"></i>
-                                                                @endif
-                                                            </td>
-                                                        </tr>
+                                                                        
+                                                                        @if(!$hasTransactions)
+                                                                            <button type="button" class="btn btn-xs btn-warning" 
+                                                                                onclick="openPoolModal({{ $activity->id }}, '{{ addslashes($activity->name) }}', {{ $activity->budget_adjusted }}, {{ $activity->pooled_amount }})">
+                                                                                <i class="fas fa-hand-holding-usd"></i>
+                                                                            </button>
+                                                                            <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST" class="d-inline">
+                                                                                @csrf @method('DELETE')
+                                                                                <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Delete this activity?')">
+                                                                                    <i class="fas fa-trash"></i>
+                                                                                </button>
+                                                                            </form>
+                                                                        @else
+                                                                            <span class="badge badge-secondary"><i class="fas fa-lock"></i></span>
+                                                                        @endif
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                        @endforeach
                                                     @endforeach
                                                 </tbody>
-                                                <tfoot>
-                                                    <tr class="bg-light">
-                                                        <td class="text-right font-weight-bold">Total Amount:</td>
-                                                        <td class="text-right font-weight-bold text-dark">
-                                                            ₱{{ number_format($netDistributedTotal, 2) }}
-                                                        </td>
-                                                        <td></td>
-                                                    </tr>
-                                                </tfoot>
                                             </table>
                                         @endforeach {{-- End Source Loop --}}
 
@@ -746,139 +563,158 @@
     </div>
 </div>
 
-{{-- Modal remains the same --}}
-<div class="modal fade" id="modal-edit-source">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <form id="edit-source-form" method="POST">
-                @csrf @method('PUT')
-                <div class="modal-header bg-info">
-                    <h4 class="modal-title">Edit Fund Source</h4>
-                    <button type="button" class="close text-white" data-dismiss="modal">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <div class="row">
-                        <div class="col-md-8">
-                            <div class="form-group">
-                                <label>Source Name</label>
-                                <input type="text" name="name" id="edit_name" class="form-control" required>
-                            </div>
-                        </div>
-                        <div class="col-md-4">
-                            <div class="form-group">
-                                <label>Fiscal Year</label>
-                                <select name="fiscal_year" id="edit_fiscal_year" class="form-control" required>
-                                    <option value="">-- Select Year --</option>
-                                    {{-- Range: Last Year to 3 Years from now --}}
-                                    @php 
-                                        $currentYear = date('Y'); 
-                                    @endphp
-                                    @for($i = $currentYear - 2; $i <= $currentYear + 3; $i++)
-                                        <option value="{{ $i }}">{{ $i }}</option>
-                                    @endfor
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Allocated Amount</label>
-                        <div class="input-group">
-                            <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
-                            <input type="text" class="form-control amount-mask-display" id="edit_display_amount" required>
-                            <input type="hidden" name="total_amount" id="edit_raw_amount" class="amount-mask-raw">
-                        </div>
-                    </div>
-                    
-                    <div class="bg-light p-3 border rounded">
-                        <h6 class="font-weight-bold"><i class="fab fa-google-drive mr-1"></i> Google Sheet Config</h6>
-                        <div class="form-group">
-                            <label class="small">Spreadsheet ID</label>
-                            <input type="text" name="spreadsheet_id" id="edit_spreadsheet_id" class="form-control form-control-sm">
-                        </div>
-                        <div class="form-group mb-0">
-                            <label class="small">Sheet/Tab Name</label>
-                            <input type="text" name="sheet_name" id="edit_sheet_name" class="form-control form-control-sm">
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-footer justify-content-between">
-                    <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Update Source</button>
-                </div>
-            </form>
-        </div>
-    </div>
-</div>
-
-{{-- Add Source Modal --}}
-<div class="modal fade" id="modal-add-source">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <form action="{{ route('settings.source.store') }}" method="POST">
+{{-- MANUAL ENCODING MODAL (Add & Edit) --}}
+<div class="modal fade" id="modalManualEncoding" tabindex="-1" role="dialog" aria-labelledby="modalManualEncodingLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl" role="document">
+        <div class="modal-content shadow-lg">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title" id="modalManualEncodingLabel">
+                    <i class="fas fa-edit mr-2"></i> Add New WFP Activity
+                </h5>
+                <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            
+            <form id="editWfpForm" action="{{ route('settings.activity.storeWfp') }}" method="POST">
                 @csrf
-                <div class="modal-header bg-primary">
-                    <h4 class="modal-title text-white">Add New Fund Source</h4>
-                    <button type="button" class="close text-white" data-dismiss="modal">&times;</button>
-                </div>
+                <div id="method_field"></div> {{-- Placeholder for @method('PUT') when editing --}}
+                
                 <div class="modal-body">
                     <div class="row">
-                        <div class="col-md-8">
+                        <input type="hidden" id="edit_activity_id" name="id">
+
+                        {{-- Budget Line Item --}}
+                        <div class="col-md-6">
                             <div class="form-group">
-                                <label>Source Name <span class="text-danger">*</span></label>
-                                <input type="text" name="name" class="form-control" placeholder="e.g., General Fund" required>
-                            </div>
-                        </div>
-                        <div class="col-md-4">
-                            <div class="form-group">
-                                <label>Fiscal Year</label>
-                                <select name="fiscal_year" class="form-control" required>
-                                    <option value="">-- Select Year --</option>
-                                    {{-- Range: Last Year to 3 Years from now --}}
-                                    @php 
-                                        $currentYear = date('Y'); 
-                                    @endphp
-                                    @for($i = $currentYear - 2; $i <= $currentYear + 3; $i++)
-                                        <option value="{{ $i }}">{{ $i }}</option>
-                                    @endfor
+                                <label class="font-weight-bold">Budget Line Item</label>
+                                <select name="budget_line_item_id" id="edit_budget_line_item" class="form-control select2-modal" required style="width: 100%;">
+                                    <option value="">-- Select Line Item --</option>
+                                    @foreach($budgetLineItems as $item)
+                                        <option value="{{ $item->id }}">{{ $item->budget_line_item_name }}</option>
+                                    @endforeach
                                 </select>
                             </div>
                         </div>
-                    </div>
 
-                    <div class="form-group">
-                        <label>Initial Allocated Amount <span class="text-danger">*</span></label>
-                        <div class="input-group">
-                            <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
-                            {{-- Using your existing mask logic classes --}}
-                            <input type="text" class="form-control amount-mask-display" placeholder="0.00" required>
-                            <input type="hidden" name="total_amount" class="amount-mask-raw">
+                        {{-- Fund Source (Initially Disabled) --}}
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold">Fund Source</label>
+                                <select name="source_of_fund_id" id="edit_source_of_fund_id" class="form-control select2-modal" required style="width: 100%;" disabled>
+                                    <option value="">-- Select Budget Line First --</option>
+                                    @foreach($fundSources as $fs)
+                                        {{-- The data-line attribute is key for the filter --}}
+                                        <option value="{{ $fs->id }}" data-line="{{ $fs->budget_line_item_id }}">
+                                            {{ $fs->name }} (FY {{ $fs->fiscal_year }})
+                                        </option>
+                                    @endforeach
+                                </select>
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="bg-light p-3 border rounded">
-                        <h6 class="font-weight-bold text-muted small uppercase mb-3">
-                            <i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration
-                        </h6>
-                        <div class="form-group">
-                            <label class="small">Spreadsheet ID</label>
-                            <input type="text" name="spreadsheet_id" class="form-control form-control-sm" placeholder="Paste ID from URL">
+                        {{-- UACS Code --}}
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold">UACS Code / Account Title</label>
+                                <select name="uacs_code_id" id="edit_uacs_code_id" class="form-control select2-modal" required style="width: 100%;">
+                                    <option value="">-- Search Code or Title --</option>
+                                    @foreach($uacsCodes as $uacs)
+                                        <option value="{{ $uacs->id }}" data-class="{{ $uacs->allotment_class }}" data-code="{{ $uacs->uacs_code }}">
+                                            [{{ $uacs->allotment_class }}] {{ $uacs->uacs_code }} - {{ $uacs->account_title }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                            </div>
                         </div>
-                        <div class="form-group mb-0">
-                            <label class="small">Sheet/Tab Name</label>
-                            <input type="text" name="sheet_name" class="form-control form-control-sm" placeholder="e.g., Sheet1">
+
+                        {{-- Cost / Budget --}}
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold">Cost / Budget (Original)</label>
+                                <div class="input-group">
+                                    <div class="input-group-prepend"><span class="input-group-text bg-light">₱</span></div>
+                                    <input type="text" 
+                                        name="budget_amount" 
+                                        id="edit_budget_amount" 
+                                        class="form-control price-format" 
+                                        placeholder="0.00">
+                                </div>
+                            </div>
+                        </div>
+
+                        {{-- Objective --}}
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold text-dark">Strategic Objective</label>
+                                <select name="objective" id="edit_objective" class="form-control select2-modal" required style="width: 100%;">
+                                    <option value="">-- Select Objective --</option>
+                                    @foreach($objectives as $obj)
+                                        <option value="{{ $obj['objectives'] }}">{{ $obj['objectives'] }}</option>
+                                    @endforeach
+                                </select>
+                            </div>
+                        </div>
+
+                        {{-- Activity Name --}}
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold">Activity Name</label>
+                                <textarea name="name" id="edit_name" class="form-control" rows="3" placeholder="Enter activity description" required></textarea>
+                            </div>
+                        </div>
+
+                        {{-- Timeframe --}}
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold">Start Date</label>
+                                <input type="date" name="start_date" id="edit_start_date" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold">End Date</label>
+                                <input type="date" name="end_date" id="edit_end_date" class="form-control" required>
+                            </div>
+                        </div>
+
+                        {{-- Target Quarters & Numeric Targets --}}
+                        <div class="col-md-12 mt-3">
+                            <label class="font-weight-bold">Target Quarters & Physical Targets</label>
+                            <div class="row border rounded p-3 bg-light mx-0">
+                                @foreach(['Q1', 'Q2', 'Q3', 'Q4'] as $q)
+                                    <div class="col-md-3">
+                                        <div class="form-group mb-0">
+                                            <div class="custom-control custom-checkbox mb-2">
+                                                <input class="custom-control-input q-checkbox" type="checkbox" 
+                                                    name="target_quarters[]" id="edit_check_{{ strtolower($q) }}" value="{{ $q }}">
+                                                <label for="edit_check_{{ strtolower($q) }}" class="custom-control-label font-weight-bold">{{ $q }} Target</label>
+                                            </div>
+                                            <input type="number" 
+                                                name="targets[{{ $q }}]" 
+                                                id="edit_input_{{ strtolower($q) }}" 
+                                                class="form-control form-control-sm q-input" 
+                                                placeholder="0" min="0" disabled>
+                                        </div>
+                                    </div>
+                                @endforeach
+                            </div>
                         </div>
                     </div>
                 </div>
-                <div class="modal-footer justify-content-between">
-                    <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
-                    <button type="submit" class="btn btn-primary">Save Fund Source</button>
+                <div class="modal-footer bg-light">
+                    <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                    <button type="submit" id="btn_submit_wfp" class="btn btn-primary shadow-sm">
+                        <i class="fas fa-save mr-1"></i> Save Activity
+                    </button>
                 </div>
             </form>
         </div>
     </div>
 </div>
 
+
+{{-- Import Summary Results --}}
 <div class="modal fade" id="importSummaryModal" tabindex="-1" role="dialog" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg" role="document"> {{-- Changed to modal-lg for better table visibility --}}
         <div class="modal-content border-0 shadow-lg">
@@ -1026,11 +862,15 @@
     $(document).ready(function() {
 
         // Auto-hide alerts after 5 seconds
-        window.setTimeout(function() {
-            $(".alert-success").fadeTo(500, 0).slideUp(500, function(){
-                $(this).remove(); 
-            });
-        }, 5000);
+        const $flashAlerts = $(".alert-success, .alert-danger");
+
+        if ($flashAlerts.length > 0) {
+            window.setTimeout(function() {
+                $flashAlerts.fadeTo(500, 0).slideUp(500, function(){
+                    $(this).remove(); 
+                });
+            }, 5000); // 5 seconds
+        }
         
         // Logic for preserving tab on refresh
         $('a[data-toggle="pill"]').on('shown.bs.tab', function (e) {
@@ -1099,28 +939,6 @@
         }
 
         $('#source_selector').on('change', checkBalance);
-
-        $('.edit-source-btn').on('click', function() {
-            const id = $(this).data('id');
-            const name = $(this).data('name');
-            const year = $(this).data('fiscal_year'); // New
-            const amount = $(this).data('amount');
-            const sheetId = $(this).data('sheetid');
-            const sheetName = $(this).data('sheetname');
-
-            // Set form action
-            $('#edit-source-form').attr('action', `/settings/source/${id}`);
-
-            // Fill fields
-            $('#edit_name').val(name);
-            $('#edit_fiscal_year').val(year);
-            $('#edit_display_amount').val(Number(amount).toLocaleString('en-US', {minimumFractionDigits: 2}));
-            $('#edit_raw_amount').val(amount);
-            $('#edit_spreadsheet_id').val(sheetId);
-            $('#edit_sheet_name').val(sheetName);
-
-            $('#modal-edit-source').modal('show');
-        });
     });
 
     $(document).ready(function () {
@@ -1167,28 +985,6 @@
         });
     });
 
-    $(document).ready(function() {
-        $('.delete-source-btn').on('click', function() {
-            // Get data from button
-            let id = $(this).data('id');
-            let name = $(this).data('name');
-            let count = $(this).data('count');
-            
-            // Update Modal Content
-            $('#sourceNameDisplay').text(name);
-            $('#activityCountDisplay').text(count);
-            
-            // Update Form Action URL (Adjust 'sources' to your actual route name)
-            let deleteUrl = "{{ route('settings.source.destroy', ':id') }}";
-            deleteUrl = deleteUrl.replace(':id', id);
-            $('#deleteSourceForm').attr('action', deleteUrl);
-            
-            // Show Modal
-            $('#deleteSourceModal').modal('show');
-        });
-    });
-
-
     function openPoolModal(id, name, budget, currentPooled, currentRemarks) {
         $('#pool_activity_id').val(id);
         $('#pool_activity_name').text(name);
@@ -1213,6 +1009,266 @@
         $('[data-toggle="tooltip"]').tooltip({
             html: true // This ensures the <b> and <br> tags are rendered as HTML
         });
+    });
+
+    $(document).ready(function() {
+        // Initialize Select2 specifically for the modal
+        $('.select2-modal').select2({
+            theme: 'bootstrap4',
+            dropdownParent: $('#modalManualEncoding')
+        });
+
+        $(document).on('select2:open', () => {
+            // We use a small delay because Bootstrap Modals and Select2 
+            // fight for focus when the dropdown animation starts.
+            setTimeout(() => {
+                const searchField = document.querySelector('.select2-container--open .select2-search__field');
+                if (searchField) {
+                    searchField.focus();
+                }
+            }, 50); // 50ms is the "sweet spot" for most browsers
+        });
+
+        // Reset form when modal is closed
+        $('#modalManualEncoding').on('hidden.bs.modal', function () {
+            $(this).find('form').trigger('reset');
+            $('.select2-modal').val(null).trigger('change');
+        });
+    });
+
+    $(document).ready(function() {
+        // Corrected Selectors
+        const $budgetLineSelect = $('#edit_budget_line_item');
+        const $fundSourceSelect = $('#edit_source_of_fund_id');
+        
+        // Initial Select2 Initialization
+        $('.select2-modal').select2({
+            theme: 'bootstrap4',
+            dropdownParent: $('#modalManualEncoding')
+        });
+
+        // Store a "master list" of fund source options for filtering
+        const $allFundOptions = $fundSourceSelect.find('option').clone();
+
+        // Listen for Budget Line changes
+        $budgetLineSelect.on('change', function() {
+            const selectedLineId = $(this).val();
+
+            // Destroy Select2 before modifying the underlying <select>
+            if ($fundSourceSelect.data('select2')) {
+                $fundSourceSelect.select2('destroy');
+            }
+
+            if (selectedLineId) {
+                // Clear current and add placeholder
+                $fundSourceSelect.empty().append('<option value="">-- Select Fund Source --</option>');
+
+                // Filter the master list
+                const $filteredOptions = $allFundOptions.filter(function() {
+                    return $(this).data('line') == selectedLineId;
+                });
+
+                $fundSourceSelect.append($filteredOptions);
+                $fundSourceSelect.prop('disabled', false); // Enable for user selection
+            } else {
+                // Reset to default state if no budget line is selected
+                $fundSourceSelect.empty().append('<option value="">-- Select Budget Line First --</option>');
+                $fundSourceSelect.val('').prop('disabled', true);
+            }
+
+            // Re-initialize Select2
+            $fundSourceSelect.select2({
+                theme: 'bootstrap4',
+                dropdownParent: $('#modalManualEncoding')
+            });
+        });
+
+        // --- Add Button Integration ---
+        $('.btn-add-wfp').on('click', function() {
+            // Force the dropdown back to its initial disabled state
+            $fundSourceSelect.empty().append('<option value="">-- Select Budget Line First --</option>')
+                            .val('').prop('disabled', true).trigger('change');
+        });
+    });
+
+    $(document).ready(function() {
+        $('#modal_uacs_select').select2({
+            theme: 'bootstrap4',
+            placeholder: "-- Search Code, Title, or Class --",
+            allowClear: true,
+            dropdownParent: $('#modalManualEncoding'), // Fixes focus issue in Bootstrap Modals
+            
+            // 1. Search Logic: Checks Title, Code, and the 'data-class' attribute
+            matcher: function(params, data) {
+                if ($.trim(params.term) === '') { return data; }
+                if (typeof data.text === 'undefined') { return null; }
+
+                var searchTerm = params.term.toLowerCase();
+                var optionText = data.text.toLowerCase();
+                var allotmentClass = $(data.element).data('class') ? $(data.element).data('class').toLowerCase() : '';
+
+                // Match if search term is found in the visible text OR the allotment class
+                if (optionText.indexOf(searchTerm) > -1 || allotmentClass.indexOf(searchTerm) > -1) {
+                    return data;
+                }
+                return null;
+            },
+
+            // 2. Visual Template: Adds the colored badge in the dropdown list
+            templateResult: function(data) {
+                if (!data.id) { return data.text; }
+                
+                var allotmentClass = $(data.element).data('class');
+                var badgeClass = 'badge-secondary'; // Default
+                
+                // Color coding based on class
+                if(allotmentClass === 'PS') badgeClass = 'badge-primary';
+                if(allotmentClass === 'MOOE') badgeClass = 'badge-success';
+                if(allotmentClass === 'CO') badgeClass = 'badge-danger';
+
+                // Strip the bracketed text from the display string to avoid duplication
+                var cleanText = data.text.replace('[' + allotmentClass + '] ', '');
+
+                var $result = $(
+                    '<span><span class="badge ' + badgeClass + ' mr-2" style="width: 50px;">' + 
+                    allotmentClass + '</span>' + cleanText + '</span>'
+                );
+                return $result;
+            }
+        });
+    });
+
+    function openEditWfpModal(activityId, hasTransactions) {
+        let url = "{{ url('settings/activity') }}/" + activityId + "/edit";
+
+        $.get(url, function(data) {
+            // 0. RESET UI & ENABLE ALL (Start clean)
+            $('#editWfpForm input, #editWfpForm select, #editWfpForm textarea').prop('disabled', false);
+            $('#modalManualEncodingLabel').html('<i class="fas fa-edit mr-2"></i> EDIT WFP ACTIVITY');
+
+            // 1. Basic Fields Mapping
+            $('#edit_activity_id').val(data.id);
+            $('#edit_name').val(data.name);
+            // Inside openEditWfpModal $.get callback:
+            let rawBudget = data.budget_original || data.budget_adjusted || 0;
+
+            // Convert to formatted string: 1000 -> 1,000.00
+            let formattedBudget = parseFloat(rawBudget).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+
+            $('#edit_budget_amount').val(formattedBudget);
+            
+            if (data.start_date) $('#edit_start_date').val(data.start_date.split('T')[0]);
+            if (data.end_date) $('#edit_end_date').val(data.end_date.split('T')[0]);
+
+            // 2. Select2 Fields & Dependency Filtering
+            $('#edit_objective').val(data.objective).trigger('change');
+            if (data.uacs_code_id) $('#edit_uacs_code_id').val(data.uacs_code_id).trigger('change');
+
+            // Trigger Budget Line first to filter the Fund Source options
+            $('#edit_budget_line_item').val(data.budget_line_item_id).trigger('change');
+            // Set the specific Fund Source value
+            $('#edit_source_of_fund_id').val(data.source_of_fund_id).trigger('change');
+
+            // --- 3. APPLY RESTRICTION RULES (With Timing Fix) ---
+            
+            // Use a short timeout to ensure the dependency script (which enables the field) 
+            // finishes before we force the lock.
+            setTimeout(function() {
+                $('#edit_budget_line_item').prop('disabled', true);
+                $('#edit_source_of_fund_id').prop('disabled', true); // Forces it to stay disabled
+                
+                // Re-sync Select2 visual state
+                $('.select2-modal').trigger('change.select2');
+            }, 100);
+
+            if (hasTransactions || data.is_locked) {
+                $('#edit_objective, #edit_uacs_code_id, #edit_name, #edit_budget_amount').prop('disabled', true);
+                $('#modalManualEncodingLabel').html('<i class="fas fa-lock mr-2"></i> EDIT ACTIVITY (Restricted)');
+            }
+
+            // 4. Physical Targets Logic
+            let targets = typeof data.physical_targets === 'string' 
+                ? JSON.parse(data.physical_targets) 
+                : (data.physical_targets || {});
+
+            ['Q1', 'Q2', 'Q3', 'Q4'].forEach(q => {
+                let lowerQ = q.toLowerCase();
+                let hasValue = targets && (targets[q] !== undefined && targets[q] !== null && targets[q] !== "");
+
+                if (hasValue) {
+                    $(`#edit_check_${lowerQ}`).prop('checked', true);
+                    $(`#edit_input_${lowerQ}`).prop('disabled', false).val(targets[q]);
+                } else {
+                    $(`#edit_check_${lowerQ}`).prop('checked', false);
+                    $(`#edit_input_${lowerQ}`).prop('disabled', true).val(''); 
+                }
+            });
+
+            $('#modalManualEncoding').modal('show');
+        });
+    }
+
+    $(document).ready(function() {
+
+        // --- ADD BUTTON LOGIC ---
+        $('.btn-add-wfp').on('click', function(e) {
+            e.preventDefault();
+            $('#editWfpForm')[0].reset();
+            $('#editWfpForm input, #editWfpForm select, #editWfpForm textarea').prop('disabled', false);
+            $('.q-input').prop('disabled', true); // Keep these locked initially
+            
+            $('#edit_activity_id').val('');
+            $('#method_field').html(''); 
+            $('.select2-modal').val(null).trigger('change');
+            $('#modalManualEncodingLabel').html('<i class="fas fa-edit mr-2"></i> MANUAL WFP ENCODING');
+
+            $('#edit_source_of_fund_id').empty()
+                .append('<option value="">-- Select Budget Line First --</option>')
+                .prop('disabled', true)
+                .trigger('change');
+            
+            $('#modalManualEncoding').modal('show');
+        });
+
+        // --- SAFETY RESET ON CLOSE ---
+        $('#modalManualEncoding').on('hidden.bs.modal', function () {
+            $(this).find('input, select, textarea').prop('disabled', false);
+            $('.select2-modal').trigger('change');
+        });
+
+        // --- CHECKBOX TOGGLE LOGIC ---
+        $(document).on('change', '.q-checkbox', function() {
+            let targetInput = $(this).closest('.form-group').find('.q-input');
+            if ($(this).is(':checked')) {
+                targetInput.prop('disabled', false);
+            } else {
+                targetInput.prop('disabled', true).val('');
+            }
+        });
+
+        // --- SUBMIT LOGIC (FIXED) ---
+        $('#editWfpForm').on('submit', function() {
+            // Only enable fields that are REQUIRED for validation but currently disabled
+            // We enable EVERYTHING briefly so Laravel doesn't complain about missing fields
+            $(this).find(':disabled').prop('disabled', false);
+        });
+
+        // 1. Format on Input
+        $(document).on('input', '.price-format', function() {
+            let value = $(this).val().replace(/,/g, ''); // Remove existing commas
+            
+            // Ensure it's a valid number
+            if (!isNaN(value) && value.length > 0) {
+                // Format with commas, allowing for decimals
+                let parts = value.split(".");
+                parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+                $(this).val(parts.join("."));
+            }
+        });
+
     });
 
 </script>

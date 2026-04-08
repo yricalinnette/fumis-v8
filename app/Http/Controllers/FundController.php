@@ -49,24 +49,51 @@ class FundController extends Controller
     public function index()
     {
         $currentUser = auth()->user();
-        // DEFINE IT HERE AT THE TOP
         $isAdmin = ($currentUser->is_admin || $currentUser->id == 1 || $currentUser->username === 'admin');
 
         // --- 1. FETCH BASE DATA ---
-        $baseQuery = $isAdmin 
-            ? \App\Models\Fund::query()
-            : \App\Models\Fund::where('user_id', $currentUser->id);
-        // Eager load the creditors relationship
+        if ($isAdmin) {
+            $baseQuery = \App\Models\Fund::query();
+        } else {
+            // 1. Get the current user's section ID
+            // We look at the local employee_details first to find the dbedid
+            $localDetail = \DB::table('employee_details')
+                ->where('user_id', $currentUser->id)
+                ->first();
+
+            $userSecId = null;
+            if ($localDetail) {
+                // Find the actual section ID from the common database
+                $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+            }
+
+            // 2. Fetch funds where the user is the owner OR it belongs to their section
+            // This fixes the "Missing Transaction" 131 if it were assigned to your section
+            $baseQuery = \App\Models\Fund::where(function($q) use ($currentUser, $userSecId) {
+                $q->where('user_id', $currentUser->id);
+                if ($userSecId !== null) {
+                    $q->orWhere('secid', $userSecId);
+                }
+            });
+        }
+
+        // Execute the collection
         $fundsCollection = $baseQuery->with(['fundSource', 'activity', 'creditors.employeeDetail'])
             ->whereNotNull('dtrack_no')
             ->where('dtrack_no', '!=', '')
             ->orderBy('created_at', 'desc')
-            ->latest()
             ->get();
 
         // --- 2. EMPLOYEE LOGIC 
-        $currentUser = auth()->user(); 
         $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
+
+        $involvedIds = \DB::table('employee_fund')
+            ->whereIn('fund_id', $fundsCollection->pluck('id'))
+            ->pluck('user_id')
+            ->unique()
+            ->toArray();
 
         // Get section for label
         $myDetails = DB::connection('db_common')->table('tbl_emp_details')
@@ -101,17 +128,41 @@ class FundController extends Controller
         if (!$currentUser->is_admin) {
             $mySectionId = $currentUser->live_info->secid ?? ($myDetails->secid ?? null);
             
-            // Strictly filter by section ID only
-            $query->where('tbl_emp_details.secid', '=', $mySectionId);
+            // Filter: Show employees in my section OR anyone involved in the loaded transactions
+            $query->where(function($q) use ($mySectionId, $involvedIds) {
+                $q->where('tbl_emp_details.secid', '=', $mySectionId);
+                
+                if (!empty($involvedIds)) {
+                    $q->orWhereIn('tbl_emp_details.dbedid', $involvedIds);
+                }
+            });
         }
 
         // Process and index by DBEDID
         $employees = $query->get()->map(function($emp) {
-            $middleInitial = $emp->mname ? ' ' . substr($emp->mname, 0, 1) . '.' : '';
-            $suffix = $emp->suffix ? ' ' . $emp->suffix : '';
-            $emp->fullname = "{$emp->lname}, {$emp->fname}{$middleInitial}{$suffix}";
+            // SAFETY: Force UTF-8 encoding to prevent "Malformed UTF-8" crashes
+            $clean = function($str) {
+                return $str ? mb_convert_encoding($str, 'UTF-8', 'UTF-8') : '';
+            };
+
+            $fname = $clean($emp->fname);
+            $mname = $clean($emp->mname);
+            $lname = $clean($emp->lname);
+            $suffix = $clean($emp->suffix);
+
+            $middleInitial = $mname ? ' ' . substr($mname, 0, 1) . '.' : '';
+            $suffixStr = $suffix ? ' ' . $suffix : '';
+            
+            $emp->fullname = "{$lname}, {$fname}{$middleInitial}{$suffixStr}";
+            
+            // Update the properties with cleaned strings so JS doesn't crash later
+            $emp->fname = $fname;
+            $emp->mname = $mname;
+            $emp->lname = $lname;
+            $emp->suffix = $suffix;
+
             return $emp;
-        })->keyBy('dbedid'); //use dbedid as the array key
+        })->keyBy('dbedid');
 
         // --- 3. GROUP AND MAP (NOW USING $employees) ---
         $funds = $fundsCollection->groupBy('dtrack_no')->map(function ($group) use ($employees) {

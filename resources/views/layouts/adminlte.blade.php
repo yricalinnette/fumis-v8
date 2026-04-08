@@ -136,7 +136,36 @@
                             </p>
                         </a>
                         <ul class="nav nav-treeview">
-                            {{-- Submenu 1: WFP --}}
+                            
+
+                            {{-- Submenu 1: Budget Line Items --}}
+                            <li class="nav-item">
+                                <a href="{{ route('settings.budget_line_items') }}" 
+                                class="nav-link {{ request()->routeIs('settings.budget_line_items') ? 'active' : '' }}">
+                                    <i class="fas fa-wallet nav-icon text-primary"></i>
+                                    <p>Budget Line Items</p>
+                                </a>
+                            </li>
+
+                            {{-- Submenu 2: fUND SOURCE --}}
+                            <li class="nav-item">
+                                <a href="{{ route('settings.fund_sources') }}" 
+                                class="nav-link {{ request()->routeIs('settings.fund_sources') ? 'active' : '' }}">
+                                    <i class="fas fa-database nav-icon text-success"></i>
+                                    <p>Fund Sources</p>
+                                </a>
+                            </li>
+
+                            {{-- Submenu 2: UACS Codes --}}
+                            <li class="nav-item">
+                                <a href="{{ route('settings.uacs_codes') }}" 
+                                class="nav-link {{ request()->routeIs('settings.uacs_codes') ? 'active' : '' }}">
+                                    <i class="fas fa-code nav-icon text-primary"></i>
+                                    <p>UACS Codes</p>
+                                </a>
+                            </li>
+
+                            {{-- Submenu 3: WFP --}}
                             <li class="nav-item">
                                 <a href="{{ route('settings.index') }}" 
                                 class="nav-link {{ request()->routeIs('settings.index') ? 'active' : '' }}">
@@ -145,7 +174,7 @@
                                 </a>
                             </li>
                             
-                            {{-- Submenu 2: Account Management --}}
+                            {{-- Submenu 4: Account Management --}}
                             <li class="nav-item">
                                 <a href="{{ route('settings.accounts') }}" 
                                 class="nav-link {{ request()->routeIs('settings.accounts') ? 'active' : '' }}">

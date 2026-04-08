@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Activity extends Model {
     protected $fillable = [
-    'budget_line_item', 
+    'budget_line_item_id', 
     'objective', 
     'name', 
     'budget', 
@@ -18,6 +18,8 @@ class Activity extends Model {
     'start_date',
     'end_date',
     'target_quarters',
+    'uacs_code_id',
+    'physical_targets',
 ];
 
     public function source() {
@@ -37,6 +39,12 @@ class Activity extends Model {
     protected $casts = [
         'start_date' => 'date',
         'end_date' => 'date',
-        'target_quarters' => 'array', // This is crucial for multiple selection
+        'target_quarters' => 'array', 
+        'physical_targets' => 'array',
     ];
+
+    public function uacsCode()
+    {
+        return $this->belongsTo(UacsCode::class, 'uacs_code_id');
+    }
 }
