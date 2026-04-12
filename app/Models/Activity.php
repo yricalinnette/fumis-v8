@@ -20,6 +20,9 @@ class Activity extends Model {
     'target_quarters',
     'uacs_code_id',
     'physical_targets',
+    'classification',
+    'user_id',
+    'section_id'
 ];
 
     public function source() {
@@ -46,5 +49,11 @@ class Activity extends Model {
     public function uacsCode()
     {
         return $this->belongsTo(UacsCode::class, 'uacs_code_id');
+    }
+
+    public function budgetLineItem()
+    {
+        // Ensure the foreign key matches your DB (budget_line_item_id)
+        return $this->belongsTo(BudgetLineItem::class, 'budget_line_item_id');
     }
 }

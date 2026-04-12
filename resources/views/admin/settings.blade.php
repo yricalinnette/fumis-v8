@@ -130,11 +130,11 @@
     <div class="card card-primary card-outline card-tabs">
         <div class="card-header p-0 pt-1 border-bottom-0">
             <ul class="nav nav-tabs" id="settingsCustomTab" role="tablist">
-                {{-- <li class="nav-item">
+                 <!-- <li class="nav-item">
                     <a class="nav-link" id="tabs-templates-tab" data-toggle="pill" href="#tabs-templates" role="tab">
                         <i class="fas fa-file-excel mr-1"></i> WFP Template Settings
                     </a>
-                </li> --}}
+                </li>  -->
                 <li class="nav-item">
                     <a class="nav-link" id="tabs-activities-tab" data-toggle="pill" href="#tabs-activities" role="tab">
                         <i class="fas fa-tasks mr-1"></i> Activity Allocation (WFP)
@@ -153,63 +153,10 @@
 
                 {{-- Activity Allocation --}}
                 <div class="tab-pane fade" id="tabs-activities" role="tabpanel">
-    
+
                     <div id="balance_info" class="alert alert-info d-none mb-3">
                         <i class="fas fa-info-circle"></i> <span id="balance_text"></span>
                     </div>
-
-                    {{-- IMPORT SECTION --}}
-                    {{-- <form action="{{ route('settings.activity.import') }}" method="POST" enctype="multipart/form-data" id="importForm">
-                        @csrf
-                        <div class="card card-outline card-success shadow-sm">
-                            <div class="card-header">
-                                <h3 class="card-title font-weight-bold">
-                                    <i class="fas fa-file-excel mr-2"></i>Bulk Import WFP (FY {{ $currentYear }})
-                                </h3>
-                            </div>
-                            <div class="card-body">
-                                <div class="row">
-                                    <div class="col-md-12 mb-3">
-                                        <a href="{{ route('settings.template.download') }}" class="btn btn-info btn-sm">
-                                            <i class="fas fa-download"></i> Download Sample WFP Template
-                                        </a>
-                                        <small class="text-muted d-block mt-1">
-                                            * Use this template to ensure your Fund Source names match our records.
-                                        </small>
-                                    </div>
-                                    
-                                    <div class="col-md-5">
-                                        <div class="form-group">
-                                            <label>Default Fund Source (FY {{ $currentYear }})</label>
-                                            <select name="fund_source_id" class="form-control select2" required>
-                                                <option value="">-- Select Current Source --</option>
-                                                @foreach($sources->where('fiscal_year', $currentYear) as $source)
-                                                    <option value="{{ $source->id }}">{{ $source->name }}</option>
-                                                @endforeach
-                                            </select>
-                                        </div>
-                                    </div>
-
-                                    <div class="col-md-7">
-                                        <div class="form-group">
-                                            <label for="wfp_file">Choose WFP Excel File</label>
-                                            <div class="input-group">
-                                                <div class="custom-file">
-                                                    <input type="file" name="wfp_file" class="custom-file-input" id="wfp_file" required>
-                                                    <label class="custom-file-label" for="wfp_file">Choose file...</label>
-                                                </div>
-                                                <div class="input-group-append">
-                                                    <button type="submit" class="btn btn-success">
-                                                        <i class="fas fa-file-import mr-1"></i> Import
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </form> --}}
 
                     <div class="row mb-3">
                         <div class="col-12 text-right">
@@ -222,7 +169,6 @@
 
                     {{-- START OF ACTIVITY GROUPS --}}
                     <div id="activitiesAccordion">
-                        {{-- FIX: Restored the Outer Loop grouping by Fiscal Year --}}
                         @foreach($activities->groupBy('source.fiscal_year') as $year => $yearGroups)
                             @php 
                                 $isCurrent = ($year == $currentYear); 
@@ -231,49 +177,44 @@
                             
                             <div class="card card-dark card-outline mb-4">
                                 <div class="card-header p-0">
-                                    <button class="btn btn-link btn-block text-left text-dark font-weight-bold py-2 px-3" 
-                                            type="button" data-toggle="collapse" data-target="#{{ $collapseId }}">
-                                        <i class="fas {{ $isCurrent ? 'fa-folder-open' : 'fa-folder' }} mr-2 text-warning"></i> 
-                                        FISCAL YEAR {{ $year }} 
-                                        @if($isCurrent) <span class="badge badge-success ml-2">Current</span> @endif
-                                    </button>
+                                    <div class="d-flex align-items-center pr-3">
+                                        <button class="btn btn-link btn-block text-left text-dark font-weight-bold py-2 px-3" 
+                                                type="button" data-toggle="collapse" data-target="#{{ $collapseId }}">
+                                            <i class="fas {{ $isCurrent ? 'fa-folder-open' : 'fa-folder' }} mr-2 text-warning"></i> 
+                                            FISCAL YEAR {{ $year }} 
+                                            @if($isCurrent) <span class="badge badge-success ml-2">Current</span> @endif
+                                        </button>
+                                        
+                                        {{-- NEW: Print Full Year Button --}}
+                                        <a href="{{ route('settings.print', ['year' => $year]) }}" ...>
+                                            <i class="fas fa-file-pdf mr-1"></i> Print FY {{ $year }} WFP
+                                        </a>
+                                    </div>
                                 </div>
 
                                 <div id="{{ $collapseId }}" class="collapse {{ $isCurrent ? 'show' : '' }}">
                                     <div class="card-body p-0">
                                         
-                                        {{-- Grouping by Source Name within the Year --}}
                                         @foreach($yearGroups->groupBy('source.name') as $sourceName => $groupedActivities)
                                             @php
                                                 $source = $groupedActivities->first()->source;
                                                 $totalPooled = $groupedActivities->sum('pooled_amount');
-
-                                                // 1. Get the IDs of activities belonging to this specific source group
                                                 $activityIds = $groupedActivities->pluck('id');
 
-                                                // 2. Sum obligations strictly by activity IDs and selected year
                                                 $totalObligations = \App\Models\Fund::whereIn('transaction_type_id', $activityIds)
                                                     ->whereYear('obligation_date', $year) 
                                                     ->sum('obligation_amount');
 
-                                                // 3. CORRECTED DISTRIBUTED CALCULATION
-                                                // Sum of all budget_adjusted for these activities
                                                 $sumDistributedRaw = $groupedActivities->sum('budget_adjusted');
-                                                
-                                                // Total Distributed minus what was pooled back
                                                 $netDistributedTotal = $sumDistributedRaw - $totalPooled;
-                                                
-                                                // If you still need to see the Source's original starting balance
                                                 $originalSourceTotal = $source->total_amount; 
                                                 $pooledAdjusted = $originalSourceTotal - $totalPooled;
                                             @endphp
 
                                             <div class="mx-3 mt-4 mb-3">
-                                                {{-- Header Container for the Fund Source --}}
                                                 <div class="card card-outline card-primary shadow-sm">
                                                     <div class="card-header bg-navy py-2">
                                                         <div class="row align-items-center">
-                                                            {{-- Prominent Fund Source Name --}}
                                                             <div class="col-md-4">
                                                                 <h5 class="mb-0 font-weight-bold text-white">
                                                                     <i class="fas fa-university mr-2 text-warning"></i>
@@ -281,7 +222,6 @@
                                                                 </h5>
                                                             </div>
 
-                                                            {{-- Financial Summary Stats --}}
                                                             <div class="col-md-8 text-right">
                                                                 <div class="d-flex justify-content-end align-items-center">
                                                                     <div class="px-3 border-right border-secondary">
@@ -312,24 +252,19 @@
                                             <table class="table table-bordered table-sm m-0 mb-4 shadow-sm">
                                                 <thead>
                                                     <tr class="bg-gray-light text-center">
-                                                        <th rowspan="2" style="width: 20%; vertical-align: middle;">OBJECTIVE</th>
-                                                        <th rowspan="2" style="width: 25%; vertical-align: middle;">ACTIVITIES TO ATTAIN THE SUCCESS INDICATORS</th>
+                                                        <th rowspan="2" style="width: 15%; vertical-align: middle;">OBJECTIVE</th>
+                                                        <th rowspan="2" style="width: 25%; vertical-align: middle;">ACTIVITIES</th>
                                                         <th colspan="2" style="width: 15%;">TIMEFRAME</th>
-                                                        <th colspan="4" style="width: 20%;">TARGETS</th>
+                                                        <th colspan="4" style="width: 15%;">TARGETS</th>
                                                         <th rowspan="2" style="width: 10%; vertical-align: middle;">COST</th>
-                                                        <th rowspan="2" style="width: 10%; vertical-align: middle;">ACTIONS</th>
+                                                        <th rowspan="2" style="width: 12%; vertical-align: middle;">ACTIONS</th>
                                                     </tr>
                                                     <tr class="bg-gray-light text-center">
-                                                        <th>Start</th>
-                                                        <th>End</th>
-                                                        <th>Q1</th>
-                                                        <th>Q2</th>
-                                                        <th>Q3</th>
-                                                        <th>Q4</th>
+                                                        <th>Start</th><th>End</th>
+                                                        <th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                    {{-- 1. Group by Objective --}}
                                                     @foreach($groupedActivities->groupBy('objective') as $objective => $activitiesByObjective)
                                                         @foreach($activitiesByObjective as $index => $activity)
                                                             @php
@@ -337,14 +272,12 @@
                                                                 $targets = is_array($activity->physical_targets) ? $activity->physical_targets : json_decode($activity->physical_targets, true) ?? [];
                                                             @endphp
                                                             <tr>
-                                                                {{-- 2. Objective Column (Merged/Rowspan) --}}
                                                                 @if($index === 0)
                                                                     <td rowspan="{{ $activitiesByObjective->count() }}" class="align-top font-weight-bold p-2 bg-white">
                                                                         {{ $objective }}
                                                                     </td>
                                                                 @endif
 
-                                                                {{-- 3. Activity Name --}}
                                                                 <td class="p-2">
                                                                     {{ $activity->name }}
                                                                     @if($activity->pooled_amount > 0)
@@ -352,33 +285,31 @@
                                                                     @endif
                                                                 </td>
 
-                                                                {{-- 4. Timeframe Columns --}}
                                                                 <td class="text-center">{{ \Carbon\Carbon::parse($activity->start_date)->format('d M Y') }}</td>
                                                                 <td class="text-center">{{ \Carbon\Carbon::parse($activity->end_date)->format('d M Y') }}</td>
 
-                                                                {{-- 5. Quarterly Target Columns --}}
                                                                 <td class="text-center">{{ $targets['Q1'] ?? '' }}</td>
                                                                 <td class="text-center">{{ $targets['Q2'] ?? '' }}</td>
                                                                 <td class="text-center">{{ $targets['Q3'] ?? '' }}</td>
                                                                 <td class="text-center">{{ $targets['Q4'] ?? '' }}</td>
 
-                                                                {{-- 6. Cost --}}
                                                                 <td class="text-right font-weight-bold">
                                                                     ₱{{ number_format($activity->budget_adjusted - $activity->pooled_amount, 2) }}
                                                                 </td>
 
-                                                                {{-- 7. Actions --}}
                                                                 <td class="text-center">
                                                                     <div class="btn-group">
-                                                                        <button type="button" 
-                                                                                class="btn btn-xs btn-info" 
-                                                                                onclick="openEditWfpModal({{ $activity->id }}, {{ $hasTransactions ? 'true' : 'false' }})">
+                                                                        {{-- INDIVIDUAL PRINT BUTTON --}}
+                                                                        <a href="{{ route('settings.print', ['id' => $activity->id]) }}" target="_blank" class="btn btn-xs btn-danger">
+                                                                            <i class="fas fa-file-pdf"></i>
+                                                                        </a>
+
+                                                                        <button type="button" class="btn btn-xs btn-info" onclick="openEditWfpModal({{ $activity->id }}, {{ $hasTransactions ? 'true' : 'false' }})">
                                                                             <i class="fas fa-edit"></i>
                                                                         </button>
                                                                         
                                                                         @if(!$hasTransactions)
-                                                                            <button type="button" class="btn btn-xs btn-warning" 
-                                                                                onclick="openPoolModal({{ $activity->id }}, '{{ addslashes($activity->name) }}', {{ $activity->budget_adjusted }}, {{ $activity->pooled_amount }})">
+                                                                            <button type="button" class="btn btn-xs btn-warning" onclick="openPoolModal({{ $activity->id }}, '{{ addslashes($activity->name) }}', {{ $activity->budget_adjusted }}, {{ $activity->pooled_amount }})">
                                                                                 <i class="fas fa-hand-holding-usd"></i>
                                                                             </button>
                                                                             <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST" class="d-inline">
@@ -397,12 +328,11 @@
                                                     @endforeach
                                                 </tbody>
                                             </table>
-                                        @endforeach {{-- End Source Loop --}}
-
+                                        @endforeach
                                     </div>
                                 </div>
                             </div>
-                        @endforeach {{-- End Year Loop --}}
+                        @endforeach
                     </div>
                 </div>
 
@@ -613,21 +543,32 @@
                             </div>
                         </div>
 
-                        {{-- UACS Code --}}
+                        {{-- Activity Type / Mandate --}}
                         <div class="col-md-6">
                             <div class="form-group">
-                                <label class="font-weight-bold">UACS Code / Account Title</label>
-                                <select name="uacs_code_id" id="edit_uacs_code_id" class="form-control select2-modal" required style="width: 100%;">
-                                    <option value="">-- Search Code or Title --</option>
-                                    @foreach($uacsCodes as $uacs)
-                                        <option value="{{ $uacs->id }}" data-class="{{ $uacs->allotment_class }}" data-code="{{ $uacs->uacs_code }}">
-                                            [{{ $uacs->allotment_class }}] {{ $uacs->uacs_code }} - {{ $uacs->account_title }}
-                                        </option>
+                                <label class="font-weight-bold">Activity Classification</label>
+                                <select name="classification" id="edit_classification" class="form-control select2-modal" required style="width: 100%;">
+                                    <option value="">-- Select Classification --</option>
+                                    <option value="Strategic">Strategic Function</option>
+                                    <option value="Core">Core Function</option>
+                                    <option value="Support">Support Function</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        {{-- Objective --}}
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold text-dark">Objective</label>
+                                <select name="objective" id="edit_objective" class="form-control select2-modal" required style="width: 100%;">
+                                    <option value="">-- Select Objective --</option>
+                                    @foreach($objectives as $obj)
+                                        <option value="{{ $obj['objectives'] }}">{{ $obj['objectives'] }}</option>
                                     @endforeach
                                 </select>
                             </div>
                         </div>
-
+                        
                         {{-- Cost / Budget --}}
                         <div class="col-md-6">
                             <div class="form-group">
@@ -643,21 +584,23 @@
                             </div>
                         </div>
 
-                        {{-- Objective --}}
+                        {{-- UACS Code --}}
                         <div class="col-md-6">
                             <div class="form-group">
-                                <label class="font-weight-bold text-dark">Strategic Objective</label>
-                                <select name="objective" id="edit_objective" class="form-control select2-modal" required style="width: 100%;">
-                                    <option value="">-- Select Objective --</option>
-                                    @foreach($objectives as $obj)
-                                        <option value="{{ $obj['objectives'] }}">{{ $obj['objectives'] }}</option>
+                                <label class="font-weight-bold">UACS Code / Account Title</label>
+                                <select name="uacs_code_id" id="edit_uacs_code_id" class="form-control select2-modal" required style="width: 100%;">
+                                    <option value="">-- Search Code or Title --</option>
+                                    @foreach($uacsCodes as $uacs)
+                                        <option value="{{ $uacs->id }}" data-class="{{ $uacs->allotment_class }}" data-code="{{ $uacs->uacs_code }}">
+                                            [{{ $uacs->allotment_class }}] {{ $uacs->uacs_code }} - {{ $uacs->account_title }}
+                                        </option>
                                     @endforeach
                                 </select>
                             </div>
                         </div>
 
                         {{-- Activity Name --}}
-                        <div class="col-md-6">
+                        <div class="col-md-12">
                             <div class="form-group">
                                 <label class="font-weight-bold">Activity Name</label>
                                 <textarea name="name" id="edit_name" class="form-control" rows="3" placeholder="Enter activity description" required></textarea>
@@ -1172,21 +1115,36 @@
             // Set the specific Fund Source value
             $('#edit_source_of_fund_id').val(data.source_of_fund_id).trigger('change');
 
+            // Map the classification value from database to the dropdown
+            if (data.classification) {
+                $('#edit_classification').val(data.classification).trigger('change');
+            } else {
+                $('#edit_classification').val('').trigger('change');
+            }
+
             // --- 3. APPLY RESTRICTION RULES (With Timing Fix) ---
             
-            // Use a short timeout to ensure the dependency script (which enables the field) 
-            // finishes before we force the lock.
+            // Budget Line and Fund Source are ALWAYS disabled on Edit
             setTimeout(function() {
                 $('#edit_budget_line_item').prop('disabled', true);
-                $('#edit_source_of_fund_id').prop('disabled', true); // Forces it to stay disabled
-                
-                // Re-sync Select2 visual state
+                $('#edit_source_of_fund_id').prop('disabled', true);
                 $('.select2-modal').trigger('change.select2');
             }, 100);
 
-            if (hasTransactions || data.is_locked) {
-                $('#edit_objective, #edit_uacs_code_id, #edit_name, #edit_budget_amount').prop('disabled', true);
-                $('#modalManualEncodingLabel').html('<i class="fas fa-lock mr-2"></i> EDIT ACTIVITY (Restricted)');
+            // Check for Transactions, Manual Lock, OR Pooled Amount
+            let isRestricted = hasTransactions || data.is_locked || (data.pooled_amount > 0);
+
+            if (isRestricted) {
+                // Disable core fields
+                $('#edit_objective, #edit_uacs_code_id, #edit_name, #edit_budget_amount, #edit_classification').prop('disabled', true);
+                
+                // Update Label to show specific reason
+                let lockReason = "Restricted";
+                if (data.pooled_amount > 0) lockReason = "Restricted - Amount Pooled";
+                else if (hasTransactions) lockReason = "Restricted - Transactions Exist";
+
+                
+                $('#modalManualEncodingLabel').html(`<i class="fas fa-lock mr-2"></i> EDIT ACTIVITY (${lockReason})`);
             }
 
             // 4. Physical Targets Logic
@@ -1251,8 +1209,17 @@
 
         // --- SUBMIT LOGIC (FIXED) ---
         $('#editWfpForm').on('submit', function() {
-            // Only enable fields that are REQUIRED for validation but currently disabled
-            // We enable EVERYTHING briefly so Laravel doesn't complain about missing fields
+            // 1. Find the budget input
+            let $budgetField = $('#edit_budget_amount');
+            
+            // 2. Remove commas: "1,250.50" -> "1250.50"
+            let cleanValue = $budgetField.val().replace(/,/g, '');
+            
+            // 3. Set the value back to the clean version for the request
+            $budgetField.val(cleanValue);
+
+            // 4. IMPORTANT: Also re-enable all disabled fields
+            // Otherwise, 'source_of_fund_id' and 'budget_line_item' won't be sent!
             $(this).find(':disabled').prop('disabled', false);
         });
 

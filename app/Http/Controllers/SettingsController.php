@@ -23,6 +23,7 @@ use App\Models\BudgetLineItem;
 use App\Models\UacsCode;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class SettingsController extends Controller
 {
@@ -570,7 +571,6 @@ class SettingsController extends Controller
     public function storeWfp(Request $request)
     {
         // 1. Unified Validation
-        // We make fields nullable if 'id' is present because disabled fields are not submitted
         $isEdit = $request->filled('id');
 
         $validated = $request->validate([
@@ -585,6 +585,7 @@ class SettingsController extends Controller
             'end_date'            => 'required|date|after_or_equal:start_date',
             'target_quarters'     => 'required|array|min:1',
             'targets'             => 'required|array',
+            'classification'      => 'required|in:Strategic,Core,Support',
         ], [
             'target_quarters.required' => 'Please select at least one target quarter.',
         ]);
@@ -596,7 +597,7 @@ class SettingsController extends Controller
             }
         }
 
-        // Prepare shared data (Physical Targets)
+        // Prepare Physical Targets
         $selectedQuarters = $request->target_quarters ?? [];
         $physicalTargets = [];
         foreach ($selectedQuarters as $q) {
@@ -606,17 +607,10 @@ class SettingsController extends Controller
         // 3. Handle Update Logic
         if ($isEdit) {
             $activity = Activity::findOrFail($request->id);
-            
-            // Check for transactions or lock status
-            // Replace 'transactions' with your actual relationship name
             $hasTransactions = $activity->transactions()->exists(); 
             $isLocked = $activity->is_locked ?? false;
 
             if ($hasTransactions || $isLocked) {
-                /**
-                 * SCENARIO: Has Transactions or Locked
-                 * ONLY update timeframe and targets. Ignore everything else.
-                 */
                 $activity->update([
                     'start_date'       => $validated['start_date'],
                     'end_date'         => $validated['end_date'],
@@ -625,12 +619,7 @@ class SettingsController extends Controller
                 ]);
                 $msg = 'Activity timeframe and targets updated. Other fields were locked due to existing transactions.';
             } else {
-                /**
-                 * SCENARIO: No Transactions
-                 * Update everything EXCEPT Budget Line and Fund Source
-                 */
                 $uacsRecord = \App\Models\UacsCode::findOrFail($request->uacs_code_id);
-                
                 $activity->update([
                     'objective'        => $request->objective,
                     'uacs_code_id'     => $request->uacs_code_id,
@@ -642,12 +631,38 @@ class SettingsController extends Controller
                     'end_date'         => $validated['end_date'],
                     'target_quarters'  => $selectedQuarters,
                     'physical_targets' => $physicalTargets,
+                    'classification'   => $request->classification,
                 ]);
                 $msg = 'Activity updated successfully!';
             }
         } 
         // 4. Handle Create Logic
         else {
+            // --- START: FETCH SECID LOGIC ---
+            $userId = auth()->id();
+            $secid = null;
+
+            if (auth()->user()->username === 'admin') {
+                $secid = 0; 
+            } else {
+                $localDetail = \DB::table('employee_details')
+                    ->where('user_id', $userId)
+                    ->select('dbedid')
+                    ->first();
+
+                if ($localDetail && $localDetail->dbedid) {
+                    $secid = \DB::connection('db_common')->table('tbl_emp_details')
+                        ->where('dbedid', $localDetail->dbedid)
+                        ->value('secid');
+                }
+            }
+
+            // Error if non-admin has no secid
+            if (is_null($secid) && auth()->user()->username !== 'admin') {
+                return back()->withInput()->withErrors(['error' => 'Your account is not correctly linked to a DOH Section.']);
+            }
+            // --- END: FETCH SECID LOGIC ---
+
             $fundSource = SourceOfFund::findOrFail($validated['source_of_fund_id']);
             $uacsRecord = \App\Models\UacsCode::findOrFail($validated['uacs_code_id']);
 
@@ -673,7 +688,10 @@ class SettingsController extends Controller
                 return back()->withInput()->withErrors(['duplicate' => 'This exact activity already exists.']);
             }
 
+            // CREATE WITH USER AND SECTION INFO
             Activity::create([
+                'user_id'             => $userId,
+                'section_id'          => $secid,
                 'objective'           => $validated['objective'],
                 'budget_line_item_id' => $validated['budget_line_item_id'],
                 'source_of_fund_id'   => $validated['source_of_fund_id'],
@@ -686,6 +704,7 @@ class SettingsController extends Controller
                 'end_date'            => $validated['end_date'],
                 'target_quarters'     => $selectedQuarters,
                 'physical_targets'    => $physicalTargets,
+                'classification'      => $validated['classification'],
             ]);
             $msg = 'Activity saved successfully!';
         }
@@ -699,6 +718,61 @@ class SettingsController extends Controller
         
         // Return as JSON so your JavaScript $.get() can read it
         return response()->json($activity);
+    }
+
+    // print wfp
+    public function printWfp(Request $request, $id = null)
+    {
+        $query = Activity::with(['uacsCode', 'source', 'budgetLineItem']);
+
+        // 1. Filter activities based on parameters
+        if ($id) {
+            $activities = $query->where('id', $id)->get();
+        } elseif ($request->has('year')) {
+            $activities = $query->whereHas('source', function($q) use ($request) {
+                $q->where('fiscal_year', $request->year);
+            })->get();
+        } else {
+            $activities = $query->whereHas('source', function($q) {
+                $q->where('fiscal_year', 2026);
+            })->get();
+        }
+
+        // 2. Map Section Names from db_common
+        // Get all unique section IDs from the activities we just fetched
+        $sectionIds = $activities->pluck('section_id')->unique()->filter()->toArray();
+
+        // Fetch names from db_common using your join logic
+        $sectionMap = \DB::connection('db_common')->table('tbl_section')
+            ->whereIn('secid', $sectionIds)
+            ->pluck('secabbrev', 'secid'); // Creates an array: [id => name]
+
+        // 3. Attach names to activities and determine header section name
+        foreach ($activities as $activity) {
+            if ($activity->section_id == 0) {
+                $activity->computed_secname = 'REGIONAL OFFICE';
+            } else {
+                $activity->computed_secname = $sectionMap[$activity->section_id] ?? 'N/A';
+            }
+        }
+
+        // Use the first activity's section for the PDF header label
+        $sectionName = $activities->first()->computed_secname ?? 'N/A';
+
+        $calendarYear = $activity && $activity->source 
+            ? $activity->source->fiscal_year 
+            : ($request->year ?? 2026);
+
+        $meta = [
+            'prepared_by'  => 'ELMA BERNADETTE B. LEGO',
+            'recommending' => 'CATHERINE L. MIRAL, MD, MPH, CESe',
+            'approved_by'  => 'EXUPERIA B. SABALBERINO, MD, MPH, CESe',
+        ];
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('admin.reports.wfp_pdf', compact('activities', 'meta', 'sectionName', 'calendarYear'))
+                    ->setPaper('a4', 'landscape');
+
+        return $pdf->stream('WFP_Report.pdf');
     }
 
     // register new user account or update existing user accounts

@@ -57,6 +57,7 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::get('/admin/settings/get-realignment-table/{id}', [App\Http\Controllers\SettingsController::class, 'getRealignmentTable']);
     Route::post('/settings/activities/pool', [SettingsController::class, 'poolFunds'])->name('settings.activity.pool');
     Route::post('/settings/activities', [SettingsController::class, 'storeWfp'])->name('settings.activity.storeWfp');
+    Route::get('/settings/print/{id?}', [SettingsController::class, 'printWfp'])->name('settings.print');
     
     Route::get('/settings/employees/search', [SettingsController::class, 'searchExternal'])->name('employees.external.search');
     Route::get('/settings/employees/details/{dbedid}', [SettingsController::class, 'getExternalDetails'])->name('employees.details');
