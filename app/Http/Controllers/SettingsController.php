@@ -93,6 +93,24 @@ class SettingsController extends Controller
                 ['objectives' => 'To ensure delivery of quality service through performance of other task assigned in Committees (As clearing house and Inspection for ICT Supplies / Equipment and Licenses).']
             ];
         }
+
+        $signatorySettings = DB::table('wfp_signatories')
+            // Join with your local EmployeeDetail if you need to check account status
+            ->leftJoin('employee_details', 'wfp_signatories.employee_id', '=', 'employee_details.dbedid')
+            
+            // Join with external db_common to get the display names
+            ->leftJoin('db_common.tbl_employee', 'wfp_signatories.employee_id', '=', 'tbl_employee.empid')
+            ->leftJoin('db_common.tbl_emp_details', 'tbl_employee.empid', '=', 'tbl_emp_details.empid')
+            ->leftJoin('db_common.tbl_position', 'tbl_emp_details.dbpid', '=', 'tbl_position.dbpid')
+            
+            ->select(
+                'wfp_signatories.*',
+                'tbl_employee.lname as employee_name',
+                'tbl_position.dbposition as designation'
+            )
+            ->orderBy('wfp_type')
+            ->get();
+
         return view('admin.settings', compact(
             'sources', 
             'activities', 
@@ -102,7 +120,8 @@ class SettingsController extends Controller
             'budgetLineItems', 
             'fundSources',
             'uacsCodes',
-            'objectives'
+            'objectives',
+            'signatorySettings'
         ));
     }
 
@@ -597,6 +616,30 @@ class SettingsController extends Controller
             }
         }
 
+        // --- SHARED: FETCH USER AND SECTION INFO ---
+        $userId = auth()->id();
+        $secid = null;
+
+        if (auth()->user()->username === 'admin') {
+            $secid = 0; 
+        } else {
+            $localDetail = \DB::table('employee_details')
+                ->where('user_id', $userId)
+                ->select('dbedid')
+                ->first();
+
+            if ($localDetail && $localDetail->dbedid) {
+                $secid = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+            }
+        }
+
+        // Safety check for non-admins
+        if (is_null($secid) && auth()->user()->username !== 'admin') {
+            return back()->withInput()->withErrors(['error' => 'Your account is not correctly linked to a DOH Section.']);
+        }
+
         // Prepare Physical Targets
         $selectedQuarters = $request->target_quarters ?? [];
         $physicalTargets = [];
@@ -611,7 +654,13 @@ class SettingsController extends Controller
             $isLocked = $activity->is_locked ?? false;
 
             if ($hasTransactions || $isLocked) {
+                /**
+                 * SCENARIO: Locked/Has Transactions
+                 * Update timeframe, targets, AND the "Updated By" info (User/Section)
+                 */
                 $activity->update([
+                    'user_id'          => $userId, // Track who last edited it
+                    'section_id'       => $secid,
                     'start_date'       => $validated['start_date'],
                     'end_date'         => $validated['end_date'],
                     'target_quarters'  => $selectedQuarters,
@@ -619,8 +668,13 @@ class SettingsController extends Controller
                 ]);
                 $msg = 'Activity timeframe and targets updated. Other fields were locked due to existing transactions.';
             } else {
+                /**
+                 * SCENARIO: Fully Editable
+                 */
                 $uacsRecord = \App\Models\UacsCode::findOrFail($request->uacs_code_id);
                 $activity->update([
+                    'user_id'          => $userId,
+                    'section_id'       => $secid,
                     'objective'        => $request->objective,
                     'uacs_code_id'     => $request->uacs_code_id,
                     'uacs_code'        => $uacsRecord->uacs_code,
@@ -638,31 +692,6 @@ class SettingsController extends Controller
         } 
         // 4. Handle Create Logic
         else {
-            // --- START: FETCH SECID LOGIC ---
-            $userId = auth()->id();
-            $secid = null;
-
-            if (auth()->user()->username === 'admin') {
-                $secid = 0; 
-            } else {
-                $localDetail = \DB::table('employee_details')
-                    ->where('user_id', $userId)
-                    ->select('dbedid')
-                    ->first();
-
-                if ($localDetail && $localDetail->dbedid) {
-                    $secid = \DB::connection('db_common')->table('tbl_emp_details')
-                        ->where('dbedid', $localDetail->dbedid)
-                        ->value('secid');
-                }
-            }
-
-            // Error if non-admin has no secid
-            if (is_null($secid) && auth()->user()->username !== 'admin') {
-                return back()->withInput()->withErrors(['error' => 'Your account is not correctly linked to a DOH Section.']);
-            }
-            // --- END: FETCH SECID LOGIC ---
-
             $fundSource = SourceOfFund::findOrFail($validated['source_of_fund_id']);
             $uacsRecord = \App\Models\UacsCode::findOrFail($validated['uacs_code_id']);
 
@@ -688,7 +717,6 @@ class SettingsController extends Controller
                 return back()->withInput()->withErrors(['duplicate' => 'This exact activity already exists.']);
             }
 
-            // CREATE WITH USER AND SECTION INFO
             Activity::create([
                 'user_id'             => $userId,
                 'section_id'          => $secid,
@@ -738,29 +766,37 @@ class SettingsController extends Controller
             })->get();
         }
 
-        // 2. Map Section Names from db_common
-        // Get all unique section IDs from the activities we just fetched
+        // 2. Map Section AND Division Names from db_common
         $sectionIds = $activities->pluck('section_id')->unique()->filter()->toArray();
 
-        // Fetch names from db_common using your join logic
-        $sectionMap = \DB::connection('db_common')->table('tbl_section')
-            ->whereIn('secid', $sectionIds)
-            ->pluck('secabbrev', 'secid'); // Creates an array: [id => name]
+        // Fetch section and division details using a join
+        $lookupData = \DB::connection('db_common')->table('tbl_section')
+            ->leftJoin('tbl_division', 'tbl_section.divid', '=', 'tbl_division.divid')
+            ->whereIn('tbl_section.secid', $sectionIds)
+            ->select('tbl_section.secid', 'tbl_section.secabbrev', 'tbl_division.divname')
+            ->get()
+            ->keyBy('secid');
 
-        // 3. Attach names to activities and determine header section name
+        // 3. Attach names to activities and determine header labels
         foreach ($activities as $activity) {
             if ($activity->section_id == 0) {
                 $activity->computed_secname = 'REGIONAL OFFICE';
+                $activity->computed_divname = 'OFFICE OF THE DIRECTOR';
             } else {
-                $activity->computed_secname = $sectionMap[$activity->section_id] ?? 'N/A';
+                $info = $lookupData->get($activity->section_id);
+                $activity->computed_secname = $info->secabbrev ?? 'N/A';
+                $activity->computed_divname = $info->divname ?? 'N/A';
             }
         }
 
-        // Use the first activity's section for the PDF header label
-        $sectionName = $activities->first()->computed_secname ?? 'N/A';
+        // Use the first activity's details for the PDF header
+        $firstActivity = $activities->first();
+        $sectionName = $firstActivity->computed_secname ?? 'N/A';
+        $divisionName = $firstActivity->computed_divname ?? 'N/A';
 
-        $calendarYear = $activity && $activity->source 
-            ? $activity->source->fiscal_year 
+        // Calendar Year logic
+        $calendarYear = $firstActivity && $firstActivity->source 
+            ? $firstActivity->source->fiscal_year 
             : ($request->year ?? 2026);
 
         $meta = [
@@ -769,10 +805,89 @@ class SettingsController extends Controller
             'approved_by'  => 'EXUPERIA B. SABALBERINO, MD, MPH, CESe',
         ];
 
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('admin.reports.wfp_pdf', compact('activities', 'meta', 'sectionName', 'calendarYear'))
-                    ->setPaper('a4', 'landscape');
+        $groupedActivities = $activities->groupBy('classification');
+
+        // Pass $divisionName to the view
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('admin.reports.wfp_pdf', compact(
+            'activities', 
+            'meta', 
+            'sectionName', 
+            'divisionName', 
+            'calendarYear',
+            'groupedActivities'
+        ))->setPaper('a4', 'landscape');
 
         return $pdf->stream('WFP_Report.pdf');
+    }
+
+    public function searchEmployees(Request $request)
+    {
+        $q = $request->get('q');
+
+        // We start from the bridge table
+        $employees = DB::connection('db_common')->table('tbl_emp_details')
+            // Join employee names using empid
+            ->join('tbl_employee', 'tbl_emp_details.empid', '=', 'tbl_employee.empid')
+            // Join position details using dbpid
+            ->leftJoin('tbl_position', 'tbl_emp_details.dbpid', '=', 'tbl_position.dbpid')
+            
+            ->select(
+                'tbl_emp_details.empid as id', 
+                DB::raw("CONCAT(tbl_employee.fname, ' ', tbl_employee.lname) as text"), 
+                'tbl_position.dbposition as designation'
+            )
+            ->where(function($query) use ($q) {
+                $query->where('tbl_employee.lname', 'LIKE', "%{$q}%")
+                    ->orWhere('tbl_employee.fname', 'LIKE', "%{$q}%");
+            })
+            // Ensure we don't get duplicates if one employee has multiple detail rows
+            ->groupBy('tbl_emp_details.empid', 'tbl_employee.fname', 'tbl_employee.lname', 'tbl_position.dbposition')
+            ->limit(15)
+            ->get();
+
+        return response()->json($employees);
+    }
+
+    public function saveSignatory(Request $request)
+    {
+        $request->validate([
+            'wfp_type' => 'required',
+            'empid'    => 'required',
+            'label'    => 'required'
+        ]);
+
+        DB::table('wfp_signatories')->updateOrInsert(
+            [
+                'wfp_type' => $request->wfp_type,
+                'label'    => $request->label
+            ],
+            [
+                'employee_id' => $request->empid,
+                'updated_at'  => now()
+            ]
+        );
+
+        return response()->json(['success' => 'Signatory updated and arranged automatically!']);
+    }
+
+    public function getSignatories()
+    {
+        // Define the sequence for the WFP Form
+        $orderMap = [
+            'Prepared by:' => 1,
+            'Checked by:' => 2,
+            'Recommending Approval:' => 3,
+            'Approved by:' => 4,
+        ];
+
+        $signatories = DB::table('wfp_signatories')
+            ->get()
+            ->sortBy(function($item) use ($orderMap) {
+                // Sort based on the label; default to 99 if not found
+                return $orderMap[$item->label] ?? 99;
+            });
+
+        return view('settings.signatories', compact('signatories'));
     }
 
     // register new user account or update existing user accounts

@@ -41,7 +41,10 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::post('/settings/uacs_codes/store', [SettingsController::class, 'storeUACSCodes'])->name('settings.uacs_codes.store');
     Route::put('/settings/uacs_codes/{id}', [SettingsController::class, 'updateUACSCodes'])->name('settings.uacs_codes.update');
     Route::delete('/settings/uacs_codes/{id}', [SettingsController::class, 'destroyUACSCodes'])->name('settings.uacs_codes.destroy');
-    
+    //signatories
+    Route::get('/settings/employees/search', [SettingsController::class, 'searchEmployees'])->name('settings.employees.search');
+    Route::post('/settings/signatories/save', [SettingsController::class, 'saveSignatory'])->name('settings.signatories.save');
+
     Route::get('/settings/wfp', [SettingsController::class, 'index'])->name('settings.index');
     Route::delete('/settings/source/{id}', [SettingsController::class, 'destroySource'])->name('settings.source.destroy');
     Route::post('/settings/employee', [SettingsController::class, 'storeEmployee'])->name('settings.employee.store');

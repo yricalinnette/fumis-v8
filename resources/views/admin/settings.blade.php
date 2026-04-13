@@ -145,6 +145,11 @@
                         <i class="fas fa-random mr-1"></i> Budget Realignment
                     </a>
                 </li>
+                <li class="nav-item">
+                    <a class="nav-link" id="tabs-signatories-tab" data-toggle="pill" href="#tabs-signatories" role="tab">
+                        <i class="fas fa-users mr-1"></i> WFP Signatories
+                    </a>
+                </li>
             </ul>
         </div>
 
@@ -300,9 +305,9 @@
                                                                 <td class="text-center">
                                                                     <div class="btn-group">
                                                                         {{-- INDIVIDUAL PRINT BUTTON --}}
-                                                                        <a href="{{ route('settings.print', ['id' => $activity->id]) }}" target="_blank" class="btn btn-xs btn-danger">
+                                                                        {{-- <a href="{{ route('settings.print', ['id' => $activity->id]) }}" target="_blank" class="btn btn-xs btn-danger">
                                                                             <i class="fas fa-file-pdf"></i>
-                                                                        </a>
+                                                                        </a> --}}
 
                                                                         <button type="button" class="btn btn-xs btn-info" onclick="openEditWfpModal({{ $activity->id }}, {{ $hasTransactions ? 'true' : 'false' }})">
                                                                             <i class="fas fa-edit"></i>
@@ -336,6 +341,62 @@
                     </div>
                 </div>
 
+
+
+            {{-- WFP SIGNATORIES --}}
+            <div class="tab-pane fade" id="tabs-signatories" role="tabpanel" aria-labelledby="tabs-signatories-tab">
+                <div class="card mt-3">
+                    <div class="card-header bg-white py-3">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h3 class="card-title text-bold mb-0">
+                                <i class="fas fa-users-cog mr-1"></i> Signatory Management
+                            </h3>
+                            <button type="button" class="btn btn-primary btn-sm" onclick="addSignatoryModal()">
+                                <i class="fas fa-plus mr-1"></i> Add Signatory Rule
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <table class="table table-hover mb-0">
+                            <thead>
+                                <tr class="bg-gray-light">
+                                    <th style="width: 20%">WFP Type</th>
+                                    <th style="width: 20%">Label</th>
+                                    <th style="width: 35%">Assigned Official</th>
+                                    <th style="width: 15%">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($signatorySettings as $setting)
+                                <tr>
+                                    <td class="text-uppercase text-bold text-primary">{{ $setting->wfp_type }}</td>
+                                    <td>{{ $setting->label }}</td>
+                                    <td>
+                                        <span class="text-bold">{{ $setting->employee_name }}</span><br>
+                                        <small class="text-muted">{{ $setting->designation }}</small>
+                                    </td>
+                                    
+                                    <td>
+                                        <button class="btn btn-info btn-xs" onclick="editSignatory({{ $setting->id }})">
+                                            <i class="fas fa-edit"></i>
+                                        </button>
+                                        <button class="btn btn-danger btn-xs" onclick="deleteSignatory({{ $setting->id }})">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="card-footer">
+                        <small class="text-muted">
+                            <i class="fas fa-info-circle mr-1"></i> 
+                            <strong>Program</strong> type usually has 2 signatories. <strong>SAA/Consolidated</strong> usually has 3.
+                        </small>
+                    </div>
+                </div>
+            </div>
 
                 {{-- TAB 4: WFP TEMPLATE SETTINGS (DYNAMIC TEMPLATE)
                 <div class="tab-pane fade" id="tabs-templates" role="tabpanel">
@@ -656,6 +717,49 @@
     </div>
 </div>
 
+{{-- Signatory Modal --}}
+<div class="modal fade" id="modal-signatory">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="signatoryModalTitle">Add Signatory Rule</h4>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <form id="signatoryForm">
+                @csrf
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>WFP Type</label>
+                        <select name="wfp_type" class="form-control" required>
+                            <option value="program">Cluster / Program / Unit</option>
+                            <option value="saa">Consolidated / SAA</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Label</label>
+                        <input type="text" name="label" class="form-control" placeholder="e.g., Prepared by:" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="employee_search">Search Official (from db_common)</label>
+                        <select class="form-control select2-employee" name="empid" id="employee_search" style="width: 100%;">
+                            <option value="">Search by Name...</option>
+                        </select>
+                        <small class="text-muted">Type at least 3 characters to search the personnel database.</small>
+                    </div>
+
+                </div>
+                <div class="modal-footer justify-content-between">
+                    <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    <button type="submit" class="btn btn-primary">Save Signatory</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
 
 {{-- Import Summary Results --}}
 <div class="modal fade" id="importSummaryModal" tabindex="-1" role="dialog" aria-hidden="true">
@@ -1236,6 +1340,87 @@
             }
         });
 
+    });
+
+    $(document).ready(function() {
+        $('.select2-employee').select2({
+            theme: 'bootstrap4',
+            placeholder: 'Search Official...',
+            minimumInputLength: 3,
+            dropdownParent: $('#modal-signatory'), // Ensures dropdown stays inside the modal
+            ajax: {
+                url: "/settings/employees/search",
+                dataType: 'json',
+                delay: 250,
+                data: function (params) {
+                    return { q: params.term };
+                },
+                processResults: function (data) {
+                    return {
+                        results: $.map(data, function (item) {
+                            return {
+                                id: item.id,
+                                text: item.text,
+                                designation: item.designation
+                            }
+                        })
+                    };
+                },
+                cache: true
+            },
+            templateResult: formatEmployee,
+            templateSelection: formatEmployeeSelection
+        });
+
+        // Custom formatting for the dropdown results
+        function formatEmployee (repo) {
+            if (repo.loading) return repo.text;
+            var designation = repo.designation ? repo.designation : "DESIGNATION NOT SET";
+
+            return $(
+                "<div class='select2-result-employee'>" +
+                    "<div><strong>" + repo.text + "</strong></div>" +
+                    // "<div style='font-size: 11px; opacity: 0.8; text-transform: uppercase;'>" + designation + "</div>" +
+                "</div>"
+            );
+        }
+
+        // Custom formatting for the selected item
+        function formatEmployeeSelection (repo) {
+            return repo.text || repo.placeholder;
+        }
+    });
+
+    function addSignatoryModal() {
+        // Reset the form inside the modal
+        $('#signatoryForm')[0].reset();
+        
+        // Clear the Select2 search selection
+        $('.select2-employee').val(null).trigger('change');
+        
+        // Change modal title if you're reusing it for Edit
+        $('#signatoryModalTitle').text('Add New Signatory Rule');
+        
+        // Show the modal
+        $('#modal-signatory').modal('show');
+    }
+
+    $('#signatoryForm').on('submit', function(e) {
+        e.preventDefault();
+        
+        $.ajax({
+            url: "{{ route('settings.signatories.save') }}",
+            method: "POST",
+            data: $(this).serialize(),
+            success: function(response) {
+                $('#modal-signatory').modal('hide');
+                toastr.success(response.success);
+                location.reload(); // Refresh to show the updated table
+            },
+            error: function(xhr) {
+                alert('Error saving signatory. Please check your inputs.');
+            }
+        });
     });
 
 </script>
