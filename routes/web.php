@@ -45,22 +45,22 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     Route::get('/settings/employees/search', [SettingsController::class, 'searchEmployees'])->name('settings.employees.search');
     Route::post('/settings/signatories/save', [SettingsController::class, 'saveSignatory'])->name('settings.signatories.save');
     Route::delete('/settings/signatories/delete/{id}', [SettingsController::class, 'deleteSignatory'])->name('settings.signatories.delete');
-
-    Route::get('/settings/wfp', [SettingsController::class, 'index'])->name('settings.index');
     Route::delete('/settings/source/{id}', [SettingsController::class, 'destroySource'])->name('settings.source.destroy');
     Route::post('/settings/employee', [SettingsController::class, 'storeEmployee'])->name('settings.employee.store');
     Route::post('/settings/activity', [SettingsController::class, 'storeActivity'])->name('settings.activity.store');
-    Route::get('/settings/activity/{id}/edit', [SettingsController::class, 'editWfp'])->name('settings.activity.edit');
     Route::put('/settings/source/{id}', [SettingsController::class, 'updateSource'])->name('settings.source.update');
     Route::post('settings/import', [ActivityController::class, 'importWFP'])->name('settings.activity.import');
     // Route::get('/settings/source/{id}/test-connection', [SettingsController::class, 'testConnection'])->name('settings.source.test');
     Route::match(['get', 'post', 'put'], '/settings/template/{id}', [SettingsController::class, 'updateTemplate'])->name('settings.template.update');
-    Route::delete('/settings/activity/{id}', [SettingsController::class, 'destroyActivity'])->name('settings.activity.destroy');
     Route::get('settings/download-template', [ActivityController::class, 'downloadTemplate'])->name('settings.template.download');
     Route::post('/settings/realign', [SettingsController::class, 'updateAllocation'])->name('settings.realign');
     Route::get('/admin/settings/get-realignment-table/{id}', [App\Http\Controllers\SettingsController::class, 'getRealignmentTable']);
     Route::post('/settings/activities/pool', [SettingsController::class, 'poolFunds'])->name('settings.activity.pool');
+    //WFP
+    Route::get('/settings/wfp', [SettingsController::class, 'index'])->name('settings.index');
     Route::post('/settings/activities', [SettingsController::class, 'storeWfp'])->name('settings.activity.storeWfp');
+    Route::delete('/settings/activity/{id}', [SettingsController::class, 'destroyActivity'])->name('settings.activity.destroy');
+    Route::get('/settings/activity/{id}/edit', [SettingsController::class, 'editWfp'])->name('settings.activity.edit');
     Route::get('/settings/print/{id?}', [SettingsController::class, 'printWfp'])->name('settings.print');
     
     Route::get('/settings/employees/search', [SettingsController::class, 'searchExternal'])->name('employees.external.search');
