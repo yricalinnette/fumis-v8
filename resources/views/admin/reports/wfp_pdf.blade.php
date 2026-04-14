@@ -70,7 +70,7 @@
             <td width="20%" align="right">Document Code: [_______]</td>
         </tr>
     </table>
-
+    
     <br>
 
     <table class="header-table">
@@ -92,36 +92,64 @@
         </tr>
     </table>
 
-    {{-- UPDATED Signatories Section to match image_925daa.png --}}
-    <table class="main-table">
+    @php
+        // Determine layout width: 50% for 2 signatories, 33.3% for 3
+        $isThreeColumn = ($currentWfpType == 'saa');
+        $columnWidth = $isThreeColumn ? '33.3%' : '50%';
+        
+        // Define the middle key if it exists
+        $midKey = $isThreeColumn ? 'recommending approval by' : null;
+    @endphp
+
+    <table style="width: 100%; border-collapse: collapse; margin-top: 30px; font-size: 11px; table-layout: fixed;">
         <tr>
-            <td class="signatory-label">Prepared by:</td>
-            <td class="signatory-name">
-                <strong>{{ $meta['prepared_by'] }}</strong><br>
-                Computer Maintenance Technologist III
+            {{-- 1. Prepared By - Always Shows --}}
+            <td style="width: {{ $columnWidth }}; border: 1px solid black; padding: 10px; text-align: center; vertical-align: top;">
+                <div style="text-align: left;">Prepared by:</div>
+                <br><br>
+                <div style="font-weight: bold; text-decoration: underline; text-transform: uppercase;">
+                    {{ $signatories['prepared by']->employee_name ?? '__________________________' }}
+                </div>
+                <div>{{ $signatories['prepared by']->designation ?? 'Designation' }}</div>
             </td>
-            <td class="signatory-label">Recommending Approval by:</td>
-            <td class="signatory-name">
-                <strong>{{ $meta['recommending'] }}</strong><br>
-                Head, UHC-PSC
+
+            {{-- 2. Recommending Approval - ONLY shows if SAA --}}
+            @if($isThreeColumn)
+            <td style="width: {{ $columnWidth }}; border: 1px solid black; padding: 10px; text-align: center; vertical-align: top;">
+                <div style="text-align: left;">Recommending Approval by:</div>
+                <br><br>
+                <div style="font-weight: bold; text-decoration: underline; text-transform: uppercase;">
+                    {{ $signatories['recommending approval by']->employee_name ?? '__________________________' }}
+                </div>
+                <div>{{ $signatories['recommending approval by']->designation ?? 'Designation' }}</div>
             </td>
-            <td class="signatory-label">Approved by:</td>
-            <td class="signatory-name">
-                <strong>{{ $meta['approved_by'] }}</strong><br>
-                Chief, LHSD
+            @endif
+
+            {{-- 3. Approved By / Reviewed By --}}
+            <td style="width: {{ $columnWidth }}; border: 1px solid black; padding: 10px; text-align: center; vertical-align: top;">
+                <div style="text-align: left;">
+                    {{ $isThreeColumn ? 'Approved by:' : 'Approved by:' }}
+                </div>
+                <br><br>
+                <div style="font-weight: bold; text-decoration: underline; text-transform: uppercase;">
+                    @php 
+                        $finalKey = $isThreeColumn ? 'approved by' : 'approved by'; 
+                    @endphp
+                    {{ $signatories[$finalKey]->employee_name ?? '__________________________' }}
+                </div>
+                <div>{{ $signatories[$finalKey]->designation ?? ($isThreeColumn ? 'Director IV' : 'Designation') }}</div>
             </td>
         </tr>
-        <tr class="date-row">
-            <td>Date:</td>
-            <td></td>
-            <td>Date:</td>
-            <td></td>
-            <td>Date:</td>
-            <td></td>
+        
+        {{-- Dynamic Date Row --}}
+        <tr>
+            <td style="border: 1px solid black; padding: 5px;">Date:</td>
+            @if($isThreeColumn)
+                <td style="border: 1px solid black; padding: 5px;">Date:</td>
+            @endif
+            <td style="border: 1px solid black; padding: 5px;">Date:</td>
         </tr>
     </table>
-
-    <br>
 
     {{-- Main Content --}}
     <table class="main-table">
@@ -145,6 +173,7 @@
         </thead>
         <tbody>
             @php
+                // These keys must match the 'classification' column values in your database
                 $order = [
                     'Strategic' => 'A. Strategic Function',
                     'Core'      => 'B. Core Function',
@@ -159,38 +188,40 @@
                     <td colspan="12" class="category-row">{{ $label }}</td>
                 </tr>
 
+                {{-- Use the $key (Strategic, Core, Support) to find the group --}}
                 @if(isset($groupedActivities[$key]) && count($groupedActivities[$key]) > 0)
                     @foreach($groupedActivities[$key] as $activity)
-                    @php 
-                        $subTotal += $activity->budget_adjusted;
-                        $grandTotal += $activity->budget_adjusted;
-                    @endphp
-                    <tr>
-                        <td class="text-left">{{ $activity->budgetLineItem->budget_line_item_name ?? 'N/A' }}</td>
-                        <td class="text-left">{{ $activity->objective }}</td>
-                        <td class="text-left"><strong>{{ $activity->name }}</strong></td>
-                        <td class="text-center">{{ \Carbon\Carbon::parse($activity->start_date)->format('j M Y') }}</td>
-                        <td class="text-center">{{ \Carbon\Carbon::parse($activity->end_date)->format('j M Y') }}</td>
-                        
                         @php 
-                            $targets = is_array($activity->physical_targets) 
-                                    ? $activity->physical_targets 
-                                    : json_decode($activity->physical_targets, true) ?? []; 
+                            $subTotal += $activity->budget_adjusted;
+                            $grandTotal += $activity->budget_adjusted;
                         @endphp
-                        
-                        <td>{{ $targets['Q1'] ?? '' }}</td>
-                        <td>{{ $targets['Q2'] ?? '' }}</td>
-                        <td>{{ $targets['Q3'] ?? '' }}</td>
-                        <td>{{ $targets['Q4'] ?? '' }}</td>
-                        
-                        <td class="text-right">{{ number_format($activity->budget_adjusted, 2) }}</td>
-                        <td>{{ $activity->source->name ?? 'N/A' }}</td>
-                        <td class="text-left">{{ $activity->computed_secname }}</td>
-                    </tr>
+                        <tr>
+                            <td class="text-left">{{ $activity->budgetLineItem->budget_line_item_name ?? 'N/A' }}</td>
+                            <td class="text-left">{{ $activity->objective }}</td>
+                            <td class="text-left"><strong>{{ $activity->name }}</strong></td>
+                            <td class="text-center">{{ \Carbon\Carbon::parse($activity->start_date)->format('j M Y') }}</td>
+                            <td class="text-center">{{ \Carbon\Carbon::parse($activity->end_date)->format('j M Y') }}</td>
+                            
+                            @php 
+                                $targets = is_array($activity->physical_targets) 
+                                        ? $activity->physical_targets 
+                                        : json_decode($activity->physical_targets, true) ?? []; 
+                            @endphp
+                            
+                            <td>{{ $targets['Q1'] ?? '' }}</td>
+                            <td>{{ $targets['Q2'] ?? '' }}</td>
+                            <td>{{ $targets['Q3'] ?? '' }}</td>
+                            <td>{{ $targets['Q4'] ?? '' }}</td>
+                            
+                            <td class="text-right">{{ number_format($activity->budget_adjusted, 2) }}</td>
+                            <td>{{ $activity->source->name ?? 'N/A' }}</td>
+                            <td class="text-left">{{ $activity->computed_secname }}</td>
+                        </tr>
                     @endforeach
                 @else
                     <tr>
-                        <td colspan="12" style="color: #ffffff; font-style: italic;">No activities recorded under this classification.</td>
+                        {{-- Changed text color to gray so it's visible if empty --}}
+                        <td colspan="12" style="color: #ffffff; font-style: italic; text-align: center;">No activities recorded under this classification.</td>
                     </tr>
                 @endif
 

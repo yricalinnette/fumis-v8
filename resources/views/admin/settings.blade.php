@@ -190,10 +190,10 @@
                                             @if($isCurrent) <span class="badge badge-success ml-2">Current</span> @endif
                                         </button>
                                         
-                                        {{-- NEW: Print Full Year Button --}}
+                                        <!-- {{-- NEW: Print Full Year Button --}}
                                         <a href="{{ route('settings.print', ['year' => $year]) }}" ...>
                                             <i class="fas fa-file-pdf mr-1"></i> Print FY {{ $year }} WFP
-                                        </a>
+                                        </a> -->
                                     </div>
                                 </div>
 
@@ -229,6 +229,15 @@
 
                                                             <div class="col-md-8 text-right">
                                                                 <div class="d-flex justify-content-end align-items-center">
+                                                                    {{-- NEW: Print Per Fund Source Button --}}
+                                                                    <div class="px-3 border-right border-secondary">
+                                                                        <a href="{{ route('settings.print', ['source_of_fund_id' => $source->id]) }}"
+                                                                        target="_blank" 
+                                                                        class="btn btn-xs btn-danger shadow-sm font-weight-bold">
+                                                                            <i class="fas fa-file-pdf mr-1"></i> PRINT WFP
+                                                                        </a>
+                                                                    </div>
+
                                                                     <div class="px-3 border-right border-secondary">
                                                                         <small class="text-gray d-block text-uppercase font-weight-bold" style="font-size: 0.65rem;">Distributed / Adjusted</small>
                                                                         <span class="text-white font-weight-bold">
@@ -376,13 +385,19 @@
                                         <small class="text-muted">{{ $setting->designation }}</small>
                                     </td>
                                     
-                                    <td>
-                                        <button class="btn btn-info btn-xs" onclick="editSignatory({{ $setting->id }})">
-                                            <i class="fas fa-edit"></i>
-                                        </button>
-                                        <button class="btn btn-danger btn-xs" onclick="deleteSignatory({{ $setting->id }})">
-                                            <i class="fas fa-trash"></i>
-                                        </button>
+                                    <td class="text-center">
+                                        <div class="d-flex justify-content-center">
+                                            <button class="btn btn-info btn-xs mr-1" 
+                                                    onclick="editSignatory({{ json_encode($setting) }})" 
+                                                    title="Edit">
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                            <button class="btn btn-danger btn-xs" 
+                                                    onclick="deleteSignatory({{ $setting->id }})" 
+                                                    title="Delete">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                                 @endforeach
@@ -732,7 +747,7 @@
                 <div class="modal-body">
                     <div class="form-group">
                         <label>WFP Type</label>
-                        <select name="wfp_type" class="form-control" required>
+                        <select name="wfp_type" id="wfp_type" class="form-control" required>
                             <option value="program">Cluster / Program / Unit</option>
                             <option value="saa">Consolidated / SAA</option>
                         </select>
@@ -740,7 +755,8 @@
 
                     <div class="form-group">
                         <label>Label</label>
-                        <input type="text" name="label" class="form-control" placeholder="e.g., Prepared by:" required>
+                        <select name="label" id="label" class="form-control" required>
+                            </select>
                     </div>
 
                     <div class="form-group">
@@ -1391,35 +1407,131 @@
         }
     });
 
+    /* --- 1. GLOBAL DATA AND HELPERS (Must be outside any function) --- */
+    const labelGroups = {
+        program: [
+            { val: 'Prepared By:', text: 'Prepared By:' },
+            { val: 'Approved By:', text: 'Approved By:' }
+        ],
+        saa: [
+            { val: 'Prepared By:', text: 'Prepared By:' },
+            { val: 'Recommending Approval By:', text: 'Recommending Approval By:' },
+            { val: 'Approved By:', text: 'Approved By:' }
+        ]
+    };
+
+    // Global function for dynamic labels
+    function updateLabelOptions(type, selectedValue = null) {
+        const labelSelect = $('#label'); 
+        if(!labelSelect.length) return; // Safety check
+        
+        labelSelect.empty();
+        const options = labelGroups[type] || labelGroups.program;
+        
+        options.forEach(opt => {
+            const isSelected = (selectedValue === opt.val) ? 'selected' : '';
+            labelSelect.append(`<option value="${opt.val}" ${isSelected}>${opt.text}</option>`);
+        });
+    }
+
+    // Global function to open ADD modal
     function addSignatoryModal() {
-        // Reset the form inside the modal
-        $('#signatoryForm')[0].reset();
-        
-        // Clear the Select2 search selection
-        $('.select2-employee').val(null).trigger('change');
-        
-        // Change modal title if you're reusing it for Edit
         $('#signatoryModalTitle').text('Add New Signatory Rule');
+        $('#signatoryForm')[0].reset();
+        $('.select2-employee').val(null).trigger('change'); 
         
-        // Show the modal
+        // Set default labels based on current wfp_type selection
+        updateLabelOptions($('#wfp_type').val());
         $('#modal-signatory').modal('show');
     }
 
-    $('#signatoryForm').on('submit', function(e) {
-        e.preventDefault();
+    // Global function to open EDIT modal
+    function editSignatory(data) {
+        $('#signatoryModalTitle').text('Edit Signatory Rule');
         
-        $.ajax({
-            url: "{{ route('settings.signatories.save') }}",
-            method: "POST",
-            data: $(this).serialize(),
-            success: function(response) {
-                $('#modal-signatory').modal('hide');
-                toastr.success(response.success);
-                location.reload(); // Refresh to show the updated table
-            },
-            error: function(xhr) {
-                alert('Error saving signatory. Please check your inputs.');
+        // Clear previous selection
+        $('.select2-employee').val(null).trigger('change');
+
+        // Set WFP Type
+        $('#wfp_type').val(data.wfp_type);
+
+        // Update labels and select the saved one
+        updateLabelOptions(data.wfp_type, data.label);
+
+        // Inject the employee into Select2
+        if (data.employee_id) {
+            var newOption = new Option(data.employee_name, data.employee_id, true, true);
+            $('.select2-employee').empty().append(newOption).trigger('change');
+        }
+
+        $('#modal-signatory').modal('show');
+    }
+
+    // Global function for DELETE
+    function deleteSignatory(id) {
+        Swal.fire({
+            title: 'Are you sure?',
+            text: "This signatory will be removed from the WFP Form layout.",
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#d33',
+            cancelButtonColor: '#3085d6',
+            confirmButtonText: 'Yes, delete it!'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                $.ajax({
+                    url: "/settings/signatories/delete/" + id,
+                    method: "DELETE",
+                    data: { _token: "{{ csrf_token() }}" },
+                    success: function(response) {
+                        Swal.fire('Deleted!', response.success, 'success').then(() => {
+                            location.reload();
+                        });
+                    },
+                    error: function() {
+                        Swal.fire('Error!', 'Could not delete the record.', 'error');
+                    }
+                });
             }
+        });
+    }
+
+    /* --- 2. JQUERY INITIALIZATION (DOM Ready) --- */
+    $(document).ready(function() {
+
+        // Listen for WFP Type changes inside the modal
+        $('#wfp_type').on('change', function() {
+            updateLabelOptions($(this).val());
+        });
+
+        // Form Submission Handler
+        $('#signatoryForm').on('submit', function(e) {
+            e.preventDefault();
+            
+            const submitBtn = $(this).find('button[type="submit"]');
+            submitBtn.prop('disabled', true).text('Saving...');
+
+            $.ajax({
+                url: "{{ route('settings.signatories.save') }}",
+                method: "POST",
+                data: $(this).serialize(),
+                success: function(response) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Success!',
+                        text: response.success,
+                        timer: 1500,
+                        showConfirmButton: false
+                    }).then(() => {
+                        location.reload();
+                    });
+                },
+                error: function(xhr) {
+                    submitBtn.prop('disabled', false).text('Save Signatory');
+                    let errorMsg = xhr.responseJSON?.message || 'Could not save signatory.';
+                    Swal.fire({ icon: 'error', title: 'Oops...', text: errorMsg });
+                }
+            });
         });
     });
 

@@ -44,6 +44,7 @@ Route::middleware(['auth', 'can:admin-access'])->group(function () {
     //signatories
     Route::get('/settings/employees/search', [SettingsController::class, 'searchEmployees'])->name('settings.employees.search');
     Route::post('/settings/signatories/save', [SettingsController::class, 'saveSignatory'])->name('settings.signatories.save');
+    Route::delete('/settings/signatories/delete/{id}', [SettingsController::class, 'deleteSignatory'])->name('settings.signatories.delete');
 
     Route::get('/settings/wfp', [SettingsController::class, 'index'])->name('settings.index');
     Route::delete('/settings/source/{id}', [SettingsController::class, 'destroySource'])->name('settings.source.destroy');

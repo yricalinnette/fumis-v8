@@ -94,22 +94,47 @@ class SettingsController extends Controller
             ];
         }
 
+        // 1. Get the encryption key
+        $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
+
         $signatorySettings = DB::table('wfp_signatories')
-            // Join with your local EmployeeDetail if you need to check account status
-            ->leftJoin('employee_details', 'wfp_signatories.employee_id', '=', 'employee_details.dbedid')
+            // 1. Join with tbl_emp_details first because the saved ID is dbedid
+            ->leftJoin('db_common.tbl_emp_details', 'wfp_signatories.employee_id', '=', 'tbl_emp_details.dbedid')
             
-            // Join with external db_common to get the display names
-            ->leftJoin('db_common.tbl_employee', 'wfp_signatories.employee_id', '=', 'tbl_employee.empid')
-            ->leftJoin('db_common.tbl_emp_details', 'tbl_employee.empid', '=', 'tbl_emp_details.empid')
+            // 2. Now join tbl_employee using the empid found in the details table
+            ->leftJoin('db_common.tbl_employee', 'tbl_emp_details.empid', '=', 'tbl_employee.empid')
+            
+            // 3. Join tbl_position using the dbpid found in the details table
             ->leftJoin('db_common.tbl_position', 'tbl_emp_details.dbpid', '=', 'tbl_position.dbpid')
             
             ->select(
                 'wfp_signatories.*',
-                'tbl_employee.lname as employee_name',
-                'tbl_position.dbposition as designation'
+                'tbl_position.dbposition as designation',
+                // Decrypt using the tbl_employee table we reached via the bridge
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)) as fname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.mname, '{$key}') AS CHAR)) as mname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)) as lname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.suffix, '{$key}') AS CHAR)) as suffix")
             )
             ->orderBy('wfp_type')
-            ->get();
+            ->get()
+            ->map(function($emp) {
+                $clean = function($str) {
+                    return $str ? mb_convert_encoding($str, 'UTF-8', 'UTF-8') : '';
+                };
+
+                $fname = $clean($emp->fname);
+                $mname = $clean($emp->mname);
+                $lname = $clean($emp->lname);
+                $suffix = $clean($emp->suffix);
+
+                $mi = $mname ? ' ' . substr($mname, 0, 1) . '.' : '';
+                $sfx = $suffix ? ' ' . $suffix : '';
+                
+                $emp->employee_name = $lname ? "{$lname}, {$fname}{$mi}{$sfx}" : "PERSONNEL RECORD NOT FOUND";
+                
+                return $emp;
+            });
 
         return view('admin.settings', compact(
             'sources', 
@@ -751,99 +776,123 @@ class SettingsController extends Controller
     // print wfp
     public function printWfp(Request $request, $id = null)
     {
-        $query = Activity::with(['uacsCode', 'source', 'budgetLineItem']);
+        $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
+        $calendarYear = date('Y'); // Ensure this is defined
 
-        // 1. Filter activities based on parameters
-        if ($id) {
-            $activities = $query->where('id', $id)->get();
-        } elseif ($request->has('year')) {
-            $activities = $query->whereHas('source', function($q) use ($request) {
-                $q->where('fiscal_year', $request->year);
-            })->get();
-        } else {
-            $activities = $query->whereHas('source', function($q) {
-                $q->where('fiscal_year', 2026);
-            })->get();
-        }
+        $sourceId = $id ?: $request->input('source_of_fund_id');
+        if (!$sourceId) return "Please select a specific fund source to print.";
 
-        // 2. Map Section AND Division Names from db_common
-        $sectionIds = $activities->pluck('section_id')->unique()->filter()->toArray();
+        $fundSource = \App\Models\SourceOfFund::find($sourceId);
+        if (!$fundSource) return "Fund Source not found.";
 
-        // Fetch section and division details using a join
-        $lookupData = \DB::connection('db_common')->table('tbl_section')
-            ->leftJoin('tbl_division', 'tbl_section.divid', '=', 'tbl_division.divid')
-            ->whereIn('tbl_section.secid', $sectionIds)
-            ->select('tbl_section.secid', 'tbl_section.secabbrev', 'tbl_division.divname')
-            ->get()
-            ->keyBy('secid');
+        $activities = Activity::with(['uacsCode', 'budgetLineItem'])
+            ->where('source_of_fund_id', $fundSource->id)
+            ->get();
 
-        // 3. Attach names to activities and determine header labels
-        foreach ($activities as $activity) {
-            if ($activity->section_id == 0) {
-                $activity->computed_secname = 'REGIONAL OFFICE';
-                $activity->computed_divname = 'OFFICE OF THE DIRECTOR';
-            } else {
-                $info = $lookupData->get($activity->section_id);
-                $activity->computed_secname = $info->secabbrev ?? 'N/A';
-                $activity->computed_divname = $info->divname ?? 'N/A';
+        // Logic for SAA or Consolidated
+        $fundName = $fundSource->name ?? '';
+        $isSAA = str_contains(strtoupper($fundName), 'SAA');
+        $firstAct = $activities->first();
+        $isConsolidated = false;
+
+        if ($firstAct && $firstAct->budgetLineItem) {
+            if (trim(strtoupper($firstAct->budgetLineItem->budget_line_item_name)) == trim(strtoupper($fundName))) {
+                $isConsolidated = true;
             }
         }
 
-        // Use the first activity's details for the PDF header
-        $firstActivity = $activities->first();
-        $sectionName = $firstActivity->computed_secname ?? 'N/A';
-        $divisionName = $firstActivity->computed_divname ?? 'N/A';
+        $currentWfpType = ($isSAA || $isConsolidated) ? 'saa' : 'program';
 
-        // Calendar Year logic
-        $calendarYear = $firstActivity && $firstActivity->source 
-            ? $firstActivity->source->fiscal_year 
-            : ($request->year ?? 2026);
+        // Fetch Signatories
+        $signatories = DB::table('wfp_signatories')
+            ->where('wfp_type', $currentWfpType)
+            ->leftJoin('db_common.tbl_emp_details', 'wfp_signatories.employee_id', '=', 'tbl_emp_details.dbedid')
+            ->leftJoin('db_common.tbl_employee', 'tbl_emp_details.empid', '=', 'tbl_employee.empid')
+            ->leftJoin('db_common.tbl_position', 'tbl_emp_details.dbpid', '=', 'tbl_position.dbpid')
+            ->select(
+                'wfp_signatories.label',
+                'tbl_position.dbposition as designation',
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)) as fname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.mname, '{$key}') AS CHAR)) as mname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)) as lname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.extname, '{$key}') AS CHAR)) as extname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.suffix, '{$key}') AS CHAR)) as suffix")
+            )
+            ->get()
+            ->map(function($emp) {
+                $mi = $emp->mname ? ' ' . substr($emp->mname, 0, 1) . '.' : '';
+                $sfx = $emp->suffix ? ' ' . $emp->suffix : '';
+                $emp->employee_name = $emp->lname ? "{$emp->fname}{$mi}{$sfx} {$emp->lname}, {$emp->extname}" : "NOT FOUND";
+                
+                // NORMALIZE LABEL: Remove colons and trim spaces for easier matching in Blade
+                $emp->clean_label = strtolower(trim(str_replace(':', '', $emp->label)));
+                return $emp;
+            })
+            ->keyBy('clean_label'); // Key will be 'prepared by', 'reviewed by', etc.
 
-        $meta = [
-            'prepared_by'  => 'ELMA BERNADETTE B. LEGO',
-            'recommending' => 'CATHERINE L. MIRAL, MD, MPH, CESe',
-            'approved_by'  => 'EXUPERIA B. SABALBERINO, MD, MPH, CESe',
-        ];
+        // Section/Division Mapping
+        $divisionName = 'OFFICE OF THE DIRECTOR';
+        if ($activities->isNotEmpty()) {
+            $sectionIds = $activities->pluck('section_id')->unique()->filter()->toArray();
+            $lookupData = \DB::connection('db_common')->table('tbl_section')
+                ->leftJoin('tbl_division', 'tbl_section.divid', '=', 'tbl_division.divid')
+                ->whereIn('tbl_section.secid', $sectionIds)
+                ->select('tbl_section.secid', 'tbl_section.secabbrev', 'tbl_division.divname')
+                ->get()->keyBy('secid');
+
+            foreach ($activities as $activity) {
+                if ($activity->section_id == 0) {
+                    $activity->computed_secname = 'REGIONAL OFFICE';
+                    $activity->computed_divname = 'OFFICE OF THE DIRECTOR';
+                } else {
+                    $info = $lookupData->get($activity->section_id);
+                    $activity->computed_secname = $info->secabbrev ?? 'N/A';
+                    $activity->computed_divname = $info->divname ?? 'N/A';
+                }
+            }
+            $divisionName = $activities->first()->computed_divname;
+        }
 
         $groupedActivities = $activities->groupBy('classification');
 
-        // Pass $divisionName to the view
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('admin.reports.wfp_pdf', compact(
+        return \Barryvdh\DomPDF\Facade\Pdf::loadView('admin.reports.wfp_pdf', compact(
             'activities', 
-            'meta', 
-            'sectionName', 
-            'divisionName', 
+            'signatories', 
             'calendarYear',
-            'groupedActivities'
-        ))->setPaper('a4', 'landscape');
-
-        return $pdf->stream('WFP_Report.pdf');
+            'groupedActivities',
+            'divisionName',
+            'fundName',
+            'currentWfpType'
+        ))->setPaper('a4', 'landscape')->stream("WFP_{$fundName}.pdf");
     }
 
     public function searchEmployees(Request $request)
     {
         $q = $request->get('q');
+        $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
 
-        // We start from the bridge table
         $employees = DB::connection('db_common')->table('tbl_emp_details')
-            // Join employee names using empid
             ->join('tbl_employee', 'tbl_emp_details.empid', '=', 'tbl_employee.empid')
-            // Join position details using dbpid
             ->leftJoin('tbl_position', 'tbl_emp_details.dbpid', '=', 'tbl_position.dbpid')
-            
             ->select(
-                'tbl_emp_details.empid as id', 
-                DB::raw("CONCAT(tbl_employee.fname, ' ', tbl_employee.lname) as text"), 
+                // CRITICAL: We use tbl_employee.empid as the 'id' so it's what gets saved
+                'tbl_employee.empid as id', 
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)) as fname"),
+                DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)) as lname"),
                 'tbl_position.dbposition as designation'
             )
-            ->where(function($query) use ($q) {
-                $query->where('tbl_employee.lname', 'LIKE', "%{$q}%")
-                    ->orWhere('tbl_employee.fname', 'LIKE', "%{$q}%");
+            ->where(function($query) use ($q, $key) {
+                $query->where(DB::raw("CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)"), 'LIKE', "%{$q}%")
+                    ->orWhere(DB::raw("CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)"), 'LIKE', "%{$q}%");
             })
-            // Ensure we don't get duplicates if one employee has multiple detail rows
-            ->groupBy('tbl_emp_details.empid', 'tbl_employee.fname', 'tbl_employee.lname', 'tbl_position.dbposition')
+            // Group by empid to ensure we only get one result per person
+            ->groupBy('tbl_employee.empid', 'tbl_employee.fname', 'tbl_employee.lname', 'tbl_position.dbposition')
             ->limit(15)
-            ->get();
+            ->get()
+            ->map(function($emp) {
+                $emp->text = "{$emp->lname}, {$emp->fname}";
+                return $emp;
+            });
 
         return response()->json($employees);
     }
@@ -868,6 +917,12 @@ class SettingsController extends Controller
         );
 
         return response()->json(['success' => 'Signatory updated and arranged automatically!']);
+    }
+
+    public function deleteSignatory($id)
+    {
+        DB::table('wfp_signatories')->where('id', $id)->delete();
+        return response()->json(['success' => 'Signatory deleted successfully!']);
     }
 
     public function getSignatories()
@@ -971,6 +1026,7 @@ class SettingsController extends Controller
         }
     }
 
+    //search employee for account registration
     public function searchExternal(Request $request)
     {
         $term = $request->get('q');
