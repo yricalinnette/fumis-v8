@@ -107,73 +107,162 @@ class ReportController extends Controller
 
         $sources = \App\Models\SourceOfFund::where('fiscal_year', $year)
             ->with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
-                $query->whereYear('obligation_date', $year);
+                $query->where(function($q) use ($year) {
+                    $q->whereYear('obligation_date', $year)
+                    ->orWhere(function($sub) use ($year) {
+                        $sub->whereNull('obligation_date')
+                            ->whereYear('created_at', $year);
+                    });
+                });
+
                 if ($month) {
-                    $query->whereMonth('obligation_date', $month);
-                } 
-                elseif ($quarter && isset($quarterMonths[$quarter])) {
-                    $query->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter]);
+                    $query->where(function($q) use ($month) {
+                        $q->whereMonth('obligation_date', $month)
+                        ->orWhere(function($sub) { $sub->whereNull('obligation_date'); });
+                    });
+                } elseif ($quarter && isset($quarterMonths[$quarter])) {
+                    $query->where(function($q) use ($quarterMonths, $quarter) {
+                        $q->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter])
+                        ->orWhere(function($sub) { $sub->whereNull('obligation_date'); });
+                    });
                 }
             }])->get();
 
-        $reportData = $sources->map(function ($source) {
-            // 1. Get the total pooled amount for all activities under this source
+        $reportData = $sources->map(function ($source) use ($year) {
+            $originalSourceTotal = (float) $source->total_amount;
             $totalPooledAmount = (float) $source->activities->sum('pooled_amount');
-
-            // 2. The Effective Source Total is the original amount minus what was returned to the pool
-            $originalSourceTotal = (float) $source->total_amount; 
-            $effectiveSourceTotal = $originalSourceTotal - $totalPooledAmount;
-
-            $lineItems = $source->activities->map(function ($activity) use ($source) {
+            
+            $lineItems = $source->activities->map(function ($activity) use ($source, $year) {
                 $activityFunds = $source->funds->where('transaction_type_id', $activity->id);
                 
                 $obligated = (float) $activityFunds->sum('obligation_amount');
                 $disbursed = (float) $activityFunds->sum('disbursement_amount');
+
+                // PENDING: In-flight transactions (No obligation yet)
+                $pending = (float) $activityFunds->filter(function($f) use ($year) {
+                    return (empty($f->obligation_date) || $f->obligation_amount <= 0) && 
+                        ($f->disbursement_amount <= 0) &&
+                        ($f->created_at->year == $year) &&
+                        (!in_array($f->status, ['Cancelled', 'Rejected']));
+                })->sum('amount');
+
+                // SAVINGS: Obligated but not fully spent (only counted if disbursement exists)
+                $savings = ($obligated > $disbursed && $disbursed > 0) ? ($obligated - $disbursed) : 0;
                 
-                // The budget available for this activity specifically
                 $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
                 $pooled = (float) ($activity->pooled_amount ?? 0);
                 $activityBudgetNet = $activityBudgetGross - $pooled;
 
+                $untouched = $activityBudgetNet - ($obligated + $pending);
+                $untouched = $untouched > 0 ? $untouched : 0;
+
+
                 return [
                     'name'              => $activity->name,
-                    'original_budget'   => (float) $activity->budget, 
-                    'activity_budget'   => $activityBudgetGross, // Gross Adjusted
-                    'net_budget'        => $activityBudgetNet,   // Adjusted - Pooled
+                    'activity_budget'   => $activityBudgetGross, 
+                    'net_budget'        => $activityBudgetNet,
                     'pooled_amount'     => $pooled,
-                    'pooled_remarks'    => $activity->pooled_remarks,
+                    'pending_amount'    => $pending,
+                    'savings'           => (float) $savings, // ADDED THIS KEY
                     'obligated_amount'  => $obligated,
                     'disbursed_amount'  => $disbursed,
-                    'unobligated'       => $activityBudgetNet - $obligated,
-                    // Rate should be against the Net Budget (what they actually have left to spend)
                     'obligation_rate'   => $activityBudgetNet > 0 ? ($obligated / $activityBudgetNet) * 100 : 0,
                     'disbursement_rate' => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
+                    'untouched_amount' => $untouched,
                 ];
             });
 
-            $totalObligated = $lineItems->sum('obligated_amount');
-            $totalDisbursed = $lineItems->sum('disbursed_amount');
-            
-            // Overall Source Unobligated is now based on the EFFECTIVE total (Source - Pools)
-            $overallUnobligated = $effectiveSourceTotal - $totalObligated;
+            $totalActivityBudget = $lineItems->sum('net_budget');
+            $unassignedBalance = $originalSourceTotal - $source->activities->sum('budget_adjusted');
 
             return [
                 'source_name'           => $source->name,
-                'source_total'          => $effectiveSourceTotal, // This is the Adjusted Total (Source - Pooled)
-                'original_source_total' => $originalSourceTotal,  // Kept for reference if needed
+                'source_total'          => $originalSourceTotal,
+                'unassigned_balance'    => $unassignedBalance,
                 'total_pooled'          => $totalPooledAmount,
                 'line_items'            => $lineItems,
-                'total_activity_budget' => $lineItems->sum('net_budget'),
-                'total_obligated'       => $totalObligated,
-                'total_disbursed'       => $totalDisbursed,
-                'total_unobligated'     => $overallUnobligated,
-                // Overall rate is now accurate to the "New" allotment
-                'overall_oblig_rate'    => $effectiveSourceTotal > 0 ? ($totalObligated / $effectiveSourceTotal) * 100 : 0,
-                'overall_disb_rate'     => $totalObligated > 0 ? ($totalDisbursed / $totalObligated) * 100 : 0,
+                'total_pending'         => $lineItems->sum('pending_amount'),
+                'total_savings'         => $lineItems->sum('savings'),
+                'total_untouched'       => $lineItems->sum('untouched_amount'),
+                'total_activity_budget' => $totalActivityBudget,
+                'total_obligated'       => $lineItems->sum('obligated_amount'),
+                'total_disbursed'       => $lineItems->sum('disbursed_amount'),
+                'overall_disb_rate'     => $lineItems->sum('obligated_amount') > 0 ? ($lineItems->sum('disbursed_amount') / $lineItems->sum('obligated_amount')) * 100 : 0,
+                'overall_oblig_rate'    => $totalActivityBudget > 0 ? ($lineItems->sum('obligated_amount') / $totalActivityBudget) * 100 : 0,
             ];
         });
 
         return view('admin.reports.by_line_item', compact('reportData', 'year'));
+    }
+
+    public function byTransactions(Request $request)
+    {
+        $year = $request->get('year', date('Y'));
+        $month = $request->get('month');
+        $quarter = $request->get('quarter');
+
+        $quarterMonths = [
+            1 => [1, 2, 3], 2 => [4, 5, 6],
+            3 => [7, 8, 9], 4 => [10, 11, 12],
+        ];
+
+        // 1. Fetch Sources and eager load filtered funds
+        $sources = \App\Models\SourceOfFund::where('fiscal_year', $year)
+            ->with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
+                $query->where(function($q) use ($year) {
+                    $q->whereYear('obligation_date', $year)
+                    ->orWhere(function($sub) use ($year) {
+                        $sub->whereNull('obligation_date')->whereYear('created_at', $year);
+                    });
+                })->whereNotIn('status', ['Cancelled', 'Rejected']);
+
+                if ($month) {
+                    $query->whereMonth('obligation_date', $month);
+                } elseif ($quarter && isset($quarterMonths[$quarter])) {
+                    $query->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter]);
+                }
+            }])->get();
+
+        // 2. Map data to match Line Item Report logic but keep transactions granular
+        $groupedData = $sources->map(function ($source) use ($year) {
+            $activities = $source->activities->map(function ($activity) use ($source, $year) {
+                
+                // STRICT FILTER: Match transaction to THIS activity within THIS source
+                $activityFunds = $source->funds->where('transaction_type_id', $activity->id);
+                
+                $obligated = (float) $activityFunds->sum('obligation_amount');
+                $disbursed = (float) $activityFunds->sum('disbursement_amount');
+
+                // PENDING logic from your line item report
+                $pending = (float) $activityFunds->filter(function($f) use ($year) {
+                    return (empty($f->obligation_date) || $f->obligation_amount <= 0) && 
+                        ($f->disbursement_amount <= 0);
+                })->sum('amount');
+
+                $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
+                $pooled = (float) ($activity->pooled_amount ?? 0);
+                $activityBudgetNet = $activityBudgetGross - $pooled;
+
+                $untouched = $activityBudgetNet - ($obligated + $pending);
+
+                return [
+                    'details'      => $activity,
+                    'net_budget'   => $activityBudgetNet,
+                    'obligated'    => $obligated,
+                    'disbursed'    => $disbursed,
+                    'pending'      => $pending,
+                    'untouched'    => $untouched > 0 ? $untouched : 0,
+                    'transactions' => $activityFunds->values() // Granular transactions for the ledger
+                ];
+            });
+
+            return [
+                'source_name' => $source->name,
+                'activities'  => $activities
+            ];
+        });
+
+        return view('admin.reports.by_transactions', compact('groupedData', 'year'));
     }
 
 }

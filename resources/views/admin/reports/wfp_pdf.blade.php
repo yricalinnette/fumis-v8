@@ -153,7 +153,7 @@
 
     {{-- Main Content --}}
     <table class="main-table">
-        <thead class="bg-gray">
+        <thead class="bg-white">
             <tr>
                 <th rowspan="2">BUDGET LINE ITEM</th>
                 <th rowspan="2">OBJECTIVE</th>

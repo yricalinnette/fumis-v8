@@ -117,9 +117,9 @@
                                 </a>
                             </li>
                             <li class="nav-item">
-                                <a href="#" class="nav-link">
+                                <a href="{{ route('reports.by_transactions') }}" class="nav-link">
                                     <i class="far fa-circle nav-icon text-success"></i>
-                                    <p>Disbursements</p>
+                                    <p>By Transactions</p>
                                 </a>
                             </li>
                         </ul>

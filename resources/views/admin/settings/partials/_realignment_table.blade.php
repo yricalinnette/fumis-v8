@@ -29,25 +29,36 @@
                     <tbody>
                         @foreach($source->activities as $activity)
                         @php
-                            // 1. Transactions already officially obligated
-                            $obligatedSum = $activity->transactions()->sum('obligation_amount') ?? 0;
+                            $currentYear = date('Y'); 
+
+                            // 1. OBLIGATED: Official commitments made in the current year
+                            // Based strictly on the official accounting OBLIGATION DATE
+                            $obligatedSum = $activity->transactions()
+                                ->whereYear('funds.obligation_date', $currentYear)
+                                ->sum('obligation_amount') ?? 0;
                             
-                            // 2. Transactions routed/processed but NOT YET obligated
-                            // We use 'amount' from the funds table for these
+                            // 2. PENDING (Routed): Requests made THIS YEAR but not yet obligated
+                            // Filtered by created_at to ensure we only lock funds for the current fiscal cycle
                             $pendingSum = $activity->transactions()
+                                ->whereYear('funds.created_at', $currentYear)
                                 ->where(function($q) {
-                                    $q->whereNull('obligation_amount')
-                                      ->orWhere('obligation_amount', 0);
+                                    $q->where(function($inner) {
+                                        $inner->whereNull('obligation_date')
+                                            ->orWhere('obligation_amount', 0);
+                                    })
+                                    // Safety: Ensure we don't count transactions that were cancelled or failed
+                                    ->whereNotIn('status', ['Cancelled', 'Rejected']); 
                                 })
                                 ->sum('amount') ?? 0;
 
-                            // 3. Savings/Pooled
+                            // 3. Savings/Pooled 
                             $pooledAmount = $activity->pooled_amount ?? 0;
 
                             // 4. THE ABSOLUTE FLOOR: 
-                            // Current Budget cannot go below (Obligated + Pending + Pooled)
+                            // This represents the "Non-Touchables" for the current year
                             $totalLocked = $obligatedSum + $pendingSum + $pooledAmount;
 
+                            // 5. CALCULATION
                             $currentBudget = $activity->budget_adjusted ?? $activity->budget;
                             $availableForRealignment = $currentBudget - $totalLocked;
                         @endphp

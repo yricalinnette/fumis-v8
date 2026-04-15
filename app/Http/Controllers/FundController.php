@@ -52,143 +52,251 @@ class FundController extends Controller
         $isAdmin = ($currentUser->is_admin || $currentUser->id == 1 || $currentUser->username === 'admin');
 
         // --- 1. FETCH BASE DATA ---
-        $userSecId = null;
-        if (!$isAdmin) {
-            $localDetail = \DB::table('employee_details')->where('user_id', $currentUser->id)->first();
+        if ($isAdmin) {
+            $baseQuery = \App\Models\Fund::query();
+        } else {
+            // 1. Get the current user's section ID
+            // We look at the local employee_details first to find the dbedid
+            $localDetail = \DB::table('employee_details')
+                ->where('user_id', $currentUser->id)
+                ->first();
+
+            $userSecId = null;
             if ($localDetail) {
+                // Find the actual section ID from the common database
                 $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
                     ->where('dbedid', $localDetail->dbedid)
                     ->value('secid');
             }
-        }
 
-        $baseQuery = \App\Models\Fund::query();
-        if (!$isAdmin) {
-            $baseQuery->where(function($q) use ($currentUser, $userSecId) {
+            // 2. Fetch funds where the user is the owner OR it belongs to their section
+            // This fixes the "Missing Transaction" 131 if it were assigned to your section
+            $baseQuery = \App\Models\Fund::where(function($q) use ($currentUser, $userSecId) {
                 $q->where('user_id', $currentUser->id);
-                if ($userSecId) $q->orWhere('secid', $userSecId);
+                if ($userSecId !== null) {
+                    $q->orWhere('secid', $userSecId);
+                }
             });
         }
 
-        $fundsCollection = $baseQuery->with(['fundSource', 'activity'])
+        // Execute the collection
+        $fundsCollection = $baseQuery->with(['fundSource', 'activity', 'creditors.employeeDetail'])
             ->whereNotNull('dtrack_no')
             ->where('dtrack_no', '!=', '')
             ->orderBy('created_at', 'desc')
             ->get();
 
-        // --- 2. EMPLOYEE & SECTION LOGIC ---
+        // --- 2. EMPLOYEE LOGIC 
         $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
-        
-        // Optimized Employee Fetching (Same as your logic but cleaned)
+
         $involvedIds = \DB::table('employee_fund')
             ->whereIn('fund_id', $fundsCollection->pluck('id'))
-            ->pluck('user_id')->unique()->toArray();
+            ->pluck('user_id')
+            ->unique()
+            ->toArray();
+
+        // Get section for label
+        $myDetails = DB::connection('db_common')->table('tbl_emp_details')
+            ->leftJoin('tbl_section', 'tbl_emp_details.secid', '=', 'tbl_section.secid')
+            ->where('tbl_emp_details.empid', $currentUser->empid)
+            ->select('tbl_section.secname', 'tbl_emp_details.secid')
+            ->orderBy('tbl_emp_details.dbedid', 'desc')
+            ->first();
+
+        $latestDetails = DB::connection('db_common')->table('tbl_emp_details')
+            ->select('empid', DB::raw('MAX(dbedid) as latest_id'))
+            ->groupBy('empid');
 
         $query = DB::connection('db_common')->table('tbl_employee')
-            ->join('tbl_emp_details', 'tbl_employee.empid', '=', 'tbl_emp_details.empid')
+            ->joinSub($latestDetails, 'latest_status', function ($join) {
+                $join->on('tbl_employee.empid', '=', 'latest_status.empid');
+            })
+            ->join('tbl_emp_details', 'latest_status.latest_id', '=', 'tbl_emp_details.dbedid')
             ->leftJoin('tbl_section', 'tbl_emp_details.secid', '=', 'tbl_section.secid')
             ->where('tbl_employee.isactive', 1)
             ->select(
-                'tbl_emp_details.dbedid', 'tbl_emp_details.secid', 'tbl_section.secname',
+                'tbl_emp_details.dbedid',
+                'tbl_section.secname', 
                 DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)) as fname"),
                 DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.mname, '{$key}') AS CHAR)) as mname"),
                 DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)) as lname"),
                 DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.suffix, '{$key}') AS CHAR)) as suffix")
-            );
+            )
+            ->orderBy(DB::raw("CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)"), 'asc')
+            ->orderBy(DB::raw("CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)"), 'asc');
 
-        // Filter employees based on section or involvement
-        if (!$isAdmin) {
-            $query->where(function($q) use ($userSecId, $involvedIds) {
-                $q->where('tbl_emp_details.secid', $userSecId);
-                if (!empty($involvedIds)) $q->orWhereIn('tbl_emp_details.dbedid', $involvedIds);
+        if (!$currentUser->is_admin) {
+            $mySectionId = $currentUser->live_info->secid ?? ($myDetails->secid ?? null);
+            
+            // Filter: Show employees in my section OR anyone involved in the loaded transactions
+            $query->where(function($q) use ($mySectionId, $involvedIds) {
+                $q->where('tbl_emp_details.secid', '=', $mySectionId);
+                
+                if (!empty($involvedIds)) {
+                    $q->orWhereIn('tbl_emp_details.dbedid', $involvedIds);
+                }
             });
         }
 
+        // Process and index by DBEDID
         $employees = $query->get()->map(function($emp) {
-            $mi = $emp->mname ? ' ' . substr($emp->mname, 0, 1) . '.' : '';
-            $emp->fullname = "{$emp->lname}, {$emp->fname}{$mi}" . ($emp->suffix ? " {$emp->suffix}" : "");
+            // SAFETY: Force UTF-8 encoding to prevent "Malformed UTF-8" crashes
+            $clean = function($str) {
+                return $str ? mb_convert_encoding($str, 'UTF-8', 'UTF-8') : '';
+            };
+
+            $fname = $clean($emp->fname);
+            $mname = $clean($emp->mname);
+            $lname = $clean($emp->lname);
+            $suffix = $clean($emp->suffix);
+
+            $middleInitial = $mname ? ' ' . substr($mname, 0, 1) . '.' : '';
+            $suffixStr = $suffix ? ' ' . $suffix : '';
+            
+            $emp->fullname = "{$lname}, {$fname}{$middleInitial}{$suffixStr}";
+            
+            // Update the properties with cleaned strings so JS doesn't crash later
+            $emp->fname = $fname;
+            $emp->mname = $mname;
+            $emp->lname = $lname;
+            $emp->suffix = $suffix;
+
             return $emp;
         })->keyBy('dbedid');
 
-        // --- 3. GROUP AND MAP WITH GRANULAR FINANCIALS ---
+        // --- 3. GROUP AND MAP (NOW USING $employees) ---
         $funds = $fundsCollection->groupBy('dtrack_no')->map(function ($group) use ($employees) {
             $first = $group->first();
 
-            // Financial Accumulators
-            $totalNetBudget = 0;
-            $totalObligated = 0;
-            $totalDisbursed = 0;
-            $totalRoutedPending = 0; // "In-Transit"
+            $dbedids = \DB::table('employee_fund')
+                ->whereIn('fund_id', $group->pluck('id'))
+                ->pluck('user_id')
+                ->unique();
 
-            $breakdown = $group->map(function($item) use (&$totalNetBudget, &$totalObligated, &$totalDisbursed, &$totalRoutedPending) {
-                $pooled = $item->pooled_amount ?? 0;
-                $net = ($item->amount > 0 ? $item->amount : ($item->budget_original ?? 0)) - $pooled;
-                
-                $ob = $item->obligation_amount ?? 0;
-                $db = $item->disbursement_amount ?? 0;
-
-                // Logic: Pending Routed are items "For CAF/Obligation" but not yet "Obligated"
-                $isPending = ($item->status === 'For CAF/Obligation' && $ob == 0);
-                $pendingAmt = $isPending ? $net : 0;
-
-                // Totals for the Group Row
-                $totalNetBudget += $net;
-                $totalObligated += $ob;
-                $totalDisbursed += $db;
-                $totalRoutedPending += $pendingAmt;
+            // 2. Map those IDs to the Names from your $employees collection
+            $mappedCreditors = $dbedids->map(function($id) use ($employees) {
+                // Look for the employee in the collection we fetched from db_common
+                $emp = $employees->get($id);
 
                 return (object) [
-                    'id' => $item->id,
-                    'source_name' => $item->fundSource->name ?? 'N/A',
-                    'activity_name' => $item->activity->name ?? 'N/A',
-                    'net_budget' => $net,
-                    'status' => $item->status,
-                    'obligation_amount' => $ob,
-                    'disbursement_amount' => $db,
-                    'pending_routed' => $pendingAmt,
-                    'savings' => ($db > 0 && $db < $ob) ? ($ob - $db) : 0,
-                    'untouched' => ($ob == 0 && !$isPending) ? $net : 0,
-                    'obligation_serial' => $item->obligation_serial,
+                    'full_name' => $emp ? $emp->fullname : "ID: $id (Not found in section)"
                 ];
             });
 
-            // Map Creditors
-            $dbedids = \DB::table('employee_fund')->whereIn('fund_id', $group->pluck('id'))->pluck('user_id')->unique();
-            $mappedCreditors = $dbedids->map(fn($id) => (object)['full_name' => $employees->get($id)->fullname ?? "ID: $id"]);
+            // Calculations and Status logic
+            $calculatedTotal = $group->sum(function($item) {
+                if (in_array($item->status, ['Disbursed', 'Completed']) && $item->disbursement_amount > 0) {
+                    return $item->disbursement_amount;
+                }
+                return ($item->obligation_amount > 0) ? $item->obligation_amount : $item->amount;
+            });
+
+            $hasDisbursed = $group->contains('status', 'Disbursed');
+            $hasCompleted = $group->contains('status', 'Completed');
+            $hasObligated = $group->contains('status', 'Obligated');
+
+            if ($hasDisbursed || $hasCompleted) {
+                $priorityStatus = 'Disbursed';
+            } elseif ($hasObligated) {
+                $priorityStatus = 'Obligated';
+            } else {
+                $priorityStatus = $first->status;
+            }
 
             return (object) [
-                'id'             => $first->id,
-                'dtrack_no'      => $first->dtrack_no,
-                'particulars'    => $first->particulars,
-                'transaction_date' => $first->transaction_date,
-                'created_at'     => $first->created_at,
-                'creditors'      => $mappedCreditors,
-                'total_net'      => $totalNetBudget,
-                'total_ob'       => $totalObligated,
-                'total_db'       => $totalDisbursed,
-                'total_pending'  => $totalRoutedPending,
-                'total_savings'  => $breakdown->sum('savings'),
-                'total_untouched'=> $breakdown->sum('untouched'),
-                'group_status'   => $this->getPriorityStatus($group),
-                'breakdown'      => $breakdown
+                'id'                 => $first->id,
+                'dtrack_no'          => $first->dtrack_no,
+                'transaction_date'   => $first->transaction_date,
+                'particulars'        => $first->particulars,
+                'secid'              => $first->secid,
+                'created_at'         => $first->created_at,
+                'creditors'          => $mappedCreditors, 
+                'total_amount'       => $calculatedTotal,
+                'group_status'       => $priorityStatus,
+                'source_names'       => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
+                'activity_names'     => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
+                'is_fully_synced'    => !$group->contains(function ($item) {
+                        $isObligatedMissing = ($item->status === 'Obligated' && (empty($item->obligation_amount) || $item->obligation_amount <= 0));
+                        $isDisbursedMissing = (in_array($item->status, ['Disbursed', 'Completed']) && (empty($item->disbursement_amount) || $item->disbursement_amount <= 0));
+                        return $isObligatedMissing || $isDisbursedMissing;
+                    }),
+                'breakdown'          => $group->map(function($item) {
+                    return (object) [
+                        'id'     => $item->id,
+                        'source_name'         => $item->fundSource->name ?? 'N/A', 
+                        'activity_name'       => $item->activity->name ?? 'N/A',
+                        'amount'              => $item->amount,
+                        'status'              => $item->status,
+                        'remarks'             => $item->remarks,
+                        'obligation_serial'   => $item->obligation_serial,
+                        'obligation_amount'   => $item->obligation_amount,
+                        'obligation_date'     => $item->obligation_date,
+                        'disbursement_amount' => $item->disbursement_amount,
+                        'disbursement_date'   => $item->disbursement_date,
+                        'status_date'         => $item->status_date,
+                    ];
+                }),
             ];
-        })->values();
+        })->sortByDesc('created_at')->values();
 
-        // Stats for Dashboard Widgets
-        $awaitingSyncCount = \App\Models\Fund::where('status', 'Obligated')->whereNull('disbursement_date')->count();
-        $awaitingOBRN = \App\Models\Fund::where('status', 'For CAF/Obligation')->whereNull('obligation_serial')->count();
-        $allSections = $isAdmin ? \DB::connection('db_common')->table('tbl_section')->where('isactive', 1)->pluck('secname', 'secid')->toArray() : [];
+        $userSectionName = ($currentUser->is_admin) ? 'All Personnel' : ($myDetails->secname ?? 'Assigned Section');
+        $sources = \App\Models\SourceOfFund::where('fiscal_year', date('Y'))->orderBy('name')->get();
 
-        return view('funds.index', compact('funds', 'employees', 'awaitingSyncCount', 'awaitingOBRN', 'allSections', 'isAdmin'));
-    }
+        $user = auth()->user();
 
-    /**
-     * Helper to determine the priority status of a group
-     */
-    private function getPriorityStatus($group) {
-        if ($group->contains('status', 'Disbursed')) return 'Disbursed';
-        if ($group->contains('status', 'Obligated')) return 'Obligated';
-        return $group->first()->status;
+        // 1. Determine the Section Filter
+        // If admin (ID 1), we don't apply a section filter (show all)
+        // Otherwise, we filter by the user's specific secid
+        $isSectionAdmin = ($user->id == 1 || $user->username === 'admin');
+
+        // 2. Base Query for Awaiting Sync
+        $syncQuery = \App\Models\Fund::where('status', 'Obligated')
+                        ->whereNull('disbursement_date')
+                        ->whereNotNull('obligation_serial');
+
+        // 3. Base Query for Awaiting OBRN
+        $obrnQuery = \App\Models\Fund::where('status', 'For CAF/Obligation')
+                        ->whereNull('obligation_serial');
+
+        // 4. Apply Section Filter if NOT Admin
+        if (!$isSectionAdmin) {
+            // We need to find the user's secid to filter their view
+            // Using the same logic from your store/update methods
+            $localDetail = \DB::table('employee_details')
+                ->where('user_id', $user->id)
+                ->select('dbedid')
+                ->first();
+
+            if ($localDetail && $localDetail->dbedid) {
+                $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+                
+                // Apply the filter to both queries
+                $syncQuery->where('secid', $userSecId);
+                $obrnQuery->where('secid', $userSecId);
+            } else {
+                // Fallback: If no mapping found, show 0 counts to prevent data leakage
+                $syncQuery->where('id', 0); 
+                $obrnQuery->where('id', 0);
+            }
+        }
+
+        // 5. Execute the counts
+        $awaitingSyncCount = $syncQuery->count();
+        $awaitingOBRN = $obrnQuery->count();
+
+        $allSections = $isAdmin 
+            ? \DB::connection('db_common')
+                ->table('tbl_section')
+                ->where('isactive', 1) // Only pull records where isactive is 1
+                ->orderBy('secname', 'asc')
+                ->pluck('secname', 'secid')
+                ->toArray() 
+            : [];
+
+        return view('funds.index', compact('funds', 'sources', 'employees', 'userSectionName', 'awaitingSyncCount', 
+        'awaitingOBRN', 'allSections', 'isAdmin'));
     }
         
     public function store(Request $request)

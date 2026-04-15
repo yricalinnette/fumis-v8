@@ -789,40 +789,18 @@ class SettingsController extends Controller
             ->where('source_of_fund_id', $fundSource->id)
             ->get();
 
-        // Logic for SAA or Consolidated    
-        $fundName = strtoupper(trim($fundSource->name ?? ''));
-
-        // 2. SAA Check: Only checks if 'SAA' is present in the fund source name
-        $isSAA = str_contains($fundName, 'SAA');
-
-        // 3. Consolidated Check: Strict Acronym Matching
-        $isConsolidated = false;
+        // Logic for SAA or Consolidated
+        $fundName = $fundSource->name ?? '';
+        $isSAA = str_contains(strtoupper($fundName), 'SAA');
         $firstAct = $activities->first();
+        $isConsolidated = false;
 
         if ($firstAct && $firstAct->budgetLineItem) {
-            $bliName = strtoupper(trim($firstAct->budgetLineItem->budget_line_item_name));
-            
-            // Define the exact acronym mapping
-            $acronymMap = [
-                'DISEASE PREVENTION AND CONTROL' => 'DPC',
-                'HEALTH INFORMATION TECHNOLOGY'  => 'HIT',
-            ];
-
-            // LOGIC: 
-            // If BLI is "DISEASE PREVENTION AND CONTROL", 
-            // it will ONLY be consolidated if the Fund Source is exactly "DPC".
-            if ($bliName === $fundName) {
+            if (trim(strtoupper($firstAct->budgetLineItem->budget_line_item_name)) == trim(strtoupper($fundName))) {
                 $isConsolidated = true;
-            } elseif (isset($acronymMap[$bliName])) {
-                // Change from str_contains to === for strict matching
-                if ($fundName === $acronymMap[$bliName]) {
-                    $isConsolidated = true;
-                }
             }
         }
 
-        // Result: DPC-ICTU will now return FALSE for $isConsolidated, 
-        // leading to $currentWfpType = 'program' (2 signatories).
         $currentWfpType = ($isSAA || $isConsolidated) ? 'saa' : 'program';
 
         // Fetch Signatories

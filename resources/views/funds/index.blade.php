@@ -365,7 +365,7 @@
                 @foreach($funds as $fund)
                 @php $firstItem = $fund->breakdown->first(); @endphp
                 
-                <tr class="{{ $firstItem->status == 'Disbursed' ? 'table-light' : '' }} fund-row" data-section="{{ $allSections[$fund->secid] ?? 'Admin' }}">
+                <tr class="{{ $firstItem->status == 'Disbursed' ? 'table-light' : '' }} fund-row" data-section="{{ $allSections[$fund->secid ?? 0] ?? 'Admin' }}">
                     <td class="text-center col-dtrack" data-order="{{ \Carbon\Carbon::parse($fund->created_at)->timestamp }}">
                         <a href="#" class="view-dtrack font-weight-bold" 
                         data-particulars="{{ e($fund->particulars ?? 'No particulars') }}" 
@@ -376,21 +376,16 @@
                     <td class="col-date" data-order="{{ \Carbon\Carbon::parse($fund->transaction_date)->format('Y-m-d') }}">
                         {{ \Carbon\Carbon::parse($fund->transaction_date)->format('M d, Y') }}
                     </td>
-                    @if(auth()->user()->is_admin)
+                   @if($isAdmin)
                         <td>
                             @php
-                                // Look up the name in the $allSections array passed from the controller
-                                $sectionName = $allSections[$fund->secid] ?? 'Admin';
+                                // Use ?? 0 to trigger the 'Admin' default if secid is missing or null
+                                $sectionName = $allSections[$fund->secid ?? 0] ?? 'Admin';
                             @endphp
 
-                            <span class="badge {{ $fund->secid ? 'bg-info text-dark' : 'bg-secondary' }}">
+                            <span class="badge {{ ($fund->secid ?? null) ? 'bg-info text-dark' : 'bg-secondary' }}">
                                 {{ $sectionName }}
                             </span>
-                            
-                            {{-- Optional: Show the ID on hover for debugging --}}
-                            {{-- <small class="d-block text-muted" style="font-size: 0.6rem;">
-                                ID: {{ $fund->secid ?? '0' }}
-                            </small> --}}
                         </td>
                     @endif
                     <td class="col-creditor">
