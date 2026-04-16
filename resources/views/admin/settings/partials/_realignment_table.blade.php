@@ -22,7 +22,7 @@
                             <th class="text-right text-orange">Pending Transactions (Routed)</th>
                             <th class="text-right text-danger">Obligated</th>
                             <th class="text-right text-info">Pooled</th>
-                            <th class="text-right">Available</th>
+                            <th class="text-right">Available Fund for Realignment</th>
                             <th class="text-right" width="200">New Adjusted Budget</th>
                         </tr>
                     </thead>

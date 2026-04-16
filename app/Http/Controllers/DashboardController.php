@@ -14,58 +14,65 @@ class DashboardController extends Controller
     {
         $selectedYear = $request->get('year', date('Y'));
 
-        // Load sources with all funds related to the selected year (either by creation or obligation)
+        // 1. Fetch Sources for the Fiscal Year
         $sources = \App\Models\SourceOfFund::where('fiscal_year', $selectedYear)
             ->with(['activities', 'funds' => function($query) use ($selectedYear) {
                 $query->where(function($q) use ($selectedYear) {
-                    $q->whereYear('created_at', $selectedYear)
-                    ->orWhereYear('obligation_date', $selectedYear);
-                })->where('status', '!=', 'Cancelled'); // Common practice to exclude cancelled
+                    // Filter: Either it was obligated this year, OR it's a pending item created this year
+                    $q->whereYear('obligation_date', $selectedYear)
+                    ->orWhere(function($sub) use ($selectedYear) {
+                        $sub->whereNull('obligation_date')
+                            ->whereYear('created_at', $selectedYear);
+                    });
+                })->whereNotIn('status', ['Cancelled', 'Rejected']);
             }])->get();
 
         $chartData = $sources->map(function ($source) use ($selectedYear) {
+            // --- BUDGET CALCULATIONS ---
             $originalAllotted = (float) $source->total_amount;
             $totalPooled = (float) $source->activities->sum('pooled_amount');
             $adjustedAllotted = $originalAllotted - $totalPooled;
 
-            // 1. PROCESSED TOTAL (Based on created_at)
-            // Only sum funds created in the selected year
-            $processedTotal = $source->funds
-                ->whereStrict('created_at.year', (int)$selectedYear) // Ensure year matches
-                ->sum(function ($fund) {
-                    return (is_null($fund->obligation_amount) || $fund->obligation_amount == 0)
-                        ? (float) $fund->amount 
-                        : (float) $fund->obligation_amount;
-                });
+            // --- 1. OBLIGATED TOTAL ---
+            // Sum only if obligation_date is within the selected year
+            $obligatedTotal = $source->funds->filter(function($f) use ($selectedYear) {
+                return $f->obligation_date && \Carbon\Carbon::parse($f->obligation_date)->year == $selectedYear;
+            })->sum('obligation_amount');
 
-            // 2. OBLIGATED TOTAL (Based on obligation_date)
-            // Only sum funds that have an obligation date in the selected year
-            $strictlyObligated = $source->funds
-                ->filter(function($fund) use ($selectedYear) {
-                    return $fund->obligation_date && \Carbon\Carbon::parse($fund->obligation_date)->year == $selectedYear;
-                })
-                ->sum('obligation_amount');
+            // --- 2. DISBURSED TOTAL ---
+            $disbursedTotal = $source->funds->filter(function($f) use ($selectedYear) {
+                return $f->obligation_date && \Carbon\Carbon::parse($f->obligation_date)->year == $selectedYear;
+            })->sum('disbursement_amount');
 
-            // 3. DISBURSED TOTAL
-            $disbursed = $source->funds
-                ->filter(function($fund) use ($selectedYear) {
-                    return $fund->obligation_date && \Carbon\Carbon::parse($fund->obligation_date)->year == $selectedYear;
-                })
-                ->sum('disbursement_amount');
+            // --- 3. PENDING TOTAL (Matches your Report Logic) ---
+            // Items created this year but not yet obligated
+            $pendingTotal = $source->funds->filter(function($f) use ($selectedYear) {
+                return (empty($f->obligation_date) || $f->obligation_amount <= 0) && 
+                    ($f->disbursement_amount <= 0) &&
+                    $f->created_at->year == $selectedYear;
+            })->sum('amount');
+
+            // --- 4. PROCESSED TOTAL (Obligated + Pending) ---
+            $processedTotal = $obligatedTotal + $pendingTotal;
             
+            // --- 5. UNTOUCHED (Remaining balance including un-processed funds) ---
+            $untouchedBudget = $adjustedAllotted - $processedTotal;
+
             return [
                 'name'              => $source->name,
                 'original_allotted' => $originalAllotted,
                 'total_allotted'    => $adjustedAllotted,
                 'total_pooled'      => $totalPooled,
                 'processed_total'   => $processedTotal, 
-                'remaining_budget'  => $adjustedAllotted - $processedTotal,
-                'obligated_total'   => $strictlyObligated,
-                'disbursed_total'   => $disbursed,
+                'pending_total'     => $pendingTotal,
+                'remaining_budget'  => $untouchedBudget > 0 ? $untouchedBudget : 0,
+                'obligated_total'   => $obligatedTotal,
+                'disbursed_total'   => $disbursedTotal,
                 
+                // Rates
                 'percent'           => $adjustedAllotted > 0 ? round(($processedTotal / $adjustedAllotted) * 100, 1) : 0,
-                'ob_rate'           => $adjustedAllotted > 0 ? round(($strictlyObligated / $adjustedAllotted) * 100, 1) : 0,
-                'disb_rate'         => $strictlyObligated > 0 ? round(($disbursed / $strictlyObligated) * 100, 1) : 0,
+                'ob_rate'           => $adjustedAllotted > 0 ? round(($obligatedTotal / $adjustedAllotted) * 100, 1) : 0,
+                'disb_rate'         => $obligatedTotal > 0 ? round(($disbursedTotal / $obligatedTotal) * 100, 1) : 0,
                 
                 'last_updated'      => $source->funds->max('updated_at') 
                                         ? $source->funds->max('updated_at')->diffForHumans() 

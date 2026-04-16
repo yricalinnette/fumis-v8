@@ -16,27 +16,10 @@
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
     <style>
-        /* Sidebar Navy Theme Consistency */
-        .main-sidebar {
-            background-color: #001f3f !important; /* AdminLTE Navy */
-        }
-
-        .nav-sidebar .nav-link.active {
-            background-color: #17a2b8 !important; /* Match your info theme */
-            color: #fff !important;
-        }
-
-        .nav-header {
-            font-size: 0.75rem;
-            letter-spacing: 1px;
-            padding: 0.5rem 1rem !important;
-            color: #888 !important;
-        }
-
-        /* Ensure the sidebar doesn't overlap the content */
-        .content-wrapper {
-            transition: margin-left .3s ease-in-out;
-        }
+        .main-sidebar { background-color: #001f3f !important; }
+        .nav-sidebar .nav-link.active { background-color: #17a2b8 !important; color: #fff !important; }
+        .nav-header { font-size: 0.75rem; letter-spacing: 1px; padding: 0.5rem 1rem !important; color: #888 !important; }
+        .content-wrapper { transition: margin-left .3s ease-in-out; }
     </style>
 </head>
 <body class="hold-transition sidebar-mini layout-fixed">
@@ -52,22 +35,17 @@
 
     <aside class="main-sidebar sidebar-dark-primary elevation-4">
         <a href="{{ url('/dashboard') }}" class="brand-link">
-            <img src="{{ asset('images/doh_logo.jpg') }}" 
-                alt="DOH Logo" 
-                class="brand-image img-circle elevation-3" 
-                style="opacity: .8">
+            <img src="{{ asset('images/doh_logo.jpg') }}" alt="DOH Logo" class="brand-image img-circle elevation-3" style="opacity: .8">
             <span class="brand-text font-weight-bold">FUMS</span>
         </a>
 
         <div class="sidebar">
             <div class="user-panel mt-3 pb-3 mb-3 d-flex align-items-center">
                 <div class="image">
-                    {{-- Using a slightly larger icon with better centering --}}
                     <i class="fas fa-user-circle fa-2x text-white-50 mt-1"></i>
                 </div>
                 <div class="info ml-2">
                     <a href="#" class="d-block text-white font-weight-bold mb-0" style="line-height: 1.2; font-size: 0.9rem;">
-                        {{-- Safely handle the name display --}}
                         {{ Auth::user()->username ?? 'User Account' }}
                     </a>
                 </div>
@@ -97,10 +75,7 @@
                     <li class="nav-item {{ request()->is('reports*') ? 'menu-open' : '' }}">
                         <a href="#" class="nav-link {{ request()->is('reports*') ? 'active' : '' }}">
                             <i class="nav-icon fas fa-chart-pie"></i>
-                            <p>
-                                Budget Tracking
-                                <i class="right fas fa-angle-left"></i>
-                            </p>
+                            <p>Budget Tracking <i class="right fas fa-angle-left"></i></p>
                         </a>
                         <ul class="nav nav-treeview">
                             <li class="nav-item">
@@ -110,14 +85,13 @@
                                 </a>
                             </li>
                             <li class="nav-item">
-                                <a href="{{ route('reports.by_line_item') }}" 
-                                class="nav-link {{ request()->routeIs('reports.by_line_item') ? 'active' : '' }}">
+                                <a href="{{ route('reports.by_line_item') }}" class="nav-link {{ request()->routeIs('reports.by_line_item') ? 'active' : '' }}">
                                     <i class="far fa-circle nav-icon text-primary"></i>
                                     <p>By Line Item</p>
                                 </a>
                             </li>
                             <li class="nav-item">
-                                <a href="{{ route('reports.by_transactions') }}" class="nav-link">
+                                <a href="{{ route('reports.by_transactions') }}" class="nav-link {{ request()->routeIs('reports.by_transactions') ? 'active' : '' }}">
                                     <i class="far fa-circle nav-icon text-success"></i>
                                     <p>By Transactions</p>
                                 </a>
@@ -130,58 +104,49 @@
                     <li class="nav-item {{ request()->is('settings*') ? 'menu-open' : '' }}">
                         <a href="#" class="nav-link {{ request()->is('settings*') ? 'active' : '' }}">
                             <i class="nav-icon fas fa-cogs"></i>
-                            <p>
-                                Settings
-                                <i class="right fas fa-angle-left"></i>
-                            </p>
+                            <p>Settings <i class="right fas fa-angle-left"></i></p>
                         </a>
                         <ul class="nav nav-treeview">
                             
-
-                            {{-- Submenu 1: Budget Line Items --}}
+                            {{-- Visible to Everyone: WFP --}}
                             <li class="nav-item">
-                                <a href="{{ route('settings.budget_line_items') }}" 
-                                class="nav-link {{ request()->routeIs('settings.budget_line_items') ? 'active' : '' }}">
-                                    <i class="fas fa-wallet nav-icon text-primary"></i>
-                                    <p>Budget Line Items</p>
-                                </a>
-                            </li>
-
-                            {{-- Submenu 2: fUND SOURCE --}}
-                            <li class="nav-item">
-                                <a href="{{ route('settings.fund_sources') }}" 
-                                class="nav-link {{ request()->routeIs('settings.fund_sources') ? 'active' : '' }}">
-                                    <i class="fas fa-database nav-icon text-success"></i>
-                                    <p>Fund Sources</p>
-                                </a>
-                            </li>
-
-                            {{-- Submenu 2: UACS Codes --}}
-                            <li class="nav-item">
-                                <a href="{{ route('settings.uacs_codes') }}" 
-                                class="nav-link {{ request()->routeIs('settings.uacs_codes') ? 'active' : '' }}">
-                                    <i class="fas fa-code nav-icon text-primary"></i>
-                                    <p>UACS Codes</p>
-                                </a>
-                            </li>
-
-                            {{-- Submenu 3: WFP --}}
-                            <li class="nav-item">
-                                <a href="{{ route('settings.index') }}" 
-                                class="nav-link {{ request()->routeIs('settings.index') ? 'active' : '' }}">
-                                    <i class="fas fa-database nav-icon text-warning"></i>
+                                <a href="{{ route('settings.index') }}" class="nav-link {{ request()->routeIs('settings.index') ? 'active' : '' }}">
+                                    <i class="fas fa-file-signature nav-icon text-warning"></i>
                                     <p>WFP Configuration</p>
                                 </a>
                             </li>
+
+                            {{-- Visible to Budget Section & Admin Only --}}
+                            @can('budget-section')
+                                <li class="nav-item">
+                                    <a href="{{ route('settings.budget_line_items') }}" class="nav-link {{ request()->routeIs('settings.budget_line_items') ? 'active' : '' }}">
+                                        <i class="fas fa-wallet nav-icon text-primary"></i>
+                                        <p>Budget Line Items</p>
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a href="{{ route('settings.fund_sources') }}" class="nav-link {{ request()->routeIs('settings.fund_sources') ? 'active' : '' }}">
+                                        <i class="fas fa-database nav-icon text-success"></i>
+                                        <p>Fund Sources</p>
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a href="{{ route('settings.uacs_codes') }}" class="nav-link {{ request()->routeIs('settings.uacs_codes') ? 'active' : '' }}">
+                                        <i class="fas fa-code nav-icon text-primary"></i>
+                                        <p>UACS Codes</p>
+                                    </a>
+                                </li>
+                            @endcan
                             
-                            {{-- Submenu 4: Account Management --}}
-                            <li class="nav-item">
-                                <a href="{{ route('settings.accounts') }}" 
-                                class="nav-link {{ request()->routeIs('settings.accounts') ? 'active' : '' }}">
-                                    <i class="fas fa-user-shield nav-icon text-success"></i>
-                                    <p>Account Management</p>
-                                </a>
-                            </li>
+                            {{-- ONLY SHOW TO ADMIN: Account Management --}}
+                            @can('admin-only')
+                                <li class="nav-item">
+                                    <a href="{{ route('settings.accounts') }}" class="nav-link {{ request()->routeIs('settings.accounts') ? 'active' : '' }}">
+                                        <i class="nav-icon fas fa-users-cog text-info"></i>
+                                        <p>Account Management</p>
+                                    </a>
+                                </li>
+                            @endcan
                         </ul>
                     </li>
 
@@ -201,15 +166,10 @@
 
     <div class="content-wrapper">
         <div class="content-header">
-            <div class="container-fluid">
-                @yield('header') 
-            </div>
+            <div class="container-fluid">@yield('header')</div>
         </div>
-        <div class="content-header"></div>
         <section class="content">
-            <div class="container-fluid">
-                @yield('content')
-            </div>
+            <div class="container-fluid">@yield('content')</div>
         </section>
     </div>
 </div>

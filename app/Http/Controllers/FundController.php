@@ -580,30 +580,38 @@ class FundController extends Controller
             Fund::whereIn('id', $rowsToDelete)->delete();
 
             // 4. Process each allocation
-            foreach ($request->allocations as $alloc) {
-                $data = [
-                    'dtrack_no'           => $request->dtrack_no,
-                    'transaction_date'    => $request->transaction_date,
-                    'particulars'         => $request->particulars,
-                    'source_of_fund_id'   => $alloc['source_id'],
-                    'transaction_type_id' => $alloc['activity_id'],
-                    'amount'              => $alloc['amount'],
-                    'status'              => $primaryFund->status,
-                    'secid'               => $secid, // Apply the fetched secid
-                ];
+            foreach ($activityFunds as $fund) {
+                // Only sync if:
+                // 1. It has a Dtrack number
+                // 2. It is NOT yet disbursed
+                // 3. It hasn't been updated in the last 30 minutes
+                $isStale = !$fund->updated_at || $fund->updated_at->diffInMinutes(now()) > 30;
 
-                if (!empty($alloc['id'])) {
-                    // UPDATE existing row
-                    $row = Fund::find($alloc['id']);
-                    $row->update($data);
-                } else {
-                    // CREATE new row (for multi-fund splits added during edit)
-                    $data['user_id'] = auth()->id(); 
-                    $row = Fund::create($data);
+                if ($fund->dtrack_no && $fund->status !== 'Disbursed' && $isStale) {
+                    try {
+                        $externalData = $dtrackService->getDTrackStatus($fund->dtrack_no);
+                        $logs = $externalData['doc_register_destination'] ?? [];
+                        $latestLog = !empty($logs) ? end($logs) : null;
+
+                        if ($latestLog) {
+                            $dtrackStatus = $latestLog['actreq_desc'] ?? '';
+                            $office = $latestLog['dest_office'] ?? 'Unknown Office';
+                            
+                            if ($fund->status === 'Obligated') {
+                                $fund->remarks = "Currently at: {$office} ({$dtrackStatus})";
+                            } else {
+                                $fund->status = $this->mapStatus($dtrackStatus); 
+                                $fund->remarks = "Currently at: {$office}";
+                            }
+
+                            $fund->status_date = now();
+                            // Save to database so 'updated_at' is refreshed and we don't sync again immediately
+                            $fund->save(); 
+                        }
+                    } catch (\Exception $e) {
+                        \Log::error("DTrack Sync failed for {$fund->dtrack_no}: " . $e->getMessage());
+                    }
                 }
-
-                // Sync Payees for this specific row
-                $row->creditors()->sync($request->input('creditor_ids', []));
             }
 
             DB::commit();

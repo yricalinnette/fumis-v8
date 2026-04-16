@@ -238,14 +238,26 @@
                             </td> 
                             <td class="align-middle text-center">
                                 <div class="action-btn-group">
-                                    <button type="button" class="btn btn-action btn-edit edit-source-btn" 
+                                    {{-- Updated Edit Button with New Data Attributes --}}
+                                    <button type="button" class="btn btn-action btn-edit btn-edit-source" 
                                         data-id="{{ $source->id }}" 
+                                        data-source_type="{{ $source->source_type }}"
                                         data-name="{{ $source->name }}" 
                                         data-budget_line_item_id="{{ $source->budget_line_item_id }}"
                                         data-fiscal_year="{{ $source->fiscal_year }}"
-                                        data-amount="{{ $source->total_amount }}" 
-                                        data-sheetid="{{ $source->spreadsheet_id }}" 
-                                        data-sheetname="{{ $source->sheet_name }}"
+                                        data-allotment_class="{{ $source->allotment_class }}"
+                                        data-total_amount="{{ $source->total_amount }}" 
+                                        
+                                        {{-- SAA Specific Data --}}
+                                        data-saa_date="{{ $source->saa_date ? \Carbon\Carbon::parse($source->saa_date)->format('Y-m-d') : '' }}"
+                                        data-reference_number="{{ $source->reference_number }}"
+                                        data-fund_code="{{ $source->fund_code }}"
+                                        data-approp_code="{{ $source->approp_code }}"
+                                        
+                                        {{-- Google Sheet Data --}}
+                                        data-spreadsheet_id="{{ $source->spreadsheet_id }}" 
+                                        data-sheet_name="{{ $source->sheet_name }}"
+                                        
                                         data-toggle="tooltip" title="Edit Fund Source">
                                         <i class="fas fa-edit"></i>
                                     </button>
@@ -270,44 +282,103 @@
 
 {{-- Edit Fund source --}}
 <div class="modal fade" id="modal-edit-source">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg"> {{-- Large modal for better field spacing --}}
         <div class="modal-content">
             <form id="edit-source-form" method="POST">
                 @csrf @method('PUT')
                 <div class="modal-header bg-info">
-                    <h4 class="modal-title"><i class="fas fa-edit mr-2"></i>Edit Fund Source</h4>
+                    <h4 class="modal-title text-white"><i class="fas fa-edit mr-2"></i>Edit Fund Source</h4>
                     <button type="button" class="close text-white" data-dismiss="modal">&times;</button>
                 </div>
                 <div class="modal-body">
-                    {{-- Added: Budget Line Item Selection --}}
+                    {{-- 1. Source Type Selection --}}
                     <div class="form-group">
-                        <label class="font-weight-bold">Budget Line Item</label>
-                        <select name="budget_line_item_id" id="edit_budget_line_item_id" class="form-control" required>
-                            <option value="">-- Select Line Item --</option>
-                            @foreach($budgetLineItems as $item)
-                                <option value="{{ $item->id }}">{{ $item->budget_line_item_name }}</option>
-                            @endforeach
+                        <label class="font-weight-bold">Source Type <span class="text-danger">*</span></label>
+                        <select name="source_type" id="edit_source_type" class="form-control border-info" required>
+                            <option value="GAA">GAA (General Appropriations Act)</option>
+                            <option value="SAA">SAA (Sub-Allotment Advice)</option>
                         </select>
                     </div>
 
-                    <div class="row">
-                        <div class="col-md-8">
-                            <div class="form-group">
-                                <label class="font-weight-bold">Source Name</label>
-                                <input type="text" name="name" id="edit_name" class="form-control" placeholder="e.g. GOP, MOOE" required>
+                    <hr>
+
+                    {{-- 2. SAA SPECIFIC FIELDS (Hidden by default, shown via JS) --}}
+                    <div id="edit-saa-fields" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label class="small font-weight-bold">Office / Entity</label>
+                                    <input type="text" name="entity_name" class="form-control form-control-sm" value="CHD8 - Eastern Visayas Centers for Health Development" readonly>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label class="small font-weight-bold">Date <span class="text-danger">*</span></label>
+                                    <input type="date" name="saa_date" id="edit_saa_date" class="form-control form-control-sm edit-saa-required">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label class="small font-weight-bold">Reference Number <span class="text-danger">*</span></label>
+                                    <input type="text" name="reference_number" id="edit_reference_number" class="form-control form-control-sm edit-saa-required" placeholder="SAA-2024-XXX">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label class="small font-weight-bold">Fund Code <span class="text-danger">*</span></label>
+                                    <input type="text" name="fund_code" id="edit_fund_code" class="form-control form-control-sm edit-saa-required">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label class="small font-weight-bold">Appropriations Code <span class="text-danger">*</span></label>
+                                    <input type="text" name="approp_code" id="edit_approp_code" class="form-control form-control-sm edit-saa-required">
+                                </div>
                             </div>
                         </div>
-                        <div class="col-md-4">
+                    </div>
+
+                    {{-- 3. SHARED FIELDS --}}
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold">Source Name</label>
+                                <input type="text" name="name" id="edit_name" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold">P/P/A Title / Budget Line Item</label>
+                                <select name="budget_line_item_id" id="edit_budget_line_item_id" class="form-control" required>
+                                    <option value="">-- Select Line Item --</option>
+                                    @foreach($budgetLineItems as $item)
+                                        <option value="{{ $item->id }}">{{ $item->budget_line_item_name }}</option>
+                                    @endforeach
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
                             <div class="form-group">
                                 <label class="font-weight-bold">Fiscal Year</label>
                                 <select name="fiscal_year" id="edit_fiscal_year" class="form-control" required>
-                                    <option value="">-- Year --</option>
-                                    @php 
-                                        $currentYear = date('Y'); 
-                                    @endphp
+                                    @php $currentYear = date('Y'); @endphp
                                     @for($i = $currentYear - 2; $i <= $currentYear + 3; $i++)
                                         <option value="{{ $i }}">{{ $i }}</option>
                                     @endfor
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label class="font-weight-bold">Allotment Class</label>
+                                <select name="allotment_class" id="edit_allotment_class" class="form-control" required>
+                                    <option value="">-- Select Class --</option>
+                                    @foreach($allotmentClasses as $class)
+                                        <option value="{{ $class->allotment_class }}">{{ $class->allotment_class }}</option>
+                                    @endforeach
                                 </select>
                             </div>
                         </div>
@@ -319,9 +390,7 @@
                             <div class="input-group-prepend">
                                 <span class="input-group-text bg-light">₱</span>
                             </div>
-                            {{-- Visual display for formatting --}}
                             <input type="text" class="form-control amount-mask-display" id="edit_display_amount" required>
-                            {{-- Actual value sent to Controller --}}
                             <input type="hidden" name="total_amount" id="edit_raw_amount" class="amount-mask-raw">
                         </div>
                     </div>
@@ -330,13 +399,19 @@
                         <h6 class="font-weight-bold text-info border-bottom pb-2">
                             <i class="fab fa-google-drive mr-1"></i> Google Sheet Config
                         </h6>
-                        <div class="form-group">
-                            <label class="small font-weight-bold">Spreadsheet ID</label>
-                            <input type="text" name="spreadsheet_id" id="edit_spreadsheet_id" class="form-control form-control-sm" placeholder="Paste ID from URL">
-                        </div>
-                        <div class="form-group mb-0">
-                            <label class="small font-weight-bold">Sheet/Tab Name</label>
-                            <input type="text" name="sheet_name" id="edit_sheet_name" class="form-control form-control-sm" placeholder="e.g. Sheet1">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group mb-md-0">
+                                    <label class="small font-weight-bold">Spreadsheet ID</label>
+                                    <input type="text" name="spreadsheet_id" id="edit_spreadsheet_id" class="form-control form-control-sm">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group mb-0">
+                                    <label class="small font-weight-bold">Sheet/Tab Name</label>
+                                    <input type="text" name="sheet_name" id="edit_sheet_name" class="form-control form-control-sm">
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -353,75 +428,146 @@
 
 {{-- Add Source Modal --}}
 <div class="modal fade" id="modal-add-source">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg"> {{-- Increased to large for better row layout --}}
         <div class="modal-content">
-            <form action="{{ route('settings.fund_sources.store') }}" method="POST">
+            <form action="{{ route('settings.fund_sources.store') }}" method="POST" id="fundSourceForm">
                 @csrf
                 <div class="modal-header bg-primary">
                     <h4 class="modal-title text-white">Add New Fund Source</h4>
                     <button type="button" class="close text-white" data-dismiss="modal">&times;</button>
                 </div>
                 <div class="modal-body">
+                    {{-- 1. Source Type Selection --}}
                     <div class="form-group">
-                        <label class="font-weight-bold">Budget Line Item</label>
-                        <select name="budget_line_item_id" class="form-control" required>
-                            <option value="">-- Select Line Item --</option>
-                            @foreach($budgetLineItems as $item)
-                                <option value="{{ $item->id }}">{{ $item->budget_line_item_name }}</option>
-                            @endforeach
+                        <label class="font-weight-bold">Source Type <span class="text-danger">*</span></label>
+                        <select name="source_type" id="source_type" class="form-control border-primary" required>
+                            <option value="">-- Select Type --</option>
+                            <option value="GAA">GAA (General Appropriations Act)</option>
+                            <option value="SAA">SAA (Sub-Allotment Advice)</option>
                         </select>
                     </div>
-                    <div class="row">
-                        <div class="col-md-8">
-                            <div class="form-group">
-                                <label>Fund Source Name <span class="text-danger">*</span></label>
-                                <input type="text" name="name" class="form-control" placeholder="e.g., General Fund" required>
+
+                    <hr>
+
+                    {{-- 2. Common & Conditional Fields Wrapper --}}
+                    <div id="dynamic-fields" style="display: none;">
+                        
+                        {{-- SAA SPECIFIC FIELDS: CHD/Hospital/Bureau, Date, Ref, Fund Code, Approp Code --}}
+                        <div class="saa-only row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label>Office / Entity</label>
+                                    <input type="text" name="entity_name" class="form-control" value="CHD8 - Eastern Visayas Centers for Health Development" readonly>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label>Date <span class="text-danger">*</span></label>
+                                    <input type="date" name="saa_date" class="form-control saa-required">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label>Reference Number <span class="text-danger">*</span></label>
+                                    <input type="text" name="reference_number" class="form-control saa-required" placeholder="e.g., SAA-2024-001">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label>Fund Code <span class="text-danger">*</span></label>
+                                    <input type="text" name="fund_code" class="form-control saa-required">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label>Appropriations Code <span class="text-danger">*</span></label>
+                                    <input type="text" name="approp_code" class="form-control saa-required">
+                                </div>
                             </div>
                         </div>
-                        <div class="col-md-4">
-                            <div class="form-group">
-                                <label>Fiscal Year</label>
-                                <select name="fiscal_year" class="form-control" required>
-                                    <option value="">-- Select Year --</option>
-                                    {{-- Range: Last Year to 3 Years from now --}}
-                                    @php 
-                                        $currentYear = date('Y'); 
-                                    @endphp
-                                    @for($i = $currentYear - 2; $i <= $currentYear + 3; $i++)
-                                        <option value="{{ $i }}">{{ $i }}</option>
-                                    @endfor
-                                </select>
+
+                        {{-- SHARED FIELDS: Name and Budget Line Item (P/P/A) --}}
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label>Fund Source Name <span class="text-danger">*</span></label>
+                                    <input type="text" name="name" class="form-control" placeholder="e.g., CONAP 2024" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label>P/P/A Title / Budget Line Item <span class="text-danger">*</span></label>
+                                    <select name="budget_line_item_id" class="form-control" required>
+                                        <option value="">-- Select Line Item --</option>
+                                        @foreach($budgetLineItems as $item)
+                                            <option value="{{ $item->id }}">{{ $item->budget_line_item_name }}</option>
+                                        @endforeach
+                                    </select>
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    <div class="form-group">
-                        <label>Initial Allocated Amount <span class="text-danger">*</span></label>
-                        <div class="input-group">
-                            <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
-                            {{-- Using your existing mask logic classes --}}
-                            <input type="text" class="form-control amount-mask-display" placeholder="0.00" required>
-                            <input type="hidden" name="total_amount" class="amount-mask-raw">
+                        {{-- SHARED FIELDS: Year and Allotment Class --}}
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label>Fiscal Year</label>
+                                    <select name="fiscal_year" class="form-control" required>
+                                        @php $currentYear = date('Y'); @endphp
+                                        @for($i = $currentYear - 1; $i <= $currentYear + 2; $i++)
+                                            <option value="{{ $i }}" {{ $i == $currentYear ? 'selected' : '' }}>{{ $i }}</option>
+                                        @endfor
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label>Allotment Class <span class="text-danger">*</span></label>
+                                    <select name="allotment_class" class="form-control" required>
+                                        <option value="">-- Select Class --</option>
+                                        @foreach($allotmentClasses as $class)
+                                            <option value="{{ $class->allotment_class }}">{{ $class->allotment_class }}</option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="bg-light p-3 border rounded">
-                        <h6 class="font-weight-bold text-muted small uppercase mb-3">
-                            <i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration
-                        </h6>
+                        {{-- SHARED FIELDS: Amount --}}
                         <div class="form-group">
-                            <label class="small">Spreadsheet ID</label>
-                            <input type="text" name="spreadsheet_id" class="form-control form-control-sm" placeholder="Paste ID from URL">
+                            <label>Initial Allocated Amount <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
+                                <input type="text" class="form-control amount-mask-display" placeholder="0.00" required>
+                                <input type="hidden" name="total_amount" class="amount-mask-raw">
+                            </div>
                         </div>
-                        <div class="form-group mb-0">
-                            <label class="small">Sheet/Tab Name</label>
-                            <input type="text" name="sheet_name" class="form-control form-control-sm" placeholder="e.g., Sheet1">
+
+                        {{-- 3. Google Sheet Integration --}}
+                        <div class="bg-light p-3 border rounded mt-3">
+                            <h6 class="font-weight-bold text-muted small uppercase mb-3">
+                                <i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration
+                            </h6>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group mb-md-0">
+                                        <label class="small">Spreadsheet ID</label>
+                                        <input type="text" name="spreadsheet_id" class="form-control form-control-sm" placeholder="Paste ID from URL">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group mb-0">
+                                        <label class="small">Sheet/Tab Name</label>
+                                        <input type="text" name="sheet_name" class="form-control form-control-sm" placeholder="e.g., Sheet1">
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
                 <div class="modal-footer justify-content-between">
                     <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
-                    <button type="submit" class="btn btn-primary">Save Fund Source</button>
+                    <button type="submit" class="btn btn-primary" id="btnSave" style="display: none;">Save Fund Source</button>
                 </div>
             </form>
         </div>
@@ -474,18 +620,17 @@
 
     $(document).ready(function() {
 
-        // Auto-hide alerts after 5 seconds
+        // 1. Auto-hide alerts after 5 seconds
         const $flashAlerts = $(".alert-success, .alert-danger");
-
         if ($flashAlerts.length > 0) {
             window.setTimeout(function() {
                 $flashAlerts.fadeTo(500, 0).slideUp(500, function(){
                     $(this).remove(); 
                 });
-            }, 5000); // 5 seconds
+            }, 5000);
         }
         
-        // Logic for preserving tab on refresh
+        // 2. Preserve Tab on Refresh
         $('a[data-toggle="pill"]').on('shown.bs.tab', function (e) {
             localStorage.setItem('activeTab', $(e.target).attr('href'));
         });
@@ -494,7 +639,7 @@
             $('#settingsCustomTab a[href="' + activeTab + '"]').tab('show');
         }
 
-        // Reuse your existing JS logic for Currency Masking and Budget Validation below
+        // 3. Currency Masking Helpers
         function formatNumber(n) {
             return n.replace(/\D/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
         }
@@ -502,14 +647,12 @@
         $(document).on('input', '.amount-mask-display', function() {
             let displayInput = $(this);
             let rawInput = displayInput.siblings('.amount-mask-raw');
-            let inputVal = displayInput.val();
-            let numericVal = inputVal.replace(/[^0-9.]/g, ''); 
+            let numericVal = displayInput.val().replace(/[^0-9.]/g, ''); 
+            
             if (numericVal.indexOf(".") >= 0) {
                 let decimalPos = numericVal.indexOf(".");
-                let leftSide = numericVal.substring(0, decimalPos);
-                let rightSide = numericVal.substring(decimalPos);
-                leftSide = formatNumber(leftSide);
-                rightSide = rightSide.substring(0, 3);
+                let leftSide = formatNumber(numericVal.substring(0, decimalPos));
+                let rightSide = numericVal.substring(decimalPos, decimalPos + 3); // max 2 decimals
                 displayInput.val(leftSide + rightSide);
                 rawInput.val(leftSide.replace(/,/g, '') + rightSide);
             } else {
@@ -530,6 +673,7 @@
             checkBalance();
         });
 
+        // 4. Budget Validation (Existing logic)
         function checkBalance() {
             let selected = $('#source_selector').find(":selected");
             if (!$('#source_selector').val()) {
@@ -539,6 +683,7 @@
             let remaining = parseFloat(selected.data('remaining')) || 0;
             let sourceName = selected.data('name');
             let inputAmount = parseFloat($('#activity_form .amount-mask-raw').val()) || 0;
+            
             $('#balance_info').removeClass('d-none');
             if (inputAmount > remaining) {
                 $('#balance_info').removeClass('alert-info').addClass('alert-danger');
@@ -550,36 +695,73 @@
                 $('#btn-save-activity').prop('disabled', false);
             }
         }
-
         $('#source_selector').on('change', checkBalance);
 
-        $('.edit-source-btn').on('click', function() {
-            const id = $(this).data('id');
-            const name = $(this).data('name');
-            const budgetLineId = $(this).data('budget_line_item_id'); // Added
-            const year = $(this).data('fiscal_year');
-            const amount = $(this).data('amount');
-            const sheetId = $(this).data('sheetid');
-            const sheetName = $(this).data('sheetname');
+        // 5. ADD MODAL: Toggle Source Type
+        $('#source_type').on('change', function() {
+            const type = $(this).val();
+            if (type === '') {
+                $('#dynamic-fields, #btnSave').hide();
+            } else {
+                $('#dynamic-fields, #btnSave').show();
+                if (type === 'GAA') {
+                    $('.saa-only').hide();
+                    $('.saa-required').prop('required', false);
+                } else {
+                    $('.saa-only').show();
+                    $('.saa-required').prop('required', true);
+                }
+            }
+        });
 
-            // Set form action
-            $('#edit-source-form').attr('action', `/settings/source/${id}`);
+        // 6. EDIT MODAL: Toggle Source Type
+        $('#edit_source_type').on('change', function() {
+            if ($(this).val() === 'SAA') {
+                $('#edit-saa-fields').slideDown();
+                $('.edit-saa-required').prop('required', true);
+            } else {
+                $('#edit-saa-fields').slideUp();
+                $('.edit-saa-required').prop('required', false);
+            }
+        });
 
-            // Fill fields
-            $('#edit_name').val(name);
+        // 7. EDIT MODAL: Open and Populate
+        $('.btn-edit-source').on('click', function() {
+            const data = $(this).data();
             
-            // Set the Budget Line Item Dropdown
-            // Ensure your select element has id="edit_budget_line_item_id"
-            $('#edit_budget_line_item_id').val(budgetLineId).trigger('change'); 
+            // Update Form Action
+            $('#edit-source-form').attr('action', `/settings/fund_sources/${data.id}`);
             
-            $('#edit_fiscal_year').val(year);
-            $('#edit_display_amount').val(Number(amount).toLocaleString('en-US', {minimumFractionDigits: 2}));
-            $('#edit_raw_amount').val(amount);
-            $('#edit_spreadsheet_id').val(sheetId);
-            $('#edit_sheet_name').val(sheetName);
+            // Set Source Type and Trigger Toggle
+            $('#edit_source_type').val(data.source_type).trigger('change');
+            
+            // Populate Common Fields
+            $('#edit_name').val(data.name);
+            $('#edit_budget_line_item_id').val(data.budget_line_item_id);
+            $('#edit_fiscal_year').val(data.fiscal_year);
+            $('#edit_allotment_class').val(data.allotment_class);
+            
+            // Handle Amount Masking on load
+            const amount = parseFloat(data.total_amount) || 0;
+            $('#edit_raw_amount').val(amount.toFixed(2));
+            $('#edit_display_amount').val(amount.toLocaleString(undefined, {
+                minimumFractionDigits: 2, 
+                maximumFractionDigits: 2
+            }));
+            
+            // SAA Specifics
+            $('#edit_saa_date').val(data.saa_date);
+            $('#edit_reference_number').val(data.reference_number);
+            $('#edit_fund_code').val(data.fund_code);
+            $('#edit_approp_code').val(data.approp_code);
+            
+            // Google Sheet Integration
+            $('#edit_spreadsheet_id').val(data.spreadsheet_id);
+            $('#edit_sheet_name').val(data.sheet_name);
 
             $('#modal-edit-source').modal('show');
         });
+
     });
 
     $(document).on('click', '.delete-source-btn', function() {
@@ -627,6 +809,31 @@
         // Standard initialization
         $('[data-toggle="tooltip"]').tooltip({
             html: true // This ensures the <b> and <br> tags are rendered as HTML
+        });
+    });
+
+    $(document).ready(function() {
+        $('#source_type').on('change', function() {
+            const type = $(this).val();
+            
+            if (type === '') {
+                $('#dynamic-fields, #btnSave').hide();
+            } else {
+                $('#dynamic-fields, #btnSave').show();
+                
+                if (type === 'GAA') {
+                    $('.saa-only').hide();
+                    $('.saa-required').prop('required', false);
+                } else {
+                    $('.saa-only').show();
+                    $('.saa-required').prop('required', true);
+                }
+            }
+        });
+
+        // Ensure raw amount is updated before submit (your existing mask logic)
+        $('#fundSourceForm').on('submit', function() {
+            // Any specific cleanup before submit
         });
     });
 </script>

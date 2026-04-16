@@ -116,7 +116,7 @@
                                 </div>
                                 <div class="mt-2">
                                     <h4 class="mb-0 font-weight-bold">{{ $data['percent'] }}%</h4>
-                                    <small class="text-muted text-uppercase">Transactions</small>
+                                    <small class="text-muted text-uppercase">All Transactions</small>
                                 </div>
                             </div>
 
@@ -144,7 +144,7 @@
                                 <span class="text-muted" 
                                     style="cursor: help; border-bottom: 1px dotted #adb5bd;" 
                                     title="Sum of all transactions: Includes the Obligated Amount if finalized; otherwise, uses the initial Processed Amount.">
-                                    Transactions from the unit
+                                    All Transactions from the unit
                                 </span><br>
                                 <div class="text-bold">₱{{ number_format($data['processed_total'], 2) }}</div>
                             </div>

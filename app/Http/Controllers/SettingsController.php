@@ -220,19 +220,23 @@ class SettingsController extends Controller
     //FOR FUND SOURCE MANAGEMENT
     public function fundSources()
     {
-        // 1. Fetch Fund Sources with relationships to avoid N+1 query issues in the table
-        // 'budgetLineItem' allows us to see the name in the badge
-        // 'activities' allows us to sum the pooled_amount
+        // 1. Fetch Fund Sources
         $sources = \App\Models\SourceOfFund::with(['budgetLineItem', 'activities'])
                     ->orderBy('name', 'asc')
                     ->get();
 
-        // 2. Fetch all Budget Line Items for the "Add/Edit" modal dropdowns
-        // This is the variable that was missing!
+        // 2. Fetch all Budget Line Items
         $budgetLineItems = \App\Models\BudgetLineItem::orderBy('budget_line_item_name', 'asc')->get();
 
-        // 3. Pass both variables to the view
-        return view('admin.settings.fund_sources', compact('sources', 'budgetLineItems'));
+        // 3. Corrected: Use UacsCode model to fetch unique allotment classes
+        $allotmentClasses = \App\Models\UacsCode::select('allotment_class')
+                    ->distinct()
+                    ->whereNotNull('allotment_class')
+                    ->orderBy('allotment_class', 'asc')
+                    ->get();
+
+        // 4. Pass the variables to the view
+        return view('admin.settings.fund_sources', compact('sources', 'budgetLineItems', 'allotmentClasses'));
     }
 
     // Delete Fund Sources
@@ -245,40 +249,64 @@ class SettingsController extends Controller
 
     public function storeSource(Request $request) 
     {
-        // 1. Validation with updated composite unique check
+        // 1. Validation Logic
         $validated = $request->validate([
-            'name' => [
+            'source_type'         => 'required|in:GAA,SAA',
+            'name'                => [
                 'required',
                 'string',
                 'max:255',
-                // Check if 'name' + 'fiscal_year' + 'budget_line_item_id' combination already exists
+                // Composite unique check: name + fiscal_year + budget_line_item_id + source_type
                 Rule::unique('source_of_funds')->where(function ($query) use ($request) {
                     return $query->where('fiscal_year', $request->fiscal_year)
-                                ->where('budget_line_item_id', $request->budget_line_item_id);
+                                ->where('budget_line_item_id', $request->budget_line_item_id)
+                                ->where('source_type', $request->source_type);
                 }),
             ],
-            'budget_line_item_id' => 'required|exists:budget_line_items,id', // Added validation
+            'budget_line_item_id' => 'required|exists:budget_line_items,id',
             'fiscal_year'         => 'required|integer',
             'total_amount'        => 'required|numeric|min:0',
+            'allotment_class'     => 'required|string',
             'spreadsheet_id'      => 'nullable|string',
             'sheet_name'          => 'nullable|string',
+            
+            // SAA Specific Validation (Required only if source_type is SAA)
+            'saa_date'            => 'required_if:source_type,SAA|nullable|date',
+            'reference_number'    => 'required_if:source_type,SAA|nullable|string|max:255',
+            'fund_code'           => 'required_if:source_type,SAA|nullable|string|max:255',
+            'approp_code'         => 'required_if:source_type,SAA|nullable|string|max:255',
         ], [
             // Custom error messages
-            'name.unique' => "The fund source '{$request->name}' already exists for this budget line in {$request->fiscal_year}.",
-            'budget_line_item_id.required' => "Please select a Budget Line Item.",
+            'name.unique' => "This fund source already exists for this budget line and source type in {$request->fiscal_year}.",
+            'saa_date.required_if' => "The Date is required for SAA sources.",
+            'reference_number.required_if' => "The Reference Number is required for SAA sources.",
         ]);
 
         try {
-            // 2. Creation 
-            // $validated now includes budget_line_item_id
-            SourceOfFund::create($validated);
+            // 2. Prepare Data for Creation
+            $data = $validated;
+
+            // Auto-assign Entity Name if it's SAA
+            if ($request->source_type === 'SAA') {
+                $data['entity_name'] = 'CHD8 - Eastern Visayas Centers for Health Development';
+            } else {
+                // Ensure SAA fields are null for GAA to keep the database clean
+                $data['entity_name'] = null;
+                $data['saa_date'] = null;
+                $data['reference_number'] = null;
+                $data['fund_code'] = null;
+                $data['approp_code'] = null;
+            }
+
+            // 3. Creation
+            SourceOfFund::create($data);
 
             return back()->with('success', 'Fund source added successfully!');
 
         } catch (\Exception $e) {
-            // 3. Log genuine system failures
+            // 4. Log genuine system failures
             Log::error("Fund Source Storage Error: " . $e->getMessage());
-            return back()->withErrors(['error' => "A system error occurred while saving: " . $e->getMessage()]);
+            return back()->withErrors(['error' => "A system error occurred: " . $e->getMessage()]);
         }
     }
 
@@ -630,6 +658,7 @@ class SettingsController extends Controller
             'target_quarters'     => 'required|array|min:1',
             'targets'             => 'required|array',
             'classification'      => 'required|in:Strategic,Core,Support',
+            'is_for_procurement'  => 'required|boolean', // Added validation for the new field
         ], [
             'target_quarters.required' => 'Please select at least one target quarter.',
         ]);
@@ -660,7 +689,6 @@ class SettingsController extends Controller
             }
         }
 
-        // Safety check for non-admins
         if (is_null($secid) && auth()->user()->username !== 'admin') {
             return back()->withInput()->withErrors(['error' => 'Your account is not correctly linked to a DOH Section.']);
         }
@@ -679,38 +707,35 @@ class SettingsController extends Controller
             $isLocked = $activity->is_locked ?? false;
 
             if ($hasTransactions || $isLocked) {
-                /**
-                 * SCENARIO: Locked/Has Transactions
-                 * Update timeframe, targets, AND the "Updated By" info (User/Section)
-                 */
+                // SCENARIO: Locked (Timeframe and Targets only)
                 $activity->update([
-                    'user_id'          => $userId, // Track who last edited it
+                    'user_id'          => $userId,
                     'section_id'       => $secid,
                     'start_date'       => $validated['start_date'],
                     'end_date'         => $validated['end_date'],
+                    'is_for_procurement' => $request->is_for_procurement, 
                     'target_quarters'  => $selectedQuarters,
                     'physical_targets' => $physicalTargets,
                 ]);
                 $msg = 'Activity timeframe and targets updated. Other fields were locked due to existing transactions.';
             } else {
-                /**
-                 * SCENARIO: Fully Editable
-                 */
+                // SCENARIO: Fully Editable
                 $uacsRecord = \App\Models\UacsCode::findOrFail($request->uacs_code_id);
                 $activity->update([
-                    'user_id'          => $userId,
-                    'section_id'       => $secid,
-                    'objective'        => $request->objective,
-                    'uacs_code_id'     => $request->uacs_code_id,
-                    'uacs_code'        => $uacsRecord->uacs_code,
-                    'name'             => $request->name,
-                    'budget'           => $request->budget_amount,
-                    'budget_adjusted'  => $request->budget_amount,
-                    'start_date'       => $validated['start_date'],
-                    'end_date'         => $validated['end_date'],
-                    'target_quarters'  => $selectedQuarters,
-                    'physical_targets' => $physicalTargets,
-                    'classification'   => $request->classification,
+                    'user_id'            => $userId,
+                    'section_id'         => $secid,
+                    'objective'          => $request->objective,
+                    'uacs_code_id'       => $request->uacs_code_id,
+                    'uacs_code'          => $uacsRecord->uacs_code,
+                    'name'               => $request->name,
+                    'is_for_procurement' => $request->is_for_procurement, 
+                    'budget'             => $request->budget_amount,
+                    'budget_adjusted'    => $request->budget_amount,
+                    'start_date'         => $validated['start_date'],
+                    'end_date'           => $validated['end_date'],
+                    'target_quarters'    => $selectedQuarters,
+                    'physical_targets'   => $physicalTargets,
+                    'classification'     => $request->classification,
                 ]);
                 $msg = 'Activity updated successfully!';
             }
@@ -751,6 +776,7 @@ class SettingsController extends Controller
                 'uacs_code_id'        => $validated['uacs_code_id'],
                 'uacs_code'           => $uacsRecord->uacs_code,
                 'name'                => $validated['name'],
+                'is_for_procurement'  => $validated['is_for_procurement'],
                 'budget'              => $validated['budget_amount'],
                 'budget_adjusted'     => $validated['budget_amount'],
                 'start_date'          => $validated['start_date'],
@@ -905,10 +931,26 @@ class SettingsController extends Controller
             'label'    => 'required'
         ]);
 
+        // 1. Try to find the section
+        $sectionId = DB::table('employee_details as local_emp')
+            ->join('db_common.tbl_emp_details as common_emp', 'local_emp.dbedid', '=', 'common_emp.dbedid')
+            ->where('local_emp.user_id', auth()->id())
+            ->value('common_emp.secid');
+
+        // 2. If no section is found but the user is an admin, assign a default value
+        if (is_null($sectionId)) {
+            if (auth()->user()->is_admin == 1) { // Adjust 'role' to your actual admin check
+                $sectionId = 0; // Use 0 or another designated ID for Global/Admin signatories
+            } else {
+                return response()->json(['error' => 'User section not found.'], 422);
+            }
+        }
+
         DB::table('wfp_signatories')->updateOrInsert(
             [
-                'wfp_type' => $request->wfp_type,
-                'label'    => $request->label
+                'wfp_type'   => $request->wfp_type,
+                'label'      => $request->label,
+                'section_id' => $sectionId 
             ],
             [
                 'employee_id' => $request->empid,
@@ -916,18 +958,11 @@ class SettingsController extends Controller
             ]
         );
 
-        return response()->json(['success' => 'Signatory updated and arranged automatically!']);
-    }
-
-    public function deleteSignatory($id)
-    {
-        DB::table('wfp_signatories')->where('id', $id)->delete();
-        return response()->json(['success' => 'Signatory deleted successfully!']);
+        return response()->json(['success' => 'Signatory updated successfully!']);
     }
 
     public function getSignatories()
     {
-        // Define the sequence for the WFP Form
         $orderMap = [
             'Prepared by:' => 1,
             'Checked by:' => 2,
@@ -935,14 +970,26 @@ class SettingsController extends Controller
             'Approved by:' => 4,
         ];
 
+        // Get current user's section first to filter the list
+        $userSection = DB::table('employee_details as local_emp')
+            ->join('db_common.tbl_emp_details as common_emp', 'local_emp.dbedid', '=', 'common_emp.dbedid')
+            ->where('local_emp.user_id', auth()->id())
+            ->value('common_emp.secid');
+
         $signatories = DB::table('wfp_signatories')
+            ->where('section_id', $userSection)
             ->get()
             ->sortBy(function($item) use ($orderMap) {
-                // Sort based on the label; default to 99 if not found
                 return $orderMap[$item->label] ?? 99;
             });
 
         return view('settings.signatories', compact('signatories'));
+    }
+
+    public function deleteSignatory($id)
+    {
+        DB::table('wfp_signatories')->where('id', $id)->delete();
+        return response()->json(['success' => 'Signatory deleted successfully!']);
     }
 
     // register new user account or update existing user accounts

@@ -185,7 +185,7 @@
                         </div>
 
                         <div class="col-md-2 border-left text-center">
-                            <span class="text-uppercase text-xs text-muted d-block text-success">Actual Savings</span>
+                            <span class="text-uppercase text-xs text-muted d-block text-success">Unpaid Obligations</span>
                             <h5 class="font-weight-bold mb-0 text-success">₱{{ number_format($totalSavings, 2) }}</h5>
                             <small class="text-muted" style="font-size: 0.65rem;">(Oblig - Disb)</small>
                         </div>
@@ -209,7 +209,7 @@
                             <th class="text-center py-3 bg-light">Obligation %</th>
                             <th class="text-right py-3 border-left-success">Disbursed</th>
                             <th class="text-right py-3 b">Disbursement %</th>
-                            <th class="text-right py-3 border-left-success text-success">Actual Savings</th>
+                            <th class="text-right py-3 border-left-success text-success">Unpaid Obligations</th>
                             <th class="text-right py-3 border-left-warning bg-light text-warning">Pending Transactions</th>
                             <th class="text-right py-3 bg-light text-primary">Unobligated</th>
                         </tr>
@@ -227,8 +227,10 @@
                                 $netBudget = $item['net_budget'];
                                 $obligated = $item['obligated_amount'];
                                 $disbursed = $item['disbursed_amount'];
-                                $pending   = $item['pending_amount']; // From Controller logic
-                                $savings   = $item['savings'];        // From Controller logic
+                                $pending   = $item['pending_amount']; 
+                                $savings   = $item['savings'];        
+                                // Assuming pooled_amount is passed in the $item array from the controller
+                                $pooled    = $item['pooled_amount'] ?? 0; 
 
                                 // Untouched: Money in the budget that isn't obligated AND isn't even pending
                                 $untouched = $netBudget - ($obligated + $pending);
@@ -245,7 +247,15 @@
                                 <td class="pl-4 align-middle">
                                     <span class="font-weight-600 text-dark d-block">{{ $item['name'] }}</span>
                                 </td>
-                                <td class="text-right align-middle font-weight-bold">₱{{ number_format($netBudget, 2) }}</td>
+                                <td class="text-right align-middle font-weight-bold">
+                                    ₱{{ number_format($netBudget, 2) }}
+                                    {{-- ADDED POOLED NOTE HERE --}}
+                                    @if($pooled > 0)
+                                        <small class="d-block font-weight-normal text-danger" style="font-style: italic;">
+                                            (Pooled: ₱{{ number_format($pooled, 2) }})
+                                        </small>
+                                    @endif
+                                </td>
                                 <td class="text-right align-middle text-info font-weight-bold border-left-info">₱{{ number_format($obligated, 2) }}</td>
                                 <td class="text-center align-middle bg-light">
                                     <span class="badge {{ $rowObligRate >= 90 ? 'badge-success' : 'badge-warning' }}">

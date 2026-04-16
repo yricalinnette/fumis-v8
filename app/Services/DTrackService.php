@@ -11,21 +11,22 @@ class DTrackService
     protected $secret = '@m0b1l3DTr@ckID';
     protected $baseUrl = 'http://192.168.2.211/mdtrackapi/index.php'; 
 
-    public function getDTrackStatus($dtrackNo)
+    public function getDTrackStatus($dtrackNo, $timeout = 2) // Default to 2 seconds for reports
     {
         try {
             $key = hash('sha256', $this->secret, true); 
             $iv = str_repeat("\0", 16); 
             $token = base64_encode(openssl_encrypt($this->secret, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv));
 
-            // Using the updated route provided
             $url = "http://192.168.2.211/mdtrackapi/index.php/specificOutBox/{$dtrackNo}";
 
-            $response = Http::timeout(10)->post($url, ['token' => $token]);
+            // Reduce timeout. 10s is way too long for a loop.
+            $response = Http::timeout($timeout)->post($url, ['token' => $token]);
 
             return $response->successful() ? $response->json() : null;
         } catch (\Exception $e) {
-            \Log::error("DTrack Connection Failed: " . $e->getMessage());
+            // Log minimal info to avoid bloating logs during downtime
+            Log::warning("DTrack unreachable for {$dtrackNo}: " . $e->getMessage());
             return null;
         }
     }

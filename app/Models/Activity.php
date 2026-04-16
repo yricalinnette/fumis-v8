@@ -22,7 +22,9 @@ class Activity extends Model {
     'physical_targets',
     'classification',
     'user_id',
-    'section_id'
+    'section_id',
+    'is_for_procurement'
+    
 ];
 
     public function source() {

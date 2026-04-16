@@ -683,6 +683,21 @@
                             </div>
                         </div>
 
+                        {{-- Added: For Procurement Selection --}}
+                        <div class="col-md-12">
+                            <div class="form-group">
+                                <label class="font-weight-bold text-primary">
+                                    <i class="fas fa-shopping-cart mr-1"></i> For Procurement? <span class="text-danger">*</span>
+                                </label>
+                                <select name="is_for_procurement" id="edit_is_for_procurement" class="form-control" required>
+                                    <option value="">-- Please Select --</option>
+                                    <option value="1">Yes</option>
+                                    <option value="0">No</option>
+                                </select>
+                                <small class="text-muted">Select "Yes" if this activity requires procurement of goods or equipments.</small>
+                            </div>
+                        </div>
+
                         {{-- Timeframe --}}
                         <div class="col-md-6">
                             <div class="form-group">
@@ -1234,6 +1249,7 @@
             $('#edit_budget_line_item').val(data.budget_line_item_id).trigger('change');
             // Set the specific Fund Source value
             $('#edit_source_of_fund_id').val(data.source_of_fund_id).trigger('change');
+            $('#edit_is_for_procurement').val(data.is_for_procurement);
 
             // Map the classification value from database to the dropdown
             if (data.classification) {

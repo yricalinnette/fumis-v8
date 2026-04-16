@@ -254,12 +254,12 @@
 
                 {{-- Action Buttons --}}
                 <div class="btn-group shadow-sm rounded-lg overflow-hidden">
-                    <button class="btn btn-white btn-sm font-weight-bold border-right px-3">
+                    {{-- <button class="btn btn-white btn-sm font-weight-bold border-right px-3">
                         <i class="fas fa-history mr-2 text-warning"></i> Awaiting ORSN 
                         @if(isset($awaitingOBRN) && $awaitingOBRN > 0)
                             <span class="badge badge-warning ml-1">{{ $awaitingOBRN }}</span>
                         @endif
-                    </button>
+                    </button> --}}
                     <button type="button" id="btn-bulk-sync" class="btn btn-white btn-sm font-weight-bold border-right px-3">
                         <i class="fas fa-cloud-download-alt mr-2 text-info"></i> Bulk Sync
                         @if(isset($awaitingSyncCount) && $awaitingSyncCount > 0)
@@ -611,13 +611,13 @@
                         @endphp
 
                         {{-- 1. Update Status / History Button --}}
-                        <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
+                        {{-- <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
                             style="border-left: 3px solid #17a2b8;"
                             data-id="{{ $fund->id }}" data-dtrack="{{ $fund->dtrack_no }}"
                             {{ $isStatusUpdateDisabled ? 'disabled' : '' }}
                             data-toggle="tooltip" title="Update Status">
                             <i class="fas fa-history {{ $isStatusUpdateDisabled ? 'text-muted' : 'text-info' }}"></i> 
-                        </button>
+                        </button> --}}
 
                         {{-- 2. Edit Button --}}
                         <button type="button" class="btn btn-sm btn-default btn-edit-transaction"
