@@ -590,24 +590,24 @@
 
                     <td class="text-center">
                         @php 
-                            // 1. Check if there are any serials to allow syncing
-                            $hasAnySerial = $fund->breakdown->contains(fn($i) => !empty($i->obligation_serial));
+                            // 1. Get the entire group for this DTrack
+                            // We fetch this once to avoid multiple queries
+                            $groupItems = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)->get();
                             
-                            // 2. NEW LOGIC: Determine if the ENTIRE group is fully disbursed
-                            // We count total items in this DTrack vs how many are actually 'Disbursed'
-                            $groupItems
-                             = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)->get();
                             $totalInGroup = $groupItems->count();
                             $disbursedInGroup = $groupItems->where('status', 'Disbursed')->count();
 
-                            // Only lock the sync button if EVERY fund source is Disbursed
+                            // 2. Button Lock: ONLY lock if EVERY fund source in the group is 'Disbursed'
+                            // We removed $hasAnySerial because DTrack is now our unique key to fetch data.
                             $isFullyDisbursed = ($totalInGroup > 0 && $totalInGroup === $disbursedInGroup);
 
-                            // 3. Define "Edit/Delete" locking logic (Remains the same)
-                            $isActionDisabled = ($firstItem->status !== 'Routed');
+                            // 3. Action Logic: Edit/Delete are usually disabled if ANY item has moved past 'Routed'
+                            // This protects the data integrity once Budget/Accounting starts processing.
+                            $firstItem = $groupItems->first();
+                            $isActionDisabled = ($firstItem && $firstItem->status !== 'Routed');
                             
-                            // 4. Status-specific check for the History/Update button (Remains the same)
-                            $isStatusUpdateDisabled = in_array($firstItem->status, ['Disbursed', 'Completed']);
+                            // 4. Status Check: Disable DTrack status updates only if fully finished
+                            $isStatusUpdateDisabled = ($isFullyDisbursed || in_array($firstItem->status ?? '', ['Completed']));
                         @endphp
 
                         {{-- 1. Update Status / History Button --}}
@@ -630,14 +630,19 @@
 
                         {{-- 3. Sync Button (UPDATED) --}}
                         <button type="button" 
-                                class="btn btn-sm {{ $isFullyDisbursed ? 'btn-outline-secondary' : 'btn-outline-info' }} btn-sync-sheet" 
-                                data-id="{{ $fund->id }}"
-                                data-dtrack="{{ $fund->dtrack_no }}"
-                                {{-- Button is disabled only if ALL are disbursed OR if there's no serial to check --}}
-                                {{ ($isFullyDisbursed || !$hasAnySerial) ? 'disabled' : '' }}
-                                data-toggle="tooltip" 
-                                title="{{ $isFullyDisbursed ? 'All fund sources in this transaction are Disbursed' : 'Sync with Google Sheet' }}">
-                            <i class="fas {{ $isFullyDisbursed ? 'fa-check-double' : 'fa-sync-alt' }}"></i>
+                            class="btn btn-sm {{ $isFullyDisbursed ? 'btn-outline-secondary' : 'btn-outline-info' }} btn-sync-sheet" 
+                            data-id="{{ $fund->id }}"
+                            data-dtrack="{{ $fund->dtrack_no }}"
+                            {{-- 
+                                The button is ONLY disabled if ALL items in the group are Disbursed. 
+                                We no longer disable it based on the lack of a serial number 
+                                because the system now fetches the serial for us using DTrack.
+                            --}}
+                            {{ $isFullyDisbursed ? 'disabled' : '' }}
+                            data-toggle="tooltip" 
+                            title="{{ $isFullyDisbursed ? 'All items for this DTrack are fully Disbursed' : 'Sync with RAODS Google Sheet' }}">
+                            
+                            <i class="fas {{ $isFullyDisbursed ? 'fa-check-double' : 'fa-sync-alt' }} {{ !$isFullyDisbursed ? 'fa-spin-hover' : '' }}"></i>
                         </button>
 
                         {{-- 4. Delete Button --}}
