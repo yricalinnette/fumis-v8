@@ -20,25 +20,20 @@ use App\Services\DTrackService;
 
 class MyReadFilter implements \PhpOffice\PhpSpreadsheet\Reader\IReadFilter
 {
-    private $startRow = 0;
-    private $endRow   = 0;
-    private $columns  = [];
+    private $startRow = 1;
+    private $endRow = 20000;
+    private $columns = [];
 
     public function __construct($startRow, $endRow, $columns) {
         $this->startRow = $startRow;
-        $this->endRow   = $endRow;
-        $this->columns  = $columns;
+        $this->endRow = $endRow;
+        $this->columns = (array)$columns; // Force to array to prevent the error
     }
 
-    // REMOVE 'string' and 'int' from the parameters here:
-    public function readCell($columnAddress, $row, $worksheetName = ''): bool
-    {
-        // Check if row is within the range
+    public function readCell($columnAddress, $row, $worksheetName = ''): bool {
+        // Only read if row is in range AND column is in our allowed list
         if ($row >= $this->startRow && $row <= $this->endRow) {
-            // Check if column is in the list of columns to read
-            if (in_array($columnAddress, $this->columns)) {
-                return true;
-            }
+            return in_array($columnAddress, $this->columns);
         }
         return false;
     }
@@ -679,66 +674,75 @@ class FundController extends Controller
 
     public function syncWithGoogleSheet(Request $request, $id)
     {
+        // 1. Resource Management
+        ini_set('memory_limit', '1024M'); 
         set_time_limit(600);
         $tempFile = null;
 
         try {
-            // 1. Check if the initial Fund exists
             $clickedFund = Fund::findOrFail($id);
-            $targetDtrack = trim($clickedFund->dtrack_no);
+            $targetDtrack = trim((string)$clickedFund->dtrack_no);
 
             if (empty($targetDtrack)) {
-                return response()->json(['success' => false, 'message' => 'DTrack number is empty for this record.']);
+                return response()->json(['success' => false, 'message' => 'DTrack number is missing.']);
             }
 
-            // 2. Fetch the group. CRITICAL: Use get() first, then check if it's empty.
-            $funds = Fund::with('fundSource')
-                ->where('dtrack_no', $targetDtrack)
-                ->get();
-
+            // 2. Database Fetch - Use a collection to prevent null foreach error
+            $funds = Fund::with('fundSource')->where('dtrack_no', $targetDtrack)->get();
+            
             if ($funds->isEmpty()) {
-                return response()->json(['success' => false, 'message' => 'No records found in database for DTrack: ' . $targetDtrack]);
+                return response()->json(['success' => false, 'message' => "No records found for DTrack: $targetDtrack"]);
             }
 
-            // 3. Group them. This is now guaranteed to be an object/collection.
+            // Grouping handles the 'foreach' safety
             $fundGroup = $funds->groupBy('source_of_fund_id');
-
             $syncedDetails = []; 
 
-            // 4. Iterate through each unique Source
             foreach ($fundGroup as $sourceId => $fundsInSource) {
                 $sourceConfig = SourceOfFund::find($sourceId);
-                
-                // Check if Source of Fund has the Google Sheet Config
-                if (!$sourceConfig || !$sourceConfig->spreadsheet_id || !$sourceConfig->sheet_name) {
-                    \Log::warning("Source ID {$sourceId} is missing Google Sheet configuration.");
-                    continue; 
-                }
+                if (!$sourceConfig || !$sourceConfig->spreadsheet_id || !$sourceConfig->sheet_name) continue;
 
-                // 5. Download and Load Spreadsheet
+                // Google Drive Download
                 $client = new \Google\Client();
                 $client->setAuthConfig(storage_path('app/google-credentials.json'));
                 $client->addScope(\Google_Service_Drive::DRIVE_READONLY);
                 $driveService = new \Google_Service_Drive($client);
                 
                 $content = $driveService->files->get($sourceConfig->spreadsheet_id, ['alt' => 'media']);
-                
                 $tempFile = tempnam(sys_get_temp_dir(), 'excel_'); 
                 file_put_contents($tempFile, $content->getBody()->getContents());
 
+                // 3. Robust Column Generator (Crucial for amounts > Column Z)
+                $columns = [];
+                // Add A-Z
+                foreach (range('A', 'Z') as $char) {
+                    $columns[] = $char;
+                }
+                // Add AA-CQ
+                foreach (['A', 'B', 'C'] as $prefix) {
+                    foreach (range('A', 'Z') as $suffix) {
+                        $col = $prefix . $suffix;
+                        $columns[] = $col;
+                        if ($col === 'CQ') break 2;
+                    }
+                }
+
+                // 2. Initialize Reader with the Filter
                 $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReader('Xlsx');
                 $reader->setReadDataOnly(true);
-                $reader->setReadFilter(new MyReadFilter(1, 10000, range('A', 'CS'))); 
+                
+                // CRITICAL: Ensure these 3 arguments match the constructor above
+                $filter = new MyReadFilter(1, 20000, $columns);
+                $reader->setReadFilter($filter);
                 
                 $spreadsheet = $reader->load($tempFile);
                 $sheet = $spreadsheet->getSheetByName($sourceConfig->sheet_name);
                 
                 if (!$sheet) {
-                    \Log::error("Sheet name '{$sourceConfig->sheet_name}' not found in spreadsheet.");
+                    if (file_exists($tempFile)) @unlink($tempFile);
                     continue;
                 }
 
-                // 6. Scan the Sheet for the DTrack
                 $tracker = [
                     'netOb' => 0.0, 'netDisb' => 0.0,
                     'latestObDate' => null, 'latestDisbDate' => null,
@@ -751,46 +755,42 @@ class FundController extends Controller
                     
                     if ($sheetDtrack === $targetDtrack) {
                         $tracker['found'] = true;
+                        // Get Serial from Column D using Calculated Value
+                        $valD = $sheet->getCell("D$row")->getCalculatedValue();
+                        $tracker['found_serial'] = !empty($valD) ? trim((string)$valD) : 'N/A';
                         
-                        // In your screenshot, 'REFERENCE SERIAL NUMBER' is Column D
-                        $serial = trim((string)$sheet->getCell("D$row")->getValue());
-                        if (!empty($serial)) {
-                            $tracker['found_serial'] = $serial;
-                        }
-
                         $this->processEnhancedRowData($sheet, $row, $tracker);
                     }
                 }
 
-                // 7. Update Database
+                // 4. Database Updates
                 if ($tracker['found']) {
                     foreach ($fundsInSource as $model) {
-                        $finalOb = $tracker['netOb'];
-                        $finalDisb = $tracker['netDisb'];
-                        $status = ($finalDisb >= $finalOb && $finalOb > 0) ? 'Disbursed' : 'Obligated';
-
+                        $status = ($tracker['netDisb'] >= $tracker['netOb'] && $tracker['netOb'] > 0) ? 'Disbursed' : 'Obligated';
+                        
                         $model->update([
-                            'obligation_serial'   => $tracker['found_serial'] ?? $model->obligation_serial,
-                            'obligation_amount'   => $finalOb,
+                            'obligation_serial'   => ($tracker['found_serial'] !== 'N/A') ? $tracker['found_serial'] : $model->obligation_serial,
+                            'obligation_amount'   => $tracker['netOb'],
                             'obligation_date'     => $tracker['latestObDate'],
-                            'disbursement_amount' => $finalDisb,
+                            'disbursement_amount' => $tracker['netDisb'],
                             'disbursement_date'   => $tracker['latestDisbDate'],
                             'status'              => $status,
-                            'status_date'         => now()->format('Y-m-d')
+                            'status_date'         => now()
                         ]);
 
+                        // This structure fixes the "undefined" errors in your UI
                         $syncedDetails[] = [
-                            'name'   => $model->fundSource->name ?? 'Unknown',
-                            'dtrack' => $targetDtrack,
-                            'serial' => $tracker['found_serial'] ?? 'Not Found',
-                            'amount' => number_format($finalOb, 2),
+                            'name'   => $model->fundSource->name ?? 'HIT',
+                            'dtrack' => $targetDtrack, // Matches "DTrack:" in your UI
+                            'serial' => $tracker['found_serial'] ?? 'N/A', // Matches "Serial:"
+                            'amount' => number_format($tracker['netOb'], 2), // Matches "Amount:"
                             'status' => $status
                         ];
                     }
                 }
 
                 $spreadsheet->disconnectWorksheets();
-                unset($spreadsheet, $sheet);
+                unset($spreadsheet);
                 if (file_exists($tempFile)) @unlink($tempFile);
             }
 
@@ -816,25 +816,31 @@ class FundController extends Controller
             return is_numeric($raw) ? (float)$raw : 0.0;
         };
 
-        // Obligation is in Column J
+        // 1. Obligation is in Column J
         $obVal = $clean($sheet->getCell("J$row")->getCalculatedValue());
-        if ($obVal != 0) {
-            $data['netOb'] += $obVal;
-            $data['latestObDate'] = $this->parseExcelDate($sheet->getCell("B$row")->getValue());
+        $data['netOb'] += $obVal;
+        
+        // Get Obligation Date from Column C
+        $obDate = $sheet->getCell("C$row")->getValue();
+        if (!empty($obDate)) {
+            $data['latestObDate'] = $this->parseExcelDate($obDate);
         }
 
-        // DISBURSEMENT SCAN (Based on your new RAODS columns)
-        $disbCols = ['N', 'U', 'AB', 'AI', 'AP', 'AW', 'BD', 'BK', 'BR', 'BY', 'CF', 'CM'];
-        $dateCols = ['R', 'Y', 'AF', 'AM', 'AT', 'BA', 'BH', 'BO', 'BV', 'CC', 'CJ', 'CQ'];
+        // 2. DISBURSEMENT MAPPING
+        // Dates: N, U, AB, AI, AP, AW, BD, BK, BR, BY, CF, CM
+        // Totals: R, Y, AF, AM, AT, BA, BH, BO, BV, CC, CJ, CQ
+        $dateCols = ['N', 'U', 'AB', 'AI', 'AP', 'AW', 'BD', 'BK', 'BR', 'BY', 'CF', 'CM'];
+        $totalCols = ['R', 'Y', 'AF', 'AM', 'AT', 'BA', 'BH', 'BO', 'BV', 'CC', 'CJ', 'CQ'];
 
-        foreach ($disbCols as $idx => $col) {
-            $val = $clean($sheet->getCell($col . $row)->getCalculatedValue());
+        foreach ($totalCols as $idx => $tCol) {
+            $val = $clean($sheet->getCell($tCol . $row)->getCalculatedValue());
             if ($val != 0) {
                 $data['netDisb'] += $val;
-                // Capture the date associated with this disbursement
-                $d = $sheet->getCell($dateCols[$idx] . $row)->getValue();
-                if (!empty($d)) {
-                    $data['latestDisbDate'] = $this->parseExcelDate($d);
+                
+                // Get the corresponding date from the dateCols array
+                $dVal = $sheet->getCell($dateCols[$idx] . $row)->getValue();
+                if (!empty($dVal)) {
+                    $data['latestDisbDate'] = $this->parseExcelDate($dVal);
                 }
             }
         }
