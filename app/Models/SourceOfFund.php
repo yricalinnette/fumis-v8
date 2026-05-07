@@ -21,7 +21,8 @@ class SourceOfFund extends Model
         'total_amount',
         'spreadsheet_id',
         'sheet_name',
-        'is_active'
+        'is_active',
+        'section_id',
     ];
     
     protected $casts = [

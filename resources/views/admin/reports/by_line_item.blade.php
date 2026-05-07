@@ -101,63 +101,79 @@
 
     <hr class="mt-2 mb-4">
 
-    @foreach($reportData as $source)
-    <div class="card card-navy card-outline shadow-sm mb-5">
-        @php
-            $currentYear = $year ?? date('Y'); // Uses the year from controller or current
-
-            // 1. Calculations from the Source Array
-            $netSourceBudget = $source['total_activity_budget']; 
-            $totalObligated  = $source['total_obligated'] ?? 0;
-            $totalDisbursed  = $source['total_disbursed'] ?? 0;
-            $totalPending    = $source['total_pending'] ?? 0; // Calculated in Controller
-            $totalSavings    = $source['total_savings'] ?? 0; // Calculated in Controller
-            $totalUntouched  = $source['total_untouched'] ?? 0;
-            
-            // 2. Unassigned/Unobligated Balance 
-            // This is money not yet given to activities + savings from activities
-            $unassignedBalance = $source['unassigned_balance'] ?? 0;
-
-            $totalUnobligated = $totalUntouched + $unassignedBalance;
-
-            // 3. Overall Obligation Rate
-            $overallObligRate = $netSourceBudget > 0 
-                ? ($totalObligated / $netSourceBudget) * 100 
-                : 0;
-
-            $overallDisbRate = $totalObligated > 0 
-                ? ($totalDisbursed / $totalObligated) * 100 
-                : 0;
-        @endphp
-
-        <div class="d-flex justify-content-end p-2">
-            <button type="button" class="btn btn-sm btn-outline-primary btn-copy-card">
-                <i class="fas fa-camera mr-1"></i> Copy
-            </button>
-        </div>
-
-        <div class="card-header bg-white py-3" style="cursor: pointer;" data-card-widget="collapse">
-            <div class="d-flex justify-content-between align-items-center">
-                <h3 class="card-title text-navy font-weight-bold">
-                    <i class="fas fa-folder-open mr-2 text-secondary"></i>
-                    {{ $source['source_name'] }}
-                </h3>
-                <div class="card-tools d-flex align-items-center">
-                    <div class="text-right mr-3">
-                        <span class="text-uppercase text-xs text-muted d-block">Source Total</span>
-                        <span class="badge badge-navy px-3 py-2 font-weight-bold">
-                            ₱{{ number_format($source['source_total'], 2) }}
-                        </span>
-                    </div>
-                    <button type="button" class="btn btn-tool" data-card-widget="collapse">
-                        <i class="fas fa-minus"></i>
-                    </button>
-                </div>
+    @foreach($reportData as $sectionName => $sources)
+        {{-- Section Header --}}
+        <div class="row mt-5 mb-3">
+            <div class="col-12">
+                <h4 class="text-navy font-weight-bold border-bottom pb-2">
+                    <i class="fas fa-university mr-2"></i> {{ $sectionName }}
+                </h4>
             </div>
         </div>
 
-        <div class="card-body p-0">
-            <div class="p-4 bg-light border-bottom">
+        @foreach($sources as $source)
+        <div class="card card-navy card-outline shadow-sm mb-5">
+            @php
+                $currentYear = $year ?? date('Y'); 
+
+                $netSourceBudget = $source['total_activity_budget']; 
+                $totalObligated  = $source['total_obligated'] ?? 0;
+                $totalDisbursed  = $source['total_disbursed'] ?? 0;
+                $totalPending    = $source['total_pending'] ?? 0; 
+                
+                // CORRECTED: Unpaid Obligations Calculation (Obligation - Disbursement)
+                $totalUnpaidObligations = $totalObligated - $totalDisbursed; 
+
+                $totalUntouched  = $source['total_untouched'] ?? 0;
+                $unassignedBalance = $source['unassigned_balance'] ?? 0;
+                $totalUnobligated = $totalUntouched + $unassignedBalance;
+
+                $overallObligRate = $netSourceBudget > 0 
+                    ? ($totalObligated / $netSourceBudget) * 100 
+                    : 0;
+
+                $overallDisbRate = $totalObligated > 0 
+                    ? ($totalDisbursed / $totalObligated) * 100 
+                    : 0;
+            @endphp
+
+            {{-- <div class="d-flex justify-content-end p-2">
+                <button type="button" class="btn btn-sm btn-outline-primary btn-copy-card">
+                    <i class="fas fa-camera mr-1"></i> Copy
+                </button>
+            </div> --}}
+
+            <div class="card-header bg-white py-1 px-3" style="cursor: pointer; min-height: 40px;" data-card-widget="collapse">
+                <div class="d-flex justify-content-between align-items-center">
+                    {{-- Left: Source Name and Total on a single line --}}
+                    <div class="d-flex align-items-center">
+                        <i class="fas fa-folder text-muted mr-2" style="font-size: 0.8rem;"></i>
+                        <h3 class="card-title text-navy font-weight-bold mb-0 mr-3" style="font-size: 0.95rem; white-space: nowrap;">
+                            {{ $source['source_name'] }}
+                        </h3>
+                        
+                        {{-- Professional Inline Total with Vertical Divider --}}
+                        <div class="d-flex align-items-center border-left pl-3" style="height: 15px; border-color: #dee2e6 !important;">
+                            <span class="text-uppercase text-muted mr-2" style="font-size: 0.6rem; font-weight: 800; letter-spacing: 0.3px;">Source Total:</span>
+                            <span class="text-dark font-weight-bold" style="font-size: 0.9rem;">
+                                ₱{{ number_format($source['source_total'] ?? 0, 2) }}
+                            </span>
+                        </div>
+                    </div>
+
+                    {{-- Right: Compact Tool Buttons --}}
+                    <div class="card-tools d-flex align-items-center">
+                        <button type="button" class="btn btn-sm btn-outline-primary btn-copy-card">
+                    <i class="fas fa-camera mr-1"></i> Copy
+                </button>
+                        <button type="button" class="btn btn-tool btn-xs p-1" data-card-widget="collapse">
+                            <i class="fas fa-minus" style="font-size: 0.8rem;"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card-body p-0">
                 <div class="p-4 bg-light border-bottom">
                     <div class="row align-items-center no-gutters">
                         <div class="col-md-2 text-center">
@@ -186,7 +202,7 @@
 
                         <div class="col-md-2 border-left text-center">
                             <span class="text-uppercase text-xs text-muted d-block text-success">Unpaid Obligations</span>
-                            <h5 class="font-weight-bold mb-0 text-success">₱{{ number_format($totalSavings, 2) }}</h5>
+                            <h5 class="font-weight-bold mb-0 text-success">₱{{ number_format($totalUnpaidObligations, 2) }}</h5>
                             <small class="text-muted" style="font-size: 0.65rem;">(Oblig - Disb)</small>
                         </div>
 
@@ -197,119 +213,115 @@
                         </div>
                     </div> 
                 </div>
-            </div>
-            
-            <div class="table-responsive" style="max-height: 500px;">
-                <table class="table table-sm table-hover table-sticky mb-0">
-                    <thead>
-                        <tr class="text-muted text-uppercase text-xs">
-                            <th class="pl-4 py-3" style="width: 25%">Activity Details</th>
-                            <th class="text-right py-3">Alloted Budget</th>
-                            <th class="text-right py-3 bg-light border-left-info">Obligated</th>
-                            <th class="text-center py-3 bg-light">Obligation %</th>
-                            <th class="text-right py-3 border-left-success">Disbursed</th>
-                            <th class="text-right py-3 b">Disbursement %</th>
-                            <th class="text-right py-3 border-left-success text-success">Unpaid Obligations</th>
-                            <th class="text-right py-3 border-left-warning bg-light text-warning">Pending Transactions</th>
-                            <th class="text-right py-3 bg-light text-primary">Unobligated</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @php
-                            // Initialize local sums to verify against header
-                            $footerPending = 0;
-                            $footerSavings = 0;
-                            $footerUntouched = 0;
-                        @endphp
-
-                        @forelse($source['line_items'] as $item)
+                
+                <div class="table-responsive" style="max-height: 500px;">
+                    <table class="table table-sm table-hover table-sticky mb-0">
+                        <thead>
+                            <tr class="text-muted text-uppercase text-xs">
+                                <th class="pl-4 py-3" style="width: 25%">Activity Details</th>
+                                <th class="text-right py-3">Alloted Budget</th>
+                                <th class="text-right py-3 bg-light border-left-info">Obligated</th>
+                                <th class="text-center py-3 bg-light">Obligation %</th>
+                                <th class="text-right py-3 border-left-success">Disbursed</th>
+                                <th class="text-right py-3">Disbursement %</th>
+                                <th class="text-right py-3 border-left-success text-success">Unpaid Obligations</th>
+                                <th class="text-right py-3 border-left-warning bg-light text-warning">Pending Transactions</th>
+                                <th class="text-right py-3 bg-light text-primary">Unobligated</th>
+                            </tr>
+                        </thead>
+                        <tbody>
                             @php
-                                $netBudget = $item['net_budget'];
-                                $obligated = $item['obligated_amount'];
-                                $disbursed = $item['disbursed_amount'];
-                                $pending   = $item['pending_amount']; 
-                                $savings   = $item['savings'];        
-                                // Assuming pooled_amount is passed in the $item array from the controller
-                                $pooled    = $item['pooled_amount'] ?? 0; 
-
-                                // Untouched: Money in the budget that isn't obligated AND isn't even pending
-                                $untouched = $netBudget - ($obligated + $pending);
-                                $untouched = $untouched > 0 ? $untouched : 0;
-
-                                $footerPending += $pending;
-                                $footerSavings += $savings;
-                                $footerUntouched += $untouched;
-
-                                $rowObligRate = $item['obligation_rate'];
-                                $rowDisbRate = $item['disbursement_rate'];
+                                $footerPending = 0;
+                                $footerUnpaid = 0;
+                                $footerUntouched = 0;
                             @endphp
-                            <tr>
-                                <td class="pl-4 align-middle">
-                                    <span class="font-weight-600 text-dark d-block">{{ $item['name'] }}</span>
-                                </td>
-                                <td class="text-right align-middle font-weight-bold">
-                                    ₱{{ number_format($netBudget, 2) }}
-                                    {{-- ADDED POOLED NOTE HERE --}}
-                                    @if($pooled > 0)
-                                        <small class="d-block font-weight-normal text-danger" style="font-style: italic;">
-                                            (Pooled: ₱{{ number_format($pooled, 2) }})
-                                        </small>
-                                    @endif
-                                </td>
-                                <td class="text-right align-middle text-info font-weight-bold border-left-info">₱{{ number_format($obligated, 2) }}</td>
-                                <td class="text-center align-middle bg-light">
-                                    <span class="badge {{ $rowObligRate >= 90 ? 'badge-success' : 'badge-warning' }}">
-                                        {{ number_format($rowObligRate, 1) }}%
-                                    </span>
-                                </td>
-                                <td class="text-right align-middle text-success font-weight-bold border-left-success">₱{{ number_format($disbursed, 2) }}</td>
-                                
-                                <td class="text-center align-middle bg-light">
-                                    <span class="badge {{ $rowDisbRate >= 90 ? 'badge-success' : 'badge-warning' }}">
-                                        {{ number_format($rowDisbRate, 1) }}%
-                                    </span>
-                                </td>
 
-                                <td class="text-right align-middle border-left-success {{ $savings > 0 ? 'text-success font-weight-bold' : 'text-muted' }}">
-                                    ₱{{ number_format($savings, 2) }}
-                                </td>
-                                <td class="text-right align-middle border-left-warning bg-light {{ $pending > 0 ? 'text-warning font-weight-bold' : 'text-muted' }}">
-                                    ₱{{ number_format($pending, 2) }}
-                                </td>
-                                <td class="text-right align-middle {{ $untouched > 0 ? 'text-primary font-weight-bold' : 'text-muted' }}">
-                                    ₱{{ number_format($untouched, 2) }}
-                                </td>
-                            </tr>
-                        @empty
-                            <tr><td colspan="8" class="text-center py-4">No Data Available</td></tr>
-                        @endforelse
-                    </tbody>
-                    
-                    @if(count($source['line_items']) > 0)
-                        <tfoot class="bg-navy-light font-weight-bold">
-                            <tr>
-                                <td class="text-center text-navy py-3">CONSOLIDATED TOTALS</td>
-                                <td class="text-right">₱{{ number_format($netSourceBudget, 2) }}</td>
-                                <td class="text-right text-info border-left-info">₱{{ number_format($totalObligated, 2) }}</td>
-                                <td class="text-center">
-                                    <span class=" text-success">{{ number_format($overallObligRate, 1) }}%</span>
-                                </td>
-                                <td class="text-right text-success border-left-success">₱{{ number_format($source['total_disbursed'], 2) }}</td>
-                                
-                                <td class="text-center ">
-                                    <span class="text-success ">{{ number_format($source['overall_disb_rate'], 1) }}%</span>
-                                </td>
+                            @forelse($source['line_items'] as $item)
+                                @php
+                                    $netBudget = $item['net_budget'];
+                                    $obligated = $item['obligated_amount'];
+                                    $disbursed = $item['disbursed_amount'];
+                                    $pending   = $item['pending_amount']; 
+                                    
+                                    // CORRECTED: Row Level Unpaid Obligations
+                                    $rowUnpaid = $obligated - $disbursed;
+                                    
+                                    $pooled    = $item['pooled_amount'] ?? 0; 
+                                    $untouched = $item['untouched_amount'] ?? ($netBudget - ($obligated + $pending));
+                                    $untouched = $untouched > 0 ? $untouched : 0;
 
-                                <td class="text-right text-success border-left-success">₱{{ number_format($footerSavings, 2) }}</td>
-                                <td class="text-right text-warning border-left-warning bg-light">₱{{ number_format($footerPending, 2) }}</td>
-                                <td class="text-right text-primary bg-light">₱{{ number_format($footerUntouched, 2) }}</td>
-                            </tr>
-                        </tfoot>
-                    @endif
-                </table>
+                                    $footerPending += $pending;
+                                    $footerUnpaid  += $rowUnpaid;
+                                    $footerUntouched += $untouched;
+
+                                    $rowObligRate = $item['obligation_rate'];
+                                    $rowDisbRate = $item['disbursement_rate'];
+                                @endphp
+                                <tr>
+                                    <td class="pl-4 align-middle">
+                                        <span class="font-weight-600 text-dark d-block">{{ $item['name'] }}</span>
+                                    </td>
+                                    <td class="text-right align-middle font-weight-bold">
+                                        ₱{{ number_format($netBudget, 2) }}
+                                        @if($pooled > 0)
+                                            <small class="d-block font-weight-normal text-danger" style="font-style: italic;">
+                                                (Pooled: ₱{{ number_format($pooled, 2) }})
+                                            </small>
+                                        @endif
+                                    </td>
+                                    <td class="text-right align-middle text-info font-weight-bold border-left-info">₱{{ number_format($obligated, 2) }}</td>
+                                    <td class="text-center align-middle bg-light">
+                                        <span class="badge {{ $rowObligRate >= 90 ? 'badge-success' : 'badge-warning' }}">
+                                            {{ number_format($rowObligRate, 1) }}%
+                                        </span>
+                                    </td>
+                                    <td class="text-right align-middle text-success font-weight-bold border-left-success">₱{{ number_format($disbursed, 2) }}</td>
+                                    
+                                    <td class="text-center align-middle bg-light">
+                                        <span class="badge {{ $rowDisbRate >= 90 ? 'badge-success' : 'badge-warning' }}">
+                                            {{ number_format($rowDisbRate, 1) }}%
+                                        </span>
+                                    </td>
+
+                                    <td class="text-right align-middle border-left-success {{ $rowUnpaid > 0 ? 'text-success font-weight-bold' : 'text-muted' }}">
+                                        ₱{{ number_format($rowUnpaid, 2) }}
+                                    </td>
+                                    <td class="text-right align-middle border-left-warning bg-light {{ $pending > 0 ? 'text-warning font-weight-bold' : 'text-muted' }}">
+                                        ₱{{ number_format($pending, 2) }}
+                                    </td>
+                                    <td class="text-right align-middle {{ $untouched > 0 ? 'text-primary font-weight-bold' : 'text-muted' }}">
+                                        ₱{{ number_format($untouched, 2) }}
+                                    </td>
+                                </tr>
+                            @empty
+                                <tr><td colspan="9" class="text-center py-4">No Data Available</td></tr>
+                            @endforelse
+                        </tbody>
+                        
+                        @if(count($source['line_items']) > 0)
+                            <tfoot class="bg-navy-light font-weight-bold">
+                                <tr>
+                                    <td class="text-center text-navy py-3">CONSOLIDATED TOTALS</td>
+                                    <td class="text-right">₱{{ number_format($netSourceBudget, 2) }}</td>
+                                    <td class="text-right text-info border-left-info">₱{{ number_format($totalObligated, 2) }}</td>
+                                    <td class="text-center">
+                                        <span class="text-success">{{ number_format($overallObligRate, 1) }}%</span>
+                                    </td>
+                                    <td class="text-right text-success border-left-success">₱{{ number_format($totalDisbursed, 2) }}</td>
+                                    <td class="text-center">
+                                        <span class="text-success">{{ number_format($overallDisbRate, 1) }}%</span>
+                                    </td>
+                                    <td class="text-right text-success border-left-success">₱{{ number_format($footerUnpaid, 2) }}</td>
+                                    <td class="text-right text-warning border-left-warning bg-light">₱{{ number_format($footerPending, 2) }}</td>
+                                    <td class="text-right text-primary bg-light">₱{{ number_format($footerUntouched, 2) }}</td>
+                                </tr>
+                            </tfoot>
+                        @endif
+                    </table>
+                </div>
             </div>
         </div>
-    </div>
+        @endforeach
     @endforeach
 </div>
 @endsection

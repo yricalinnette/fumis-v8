@@ -1,7 +1,7 @@
 <?php
 
-use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\FundController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SettingsController;
@@ -9,124 +9,167 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\ActivityController;
 
+/*
+|--------------------------------------------------------------------------
+| Web Routes - Security Hardened
+|--------------------------------------------------------------------------
+*/
+
 Route::get('/', function () {
     return redirect()->route('login');
 });
 
 // ==========================================================
 // GROUP A: ALL STAFF (General Access)
-// Dashboard, Transactions, Reports, and WFP Configuration
+// Apply Global Throttling to prevent automated scraping
 // ==========================================================
-Route::middleware(['auth', 'verified'])->group(function () {
+Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
     
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
-    // Funds / Transactions
-    Route::get('funds/group/{dtrack}', [FundController::class, 'getGroupByDtrack']);
-    Route::patch('/funds/{id}/status', [FundController::class, 'updateStatus'])->name('funds.updateStatus');
-    Route::get('funds/{id}/sync', [FundController::class, 'syncWithGoogleSheet'])->name('funds.sync');
-    Route::post('/funds/bulk-sync', [FundController::class, 'bulkSync'])->name('funds.bulk-sync');
-    Route::get('/funds/sync-progress', [FundController::class, 'getSyncProgress'])->name('funds.sync-progress');
-    Route::get('/funds/sync-count', function() {
-        $count = \App\Models\Fund::where('status', 'Obligated')->whereNull('disbursement_date')->count();
-        return response()->json(['count' => $count]);
-    })->name('funds.sync-count');
-    Route::post('/funds/sync-cancel', [FundController::class, 'cancelSync'])->name('funds.sync-cancel');
-    Route::delete('/funds/{id}', [FundController::class, 'destroy'])->name('funds.destroy');
-    Route::post('/funds/sync-all', [FundController::class, 'syncAllDTrack'])->name('funds.sync_all');
-    Route::get('/funds/sync-all-dtrack', [FundController::class, 'syncAllDTrack']);
-    Route::get('/funds/check-balance', [FundController::class, 'checkBalance'])->name('funds.check_balance');
-    Route::get('/funds/create', [FundController::class, 'create'])->name('funds.create');
-    Route::post('/funds/store', [FundController::class, 'store'])->name('funds.store');
-    Route::get('/funds', [FundController::class, 'index'])->name('funds.index');
-    Route::get('/funds/awaiting-obligation', [FundController::class, 'getAwaitingObligation'])->name('funds.awaiting');
-    Route::resource('funds', FundController::class);
+    // Funds & Transactions Controller Group
+    Route::controller(FundController::class)->group(function () {
+        Route::get('/funds', 'index')->name('funds.index');
+        Route::get('/funds/create', 'create')->name('funds.create');
+        Route::post('/funds/store', 'store')->name('funds.store');
+        Route::get('/funds/{fund}/edit', 'edit')->name('funds.edit');
+        Route::put('/funds/{fund}', 'update')->name('funds.update');
+        Route::delete('/funds/{id}', 'destroy')->name('funds.destroy');
+        
+        // Data Sync & API (Internal)
+        Route::get('/funds/group/{dtrack}', 'getGroupByDtrack');
+        Route::patch('/funds/{id}/status', 'updateStatus')->name('funds.updateStatus');
+        Route::get('/funds/awaiting-obligation', 'getAwaitingObligation')->name('funds.awaiting');
 
-    // API for dynamic loading
-    Route::get('/api/sources/{sourceId}/activities', function ($sourceId) {
-        $activities = \App\Models\Activity::where('source_of_fund_id', $sourceId)->select('id', 'name', 'pooled_amount')->get();
-        return response()->json($activities);
+        // RESTORED ROUTE: Required by index.blade.php
+        Route::get('/funds/sync-count', function() {
+            $count = \App\Models\Fund::where('status', 'Obligated')
+                ->whereNull('disbursement_date')
+                ->count();
+            return response()->json(['count' => $count]);
+        })->name('funds.sync-count');
+
+        Route::get('/funds/check-balance', 'checkBalance')->name('funds.check_balance');
+        
+        // Critical Operations - INCREASED THROTTLING to handle polling and bulk processing
+        // We increase this from 10 to 1000 to prevent the "Too Many Attempts" error
+        Route::middleware('throttle:1000,1')->group(function () {
+            Route::get('funds/{id}/sync', 'syncWithGoogleSheet')->name('funds.sync');
+            Route::post('/funds/bulk-sync', 'bulkSync')->name('funds.bulk-sync');
+            Route::get('/funds/sync-progress', 'getSyncProgress')->name('funds.sync-progress');
+            Route::post('/funds/sync-cancel', 'cancelSync')->name('funds.sync-cancel');
+            Route::post('/funds/sync-all', 'syncAllDTrack')->name('funds.sync_all');
+            Route::get('/funds/sync-all-dtrack', 'syncAllDTrack');
+        });
     });
 
-    // Reports
-    Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
-    Route::get('reports/budget-by-source', [ReportController::class, 'budgetBySource'])->name('reports.by_source');
-    Route::get('reports/budget-by-line-item', [ReportController::class, 'budgetByLineItem'])->name('reports.by_line_item');
-    Route::get('reports/by_transactions', [ReportController::class, 'byTransactions'])->name('reports.by_transactions');
+    // Explicit resource mapping for funds (excluding already defined routes)
+    Route::resource('funds', FundController::class)->only(['show', 'edit', 'update']);
+
+    // API for dynamic loading - Throttled
+    Route::get('/api/sources/{sourceId}/activities', function ($sourceId) {
+        $activities = \App\Models\Activity::where('source_of_fund_id', $sourceId)
+            ->select('id', 'name', 'pooled_amount')
+            ->get();
+        return response()->json($activities);
+    })->middleware('throttle:30,1');
+
+    // Reports Controller Group
+    Route::controller(ReportController::class)->prefix('reports')->name('reports.')->group(function () {
+        Route::get('/', 'index')->name('index');
+        Route::get('/budget-by-source', 'budgetBySource')->name('by_source');
+        Route::get('/budget-by-line-item', 'budgetByLineItem')->name('by_line_item');
+        Route::get('/by_transactions', 'byTransactions')->name('by_transactions');
+    });
+
+    // Profile Controller Group
+    Route::controller(ProfileController::class)->prefix('profile')->name('profile.')->group(function () {
+        Route::get('/', 'edit')->name('edit');
+        Route::patch('/', 'update')->name('update');
+        Route::delete('/', 'destroy')->name('destroy');
+    });
 
     // Basic WFP View/Print
-    Route::get('/settings/wfp', [SettingsController::class, 'index'])->name('settings.index');
-    Route::post('/settings/activities', [SettingsController::class, 'storeWfp'])->name('settings.activity.storeWfp');
-    Route::get('/settings/print/{id?}', [SettingsController::class, 'printWfp'])->name('settings.print');
+    Route::controller(SettingsController::class)->group(function () {
+        Route::get('/settings/wfp', 'index')->name('settings.index');
+        Route::post('/settings/activities', 'storeWfp')->name('settings.activity.storeWfp');
+        Route::get('/settings/print/{id?}', 'printWfp')->name('settings.print');
 
-    // Profile
-    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
-    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
-    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
-});
+        Route::prefix('settings')->name('settings.')->group(function () {
+            // Signatories
+            Route::get('/employees/search', 'searchEmployees')->name('employees.search');
+            Route::post('/signatories/save', 'saveSignatory')->name('signatories.save');
+            Route::delete('/signatories/delete/{id}', 'deleteSignatory')->name('signatories.delete');
 
-// ==========================================================
-// GROUP B: BUDGET SECTION ONLY (Budget Staff + Admin)
-// Access to Master Data (UACS, Fund Sources, Realign, Import)
-// ==========================================================
-Route::middleware(['auth', 'can:budget-section'])->group(function () {
-    
-    // Budget Line Items
-    Route::get('/settings/budget_line_items', [SettingsController::class, 'budgetLineItems'])->name('settings.budget_line_items');
-    Route::post('/settings/budget_line_items/store', [SettingsController::class, 'storeBudgetLineItem'])->name('settings.budget_line_items.store');
-    Route::put('/settings/budget_line_items/{id}', [SettingsController::class, 'updateBudgetLineItem'])->name('settings.budget_line_items.update');
-    Route::delete('/settings/budget_line_items/{id}', [SettingsController::class, 'destroyBudgetLineItem'])->name('settings.budget_line_items.destroy');
-
-    // Fund Sources
-    Route::get('/settings/fund_sources', [SettingsController::class, 'fundSources'])->name('settings.fund_sources');
-    Route::post('/settings/fund_sources', [SettingsController::class, 'storeSource'])->name('settings.fund_sources.store');
-    Route::delete('/settings/fund_sources/{id}', [SettingsController::class, 'destroyFundSource'])->name('settings.fund_sources.destroy');
-    Route::put('/settings/fund_sources/{id}', [SettingsController::class, 'updateSource'])->name('settings.fund_sources.update');
-    Route::delete('/settings/source/{id}', [SettingsController::class, 'destroySource'])->name('settings.source.destroy');
-    Route::put('/settings/source/{id}', [SettingsController::class, 'updateSource'])->name('settings.source.update');
-
-    // UACS Codes
-    Route::get('/settings/uacs_codes', [SettingsController::class, 'uacsCodes'])->name('settings.uacs_codes');
-    Route::post('/settings/uacs_codes/store', [SettingsController::class, 'storeUACSCodes'])->name('settings.uacs_codes.store');
-    Route::put('/settings/uacs_codes/{id}', [SettingsController::class, 'updateUACSCodes'])->name('settings.uacs_codes.update');
-    Route::delete('/settings/uacs_codes/{id}', [SettingsController::class, 'destroyUACSCodes'])->name('settings.uacs_codes.destroy');
-
-    // Advanced WFP Tools
-    Route::post('/settings/employee', [SettingsController::class, 'storeEmployee'])->name('settings.employee.store');
-    Route::post('/settings/activity', [SettingsController::class, 'storeActivity'])->name('settings.activity.store');
-    Route::get('/settings/activity/{id}/edit', [SettingsController::class, 'editWfp'])->name('settings.activity.edit');
-    Route::post('settings/import', [ActivityController::class, 'importWFP'])->name('settings.activity.import');
-    Route::match(['get', 'post', 'put'], '/settings/template/{id}', [SettingsController::class, 'updateTemplate'])->name('settings.template.update');
-    Route::delete('/settings/activity/{id}', [SettingsController::class, 'destroyActivity'])->name('settings.activity.destroy');
-    Route::get('settings/download-template', [ActivityController::class, 'downloadTemplate'])->name('settings.template.download');
-    Route::post('/settings/realign', [SettingsController::class, 'updateAllocation'])->name('settings.realign');
+            // Realignment
+            Route::post('/realign', 'updateAllocation')->name('realign');
+            Route::post('/activities/pool', 'poolFunds')->name('activity.pool');
+            Route::get('/activity/{id}/edit', 'editWfp')->name('activity.edit');
+        });
+    });
     Route::get('/admin/settings/get-realignment-table/{id}', [SettingsController::class, 'getRealignmentTable']);
-    Route::post('/settings/activities/pool', [SettingsController::class, 'poolFunds'])->name('settings.activity.pool');
-
-    // Signatories
-    Route::get('/settings/employees/search', [SettingsController::class, 'searchEmployees'])->name('settings.employees.search');
-    Route::post('/settings/signatories/save', [SettingsController::class, 'saveSignatory'])->name('settings.signatories.save');
-    Route::delete('/settings/signatories/delete/{id}', [SettingsController::class, 'deleteSignatory'])->name('settings.signatories.delete');
 });
 
 // ==========================================================
-// GROUP C: ADMIN ONLY (Super Admin Access)
-// Solely for Account Management and User Control
+// GROUP B: BUDGET SECTION ONLY
 // ==========================================================
-Route::middleware(['auth', 'can:admin-only'])->group(function () {
+Route::middleware(['auth', 'can:budget-section', 'throttle:30,1'])->group(function () {
     
-    // Account Management
-    Route::get('/settings/accounts', [SettingsController::class, 'userIndex'])->name('settings.accounts');
-    Route::get('/settings/employees/search-ext', [SettingsController::class, 'searchExternal'])->name('employees.external.search');
-    Route::get('/settings/employees/details/{dbedid}', [SettingsController::class, 'getExternalDetails'])->name('employees.details');
-    Route::post('/settings/register-employee', [SettingsController::class, 'registerEmployee'])->name('register.employee');
-    Route::patch('/settings/users/{id}/toggle', [SettingsController::class, 'toggleStatus'])->name('users.toggle-status');
-    Route::put('/settings/users/{id}', [SettingsController::class, 'updateUser'])->name('users.update');
+    Route::controller(SettingsController::class)->prefix('settings')->name('settings.')->group(function () {
+        // Budget Line Items
+        Route::get('/budget_line_items', 'budgetLineItems')->name('budget_line_items');
+        Route::post('/budget_line_items/store', 'storeBudgetLineItem')->name('budget_line_items.store');
+        Route::put('/budget_line_items/{id}', 'updateBudgetLineItem')->name('budget_line_items.update');
+        Route::delete('/budget_line_items/{id}', 'destroyBudgetLineItem')->name('budget_line_items.destroy');
 
-    // Admin User CRUD
-    Route::get('/admin/users/create', [UserController::class, 'create'])->name('admin.users.create');
-    Route::post('/admin/users/store', [UserController::class, 'store'])->name('admin.users.store');
-    Route::get('/admin/users', [UserController::class, 'index'])->name('admin.users.index');
+        // Fund Sources
+        Route::get('/fund_sources', 'fundSources')->name('fund_sources');
+        Route::post('/fund_sources', 'storeSource')->name('fund_sources.store');
+        Route::delete('/fund_sources/{id}', 'destroyFundSource')->name('fund_sources.destroy');
+        Route::put('/fund_sources/{id}', 'updateSource')->name('fund_sources.update');
+        
+        // Redundant routes handled by alias or controller
+        Route::delete('/source/{id}', 'destroySource')->name('source.destroy');
+        Route::put('/source/{id}', 'updateSource')->name('source.update');
+
+        // UACS Codes
+        Route::get('/uacs_codes', 'uacsCodes')->name('uacs_codes');
+        Route::post('/uacs_codes/store', 'storeUACSCodes')->name('uacs_codes.store');
+        Route::put('/uacs_codes/{id}', 'updateUACSCodes')->name('uacs_codes.update');
+        Route::delete('/uacs_codes/{id}', 'destroyUACSCodes')->name('uacs_codes.destroy');
+
+        // Advanced Tools
+        Route::post('/employee', 'storeEmployee')->name('employee.store');
+        Route::post('/activity', 'storeActivity')->name('activity.store');
+        Route::match(['get', 'post', 'put'], '/template/{id}', 'updateTemplate')->name('template.update');
+        Route::delete('/activity/{id}', 'destroyActivity')->name('activity.destroy');
+        
+    });
+
+    Route::post('settings/import', [ActivityController::class, 'importWFP'])->name('settings.activity.import');
+    Route::get('settings/download-template', [ActivityController::class, 'downloadTemplate'])->name('settings.template.download');
+});
+
+// ==========================================================
+// GROUP C: ADMIN ONLY
+// ==========================================================
+Route::middleware(['auth', 'can:admin-only', 'throttle:20,1'])->group(function () {
+    
+    Route::controller(SettingsController::class)->prefix('settings')->group(function () {
+        Route::get('/accounts', 'userIndex')->name('settings.accounts');
+        Route::get('/employees/search-ext', 'searchExternal')->name('employees.external.search');
+        Route::get('/employees/details/{dbedid}', 'getExternalDetails')->name('employees.details');
+        Route::post('/register-employee', 'registerEmployee')->name('register.employee');
+        Route::patch('/users/{id}/toggle', 'toggleStatus')->name('users.toggle-status');
+        Route::put('/users/{id}', 'updateUser')->name('users.update');
+    });
+
+    // Admin User Management
+    Route::controller(UserController::class)->prefix('admin/users')->name('admin.users.')->group(function () {
+        Route::get('/', 'index')->name('index');
+        Route::get('/create', 'create')->name('create');
+        Route::post('/store', 'store')->name('store');
+    });
 });
 
 require __DIR__.'/auth.php';

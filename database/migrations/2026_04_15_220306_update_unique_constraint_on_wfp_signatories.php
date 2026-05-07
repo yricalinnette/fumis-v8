@@ -7,29 +7,47 @@ use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
+    /**
+     * Run the migrations.
+     */
     public function up(): void
     {
+        // Step 1: Add the column if it doesn't exist
+        if (!Schema::hasColumn('wfp_signatories', 'section_id')) {
+            Schema::table('wfp_signatories', function (Blueprint $table) {
+                // Adding the column first. Adjust 'after' as needed.
+                $table->unsignedBigInteger('section_id')->nullable()->after('label');
+            });
+        }
+
+        // Step 2: Handle the Index update
         Schema::table('wfp_signatories', function (Blueprint $table) {
-            // 1. Manually drop the index using a raw query to avoid Laravel name guessing
-            // We'll wrap it in a try-catch or just use a raw statement to ignore if it fails
             try {
-                // This targets the specific index mentioned in your previous error
+                // Drop the old index if it exists
                 DB::statement('ALTER TABLE wfp_signatories DROP INDEX wfp_signatories_wfp_type_label_unique');
             } catch (\Exception $e) {
-                // If it fails, the index might have a different name. 
-                // We'll let the migration continue.
+                // Index might not exist or has a different name; continue safely.
             }
 
-            // 2. Add the new composite unique index
+            // Step 3: Now that the column exists, create the composite unique index
             $table->unique(['wfp_type', 'label', 'section_id'], 'wfp_signatories_composite_unique');
         });
     }
 
+    /**
+     * Reverse the migrations.
+     */
     public function down(): void
     {
         Schema::table('wfp_signatories', function (Blueprint $table) {
+            // Remove the composite index
             $table->dropUnique('wfp_signatories_composite_unique');
-            $table->unique(['wfp_type', 'label']);
+            
+            // Restore the old unique constraint
+            $table->unique(['wfp_type', 'label'], 'wfp_signatories_wfp_type_label_unique');
+            
+            // Remove the column
+            $table->dropColumn('section_id');
         });
     }
 };

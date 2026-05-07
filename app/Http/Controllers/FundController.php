@@ -236,7 +236,41 @@ class FundController extends Controller
         })->sortByDesc('created_at')->values();
 
         $userSectionName = ($currentUser->is_admin) ? 'All Personnel' : ($myDetails->secname ?? 'Assigned Section');
-        $sources = \App\Models\SourceOfFund::where('fiscal_year', date('Y'))->orderBy('name')->get();
+
+        // For the Source of fund dropdown in the Modal Transaction Log
+        // 1. Resolve the User's Section ID from db_common
+        $userSecId = null;
+
+        // Check local mapping table for dbedid
+        $localDetail = \DB::table('employee_details')
+            ->where('user_id', $currentUser->id)
+            ->first();
+
+        if ($localDetail && $localDetail->dbedid) {
+            // Look up the secid in the external db_common database
+            $userSecId = \DB::connection('db_common')
+                ->table('tbl_emp_details')
+                ->where('dbedid', $localDetail->dbedid)
+                ->value('secid');
+        }
+
+        // 2. Fetch the Sources
+        $sourcesQuery = \App\Models\SourceOfFund::where('fiscal_year', date('Y'))
+            ->with(['activities', 'budgetLineItem'])
+            ->orderBy('name');
+
+        // 3. Apply Security Filter
+        // If not admin, restrict to the resolved Section ID
+        if (!$isAdmin) {
+            if ($userSecId) {
+                $sourcesQuery->where('section_id', $userSecId);
+            } else {
+                // Fallback: If no section is found, return empty to prevent data leakage
+                $sourcesQuery->whereRaw('1 = 0');
+            }
+        }
+
+        $sources = $sourcesQuery->get();
 
         $user = auth()->user();
 
@@ -279,8 +313,8 @@ class FundController extends Controller
         }
 
         // 5. Execute the counts
-        $awaitingSyncCount = $syncQuery->count();
-        $awaitingOBRN = $obrnQuery->count();
+        $awaitingSyncCount = Fund::whereNotIn('status', ['Disbursed', 'Cancelled'])->count();
+        $awaitingOBRN = Fund::whereNotIn('status', ['Disbursed', 'Cancelled'])->count();
 
         $allSections = $isAdmin 
             ? \DB::connection('db_common')
@@ -397,14 +431,14 @@ class FundController extends Controller
         }
     }
 
-    public function create()
-    {
-        // Fetch users who have an employee detail link
-        // We 'eager load' employeeDetail to avoid N+1 query issues
-        $users = \App\Models\User::has('employeeDetail')->with('employeeDetail')->get();
+    // public function create()
+    // {
+    //     // Fetch users who have an employee detail link
+    //     // We 'eager load' employeeDetail to avoid N+1 query issues
+    //     $users = \App\Models\User::has('employeeDetail')->with('employeeDetail')->get();
 
-        return view('your-view-name', compact('users'));
-    }
+    //     return view('your-view-name', compact('users'));
+    // }
 
     public function updateStatus(Request $request, $id)
     {
@@ -516,14 +550,32 @@ class FundController extends Controller
         ]);
     }
 
-    //FOR UPDATE TRANSACTION
     public function update(Request $request, $id, \App\Services\DTrackService $dtrackService)
     {
-        $primaryFund = Fund::findOrFail($id);
-        $oldDtrack = $primaryFund->dtrack_no;
+        // 1. Initial Fetch and Guard Clause
+        $primaryFund = \App\Models\Fund::findOrFail($id);
+        
+        // REQUIREMENT: Only 'Routed' status can be edited
+        if ($primaryFund->status !== 'Routed') {
+            return response()->json([
+                'success' => false, 
+                'message' => "This transaction is currently '{$primaryFund->status}' and cannot be modified."
+            ], 422);
+        }
 
+        $oldDtrack = $primaryFund->dtrack_no;
+        $yearPrefix = date('Y') . '-';
+
+        // 2. Auto-fix dtrack_no format (Mirrors store logic)
+        if (!str_starts_with($request->dtrack_no, $yearPrefix)) {
+            $cleanNumber = preg_replace('/[^0-9]/', '', $request->dtrack_no);
+            $suffix = str_replace(date('Y'), '', $cleanNumber);
+            $request->merge(['dtrack_no' => $yearPrefix . $suffix]);
+        }
+
+        // 3. VALIDATION
         $validated = $request->validate([
-            'dtrack_no'         => 'required|regex:/^\d{4}-\d{6}$/', 
+            'dtrack_no'         => ['required', 'regex:/^\d{4}-\d{6}$/'], 
             'transaction_date'  => 'required|date',
             'particulars'       => 'required|string',
             'creditor_ids'      => 'nullable|array',
@@ -531,16 +583,16 @@ class FundController extends Controller
             'allocations.*.id'          => 'nullable|exists:funds,id', 
             'allocations.*.source_id'   => 'required|exists:source_of_funds,id',
             'allocations.*.activity_id' => 'required|exists:activities,id',
-            'allocations.*.amount'      => 'required|numeric|min:0',
+            'allocations.*.amount'      => 'required|numeric|min:0.01',
         ]);
 
-        // --- SECID Logic ---
+        // 4. SECID Logic (Standardized)
         $userId = auth()->id();
         $secid = (auth()->user()->username === 'admin') ? 0 : null;
 
         if (is_null($secid)) {
             $localDetail = \DB::table('employee_details')->where('user_id', $userId)->first();
-            if ($localDetail) {
+            if ($localDetail && $localDetail->dbedid) {
                 $secid = \DB::connection('db_common')->table('tbl_emp_details')
                     ->where('dbedid', $localDetail->dbedid)
                     ->value('secid');
@@ -548,64 +600,58 @@ class FundController extends Controller
         }
 
         if (is_null($secid) && auth()->user()->username !== 'admin') {
-            return response()->json(['message' => 'Unable to determine Section Assignment.'], 422);
+            return response()->json(['success' => false, 'message' => 'System Error: Profile section link missing.'], 422);
         }
 
         try {
-            DB::beginTransaction();
-
-            // 1. Manage deletions (rows removed in UI)
-            $existingRowIds = Fund::where('dtrack_no', $oldDtrack)->pluck('id')->toArray();
-            $submittedRowIds = collect($request->allocations)->pluck('id')->filter()->toArray();
-            Fund::whereIn('id', array_diff($existingRowIds, $submittedRowIds))->delete();
-
-            // 2. Loop through ALLOCATIONS (Fixed the undefined variable error here)
-            foreach ($request->allocations as $item) {
+            return \DB::transaction(function () use ($request, $validated, $secid, $oldDtrack) {
                 
-                $fund = Fund::updateOrCreate(
-                    ['id' => $item['id'] ?? null], // If ID exists, update it. If not, create.
-                    [
-                        'dtrack_no'         => $request->dtrack_no,
-                        'transaction_date'  => $request->transaction_date,
-                        'particulars'       => $request->particulars,
-                        'source_of_fund_id' => $item['source_id'],
-                        'activity_id'       => $item['activity_id'],
-                        'amount'            => $item['amount'],
-                        'secid'             => $secid,
-                        'status_date'       => now()
-                    ]
-                );
+                // A. Handle Deletions (Rows removed from the UI)
+                $existingRowIds = \App\Models\Fund::where('dtrack_no', $oldDtrack)->pluck('id')->toArray();
+                $submittedRowIds = collect($request->allocations)->pluck('id')->filter()->toArray();
+                \App\Models\Fund::whereIn('id', array_diff($existingRowIds, $submittedRowIds))->delete();
 
-                // 3. DTrack Sync Logic
-                // Only sync if it's NOT disbursed and hasn't been updated in the last 30 mins
-                $isStale = !$fund->updated_at || $fund->updated_at->diffInMinutes(now()) > 30;
+                // B. Process Allocations
+                foreach ($request->allocations as $index => $item) {
+                    $activity = \App\Models\Activity::findOrFail($item['activity_id']);
 
-                if ($fund->dtrack_no && $fund->status !== 'Disbursed' && $isStale) {
-                    try {
-                        $externalData = $dtrackService->getDTrackStatus($fund->dtrack_no);
-                        $logs = $externalData['doc_register_destination'] ?? [];
-                        $latestLog = !empty($logs) ? end($logs) : null;
+                    // BUDGET CHECK LOGIC
+                    // Sum all funds for this activity, EXCLUDING the one we are currently updating
+                    $currentFundId = $item['id'] ?? 0;
+                    $totalSpentByOthers = \App\Models\Fund::where('transaction_type_id', $activity->id)
+                        ->where('id', '!=', $currentFundId)
+                        ->sum('amount');
 
-                        if ($latestLog) {
-                            $dtrackStatus = $latestLog['actreq_desc'] ?? '';
-                            $office = $latestLog['dest_office'] ?? 'Unknown Office';
-                            
-                            // Update remarks based on location
-                            $fund->remarks = "Currently at: {$office}" . ($fund->status === 'Obligated' ? " ({$dtrackStatus})" : "");
-                            $fund->save(); 
-                        }
-                    } catch (\Exception $e) {
-                        \Log::error("DTrack Sync failed for {$fund->dtrack_no}: " . $e->getMessage());
+                    $remaining = (float)$activity->budget - (float)$activity->pooled_amount - $totalSpentByOthers;
+
+                    if ($item['amount'] > $remaining) {
+                        throw new \Exception("Row " . ($index + 1) . " exceeds budget for {$activity->name}. Available: ₱" . number_format($remaining, 2));
                     }
+
+                    // C. Update or Create the fund row
+                    $fund = \App\Models\Fund::updateOrCreate(
+                        ['id' => $item['id'] ?? null],
+                        [
+                            'dtrack_no'         => $validated['dtrack_no'],
+                            'transaction_date'  => $validated['transaction_date'],
+                            'particulars'       => $validated['particulars'],
+                            'source_of_fund_id' => $item['source_id'],
+                            'transaction_type_id' => $activity->id, 
+                            'amount'            => $item['amount'],
+                            'user_id'           => auth()->id(),
+                            'secid'             => $secid,
+                            'status'            => 'Routed', // Maintain status
+                        ]
+                    );
+
+                    // D. Sync Creditors (Applied to each allocation row)
+                    $fund->creditors()->sync($request->creditor_ids ?? []);
                 }
-            }
 
-            DB::commit();
-            return response()->json(['success' => true, 'message' => 'Updated successfully!']);
-
+                return response()->json(['success' => true, 'message' => 'Transaction updated successfully!']);
+            });
         } catch (\Exception $e) {
-            DB::rollBack();
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
     }
 
@@ -674,10 +720,9 @@ class FundController extends Controller
 
     public function syncWithGoogleSheet(Request $request, $id)
     {
-        // 1. Resource Management
-        ini_set('memory_limit', '1024M'); 
-        set_time_limit(600);
-        $tempFile = null;
+        // High memory/time limits for large datasets
+        ini_set('memory_limit', '512M'); 
+        set_time_limit(300);
 
         try {
             $clickedFund = Fund::findOrFail($id);
@@ -687,61 +732,36 @@ class FundController extends Controller
                 return response()->json(['success' => false, 'message' => 'DTrack number is missing.']);
             }
 
-            // 2. Database Fetch - Use a collection to prevent null foreach error
             $funds = Fund::with('fundSource')->where('dtrack_no', $targetDtrack)->get();
-            
             if ($funds->isEmpty()) {
-                return response()->json(['success' => false, 'message' => "No records found for DTrack: $targetDtrack"]);
+                return response()->json(['success' => false, 'message' => "No records for DTrack: $targetDtrack"]);
             }
 
-            // Grouping handles the 'foreach' safety
             $fundGroup = $funds->groupBy('source_of_fund_id');
             $syncedDetails = []; 
+
+            // Initialize Google Client Once
+            $client = new \Google\Client();
+            // --- SSL FIX FOR LOCAL XAMPP ---
+            $httpClient = new \GuzzleHttp\Client([
+                'verify' => 'C:\xampp\php\extras\ssl\cacert.pem'
+            ]);
+            $client->setHttpClient($httpClient);
+            // -------------------------------
+            $client->setAuthConfig(storage_path('app/google-credentials.json'));
+            $client->addScope(\Google_Service_Sheets::SPREADSHEETS_READONLY);
+            $service = new \Google_Service_Sheets($client);
 
             foreach ($fundGroup as $sourceId => $fundsInSource) {
                 $sourceConfig = SourceOfFund::find($sourceId);
                 if (!$sourceConfig || !$sourceConfig->spreadsheet_id || !$sourceConfig->sheet_name) continue;
 
-                // Google Drive Download
-                $client = new \Google\Client();
-                $client->setAuthConfig(storage_path('app/google-credentials.json'));
-                $client->addScope(\Google_Service_Drive::DRIVE_READONLY);
-                $driveService = new \Google_Service_Drive($client);
-                
-                $content = $driveService->files->get($sourceConfig->spreadsheet_id, ['alt' => 'media']);
-                $tempFile = tempnam(sys_get_temp_dir(), 'excel_'); 
-                file_put_contents($tempFile, $content->getBody()->getContents());
+                // Fetch Range directly from Sheets API
+                $range = "'{$sourceConfig->sheet_name}'!A:CQ";
+                $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
+                $rows = $response->getValues();
 
-                // 3. Robust Column Generator (Crucial for amounts > Column Z)
-                $columns = [];
-                // Add A-Z
-                foreach (range('A', 'Z') as $char) {
-                    $columns[] = $char;
-                }
-                // Add AA-CQ
-                foreach (['A', 'B', 'C'] as $prefix) {
-                    foreach (range('A', 'Z') as $suffix) {
-                        $col = $prefix . $suffix;
-                        $columns[] = $col;
-                        if ($col === 'CQ') break 2;
-                    }
-                }
-
-                // 2. Initialize Reader with the Filter
-                $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReader('Xlsx');
-                $reader->setReadDataOnly(true);
-                
-                // CRITICAL: Ensure these 3 arguments match the constructor above
-                $filter = new MyReadFilter(1, 20000, $columns);
-                $reader->setReadFilter($filter);
-                
-                $spreadsheet = $reader->load($tempFile);
-                $sheet = $spreadsheet->getSheetByName($sourceConfig->sheet_name);
-                
-                if (!$sheet) {
-                    if (file_exists($tempFile)) @unlink($tempFile);
-                    continue;
-                }
+                if (empty($rows)) continue;
 
                 $tracker = [
                     'netOb' => 0.0, 'netDisb' => 0.0,
@@ -749,21 +769,22 @@ class FundController extends Controller
                     'found_serial' => null, 'found' => false
                 ];
 
-                $highestRow = $sheet->getHighestRow();
-                for ($row = 1; $row <= $highestRow; $row++) {
-                    $sheetDtrack = trim((string)$sheet->getCell("A$row")->getValue());
+                // FAST SEARCH: Iterating through a raw array is much faster than PhpSpreadsheet
+                foreach ($rows as $rowData) {
+                    // Column A is index 0
+                    $sheetDtrack = isset($rowData[0]) ? trim((string)$rowData[0]) : '';
                     
                     if ($sheetDtrack === $targetDtrack) {
                         $tracker['found'] = true;
-                        // Get Serial from Column D using Calculated Value
-                        $valD = $sheet->getCell("D$row")->getCalculatedValue();
-                        $tracker['found_serial'] = !empty($valD) ? trim((string)$valD) : 'N/A';
+                        // Column D is index 3
+                        $tracker['found_serial'] = isset($rowData[3]) ? trim((string)$rowData[3]) : 'N/A';
                         
-                        $this->processEnhancedRowData($sheet, $row, $tracker);
+                        // Call our new optimized array processor
+                        $this->processApiRowData($rowData, $tracker);
+                        break; 
                     }
                 }
 
-                // 4. Database Updates
                 if ($tracker['found']) {
                     foreach ($fundsInSource as $model) {
                         $status = ($tracker['netDisb'] >= $tracker['netOb'] && $tracker['netOb'] > 0) ? 'Disbursed' : 'Obligated';
@@ -778,20 +799,15 @@ class FundController extends Controller
                             'status_date'         => now()
                         ]);
 
-                        // This structure fixes the "undefined" errors in your UI
                         $syncedDetails[] = [
                             'name'   => $model->fundSource->name ?? 'HIT',
-                            'dtrack' => $targetDtrack, // Matches "DTrack:" in your UI
-                            'serial' => $tracker['found_serial'] ?? 'N/A', // Matches "Serial:"
-                            'amount' => number_format($tracker['netOb'], 2), // Matches "Amount:"
+                            'dtrack' => $targetDtrack,
+                            'serial' => $tracker['found_serial'],
+                            'amount' => number_format($tracker['netOb'], 2),
                             'status' => $status
                         ];
                     }
                 }
-
-                $spreadsheet->disconnectWorksheets();
-                unset($spreadsheet);
-                if (file_exists($tempFile)) @unlink($tempFile);
             }
 
             return response()->json([
@@ -804,62 +820,55 @@ class FundController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            if ($tempFile && file_exists($tempFile)) @unlink($tempFile);
-            return response()->json(['success' => false, 'message' => "Internal Error: " . $e->getMessage()], 500);
+            return response()->json(['success' => false, 'message' => "API Error: " . $e->getMessage()], 500);
         }
     }
 
-    private function processEnhancedRowData($sheet, $row, &$data) {
+    private function processApiRowData($rowData, &$tracker) {
         $clean = function($val) {
             $raw = str_replace([',', '₱', ' '], '', trim((string)$val));
             if (str_starts_with($raw, '(')) $raw = '-' . trim($raw, '()');
             return is_numeric($raw) ? (float)$raw : 0.0;
         };
 
-        // 1. Obligation is in Column J
-        $obVal = $clean($sheet->getCell("J$row")->getCalculatedValue());
-        $data['netOb'] += $obVal;
+        // Column J is Index 9 (Obligation Amount)
+        $obVal = isset($rowData[9]) ? $clean($rowData[9]) : 0.0;
+        $tracker['netOb'] += $obVal;
         
-        // Get Obligation Date from Column C
-        $obDate = $sheet->getCell("C$row")->getValue();
-        if (!empty($obDate)) {
-            $data['latestObDate'] = $this->parseExcelDate($obDate);
+        // Column C is Index 2 (Obligation Date)
+        if (isset($rowData[2]) && !empty($rowData[2])) {
+            $tracker['latestObDate'] = $this->parseApiDate($rowData[2]);
         }
 
-        // 2. DISBURSEMENT MAPPING
-        // Dates: N, U, AB, AI, AP, AW, BD, BK, BR, BY, CF, CM
-        // Totals: R, Y, AF, AM, AT, BA, BH, BO, BV, CC, CJ, CQ
-        $dateCols = ['N', 'U', 'AB', 'AI', 'AP', 'AW', 'BD', 'BK', 'BR', 'BY', 'CF', 'CM'];
-        $totalCols = ['R', 'Y', 'AF', 'AM', 'AT', 'BA', 'BH', 'BO', 'BV', 'CC', 'CJ', 'CQ'];
+        // DISBURSEMENT MAPPING (Index = Column Number - 1)
+        // Dates: N(13), U(20), AB(27), AI(34), AP(41), AW(48), BD(55), BK(62), BR(69), BY(76), CF(83), CM(90)
+        // Totals: R(17), Y(24), AF(31), AM(38), AT(45), BA(52), BH(59), BO(66), BV(73), CC(80), CJ(87), CQ(94)
+        $dateIndexes  = [13, 20, 27, 34, 41, 48, 55, 62, 69, 76, 83, 90];
+        $totalIndexes = [17, 24, 31, 38, 45, 52, 59, 66, 73, 80, 87, 94];
 
-        foreach ($totalCols as $idx => $tCol) {
-            $val = $clean($sheet->getCell($tCol . $row)->getCalculatedValue());
-            if ($val != 0) {
-                $data['netDisb'] += $val;
-                
-                // Get the corresponding date from the dateCols array
-                $dVal = $sheet->getCell($dateCols[$idx] . $row)->getValue();
-                if (!empty($dVal)) {
-                    $data['latestDisbDate'] = $this->parseExcelDate($dVal);
+        foreach ($totalIndexes as $idx => $tIdx) {
+            if (isset($rowData[$tIdx])) {
+                $val = $clean($rowData[$tIdx]);
+                if ($val != 0) {
+                    $tracker['netDisb'] += $val;
+                    
+                    // Get the corresponding date
+                    $dIdx = $dateIndexes[$idx];
+                    if (isset($rowData[$dIdx]) && !empty($rowData[$dIdx])) {
+                        $tracker['latestDisbDate'] = $this->parseApiDate($rowData[$dIdx]);
+                    }
                 }
             }
         }
     }
 
-    private function parseExcelDate($dateValue)
-    {
+    private function parseApiDate($dateValue) {
         if (empty($dateValue)) return null;
-
         try {
-            // If it's a numeric value (Excel Serial Date)
-            if (is_numeric($dateValue)) {
-                return \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject($dateValue)->format('Y-m-d');
-            }
-
-            // If it's a string like "01/23/2026"
+            // Google API usually returns strings like "MM/DD/YYYY" or "YYYY-MM-DD"
             return \Carbon\Carbon::parse($dateValue)->format('Y-m-d');
         } catch (\Exception $e) {
-            return null; 
+            return null;
         }
     }
 
@@ -869,70 +878,152 @@ class FundController extends Controller
         $cacheKey = "sync_progress_{$userId}";
         $cancelKey = "sync_cancel_{$userId}";
 
-        $funds = Fund::where('status', 'Obligated')
-                    ->whereNull('disbursement_date')
-                    ->get();
+        // 1. Get all funds except those already fully Disbursed
+        $funds = Fund::where('status', '!=', 'Disbursed')->get();
 
         $total = $funds->count();
-        if ($total === 0) return response()->json(['success' => false]);
+        if ($total === 0) {
+            return response()->json(['success' => false, 'message' => 'No pending funds to sync.']);
+        }
 
-        // Initial state
-        Cache::put($cacheKey, ['current' => 0, 'total' => $total, 'percent' => 0, 'status' => 'processing'], 600);
+        // Initialize progress tracking
+        Cache::forget($cancelKey);
+        $this->updateCache($cacheKey, 0, $total);
         
-        // --- CRITICAL: RELEASE SESSION LOCK ---
-        // This allows the browser to perform the GET progress request 
-        // while this POST request is still looping.
+        // Release session lock so the Progress Bar request can get through
         session_write_close();
 
-        foreach ($funds as $index => $fund) {
-            // Check for cancellation signal
+        // 2. Setup Google Service
+        $client = new \Google\Client();
+        $httpClient = new \GuzzleHttp\Client(['verify' => 'C:\xampp\php\extras\ssl\cacert.pem']);
+        $client->setHttpClient($httpClient);
+        $client->setAuthConfig(storage_path('app/google-credentials.json'));
+        $client->addScope(\Google_Service_Sheets::SPREADSHEETS_READONLY);
+        $service = new \Google_Service_Sheets($client);
+
+        $groupedBySource = $funds->groupBy('source_of_fund_id');
+        $processedCount = 0;
+        $sourceCounter = 0;
+
+        foreach ($groupedBySource as $sourceId => $fundsInSource) {
+            // Stop immediately if user clicked "Cancel"
             if (Cache::has($cancelKey)) {
-                return response()->json(['success' => false, 'message' => 'Cancelled']);
+                $this->finalizeProgress($cacheKey, $processedCount, $total, 'cancelled');
+                return response()->json(['success' => false, 'message' => 'Sync Cancelled']);
+            }
+
+            $sourceConfig = SourceOfFund::find($sourceId);
+            if (!$sourceConfig || !$sourceConfig->spreadsheet_id) {
+                $processedCount += $fundsInSource->count();
+                continue;
             }
 
             try {
-                $this->syncWithGoogleSheet($fund->id);
+                // RATE LIMITING: Pause 1 second if we have many sources to stay under Google's 60rpm limit
+                $sourceCounter++;
+                if ($sourceCounter > 10) {
+                    sleep(1); 
+                }
+
+                $range = "'{$sourceConfig->sheet_name}'!A:CQ";
+                $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
+                $rows = $response->getValues();
+
+                if (!empty($rows)) {
+                    foreach ($fundsInSource as $fund) {
+                        $targetDtrack = trim((string)$fund->dtrack_no);
+                        $tracker = [
+                            'netOb' => 0.0, 'netDisb' => 0.0, 
+                            'latestObDate' => null, 'latestDisbDate' => null, 
+                            'found_serial' => null, 'found' => false
+                        ];
+
+                        // Match DTrack number in the fetched rows
+                        foreach ($rows as $rowData) {
+                            if (isset($rowData[0]) && trim((string)$rowData[0]) === $targetDtrack) {
+                                $tracker['found'] = true;
+                                $tracker['found_serial'] = isset($rowData[3]) ? trim((string)$rowData[3]) : 'N/A';
+                                $this->processApiRowData($rowData, $tracker);
+                                break; 
+                            }
+                        }
+
+                        if ($tracker['found']) {
+                            // Calculate new status based on sheet values
+                            $newStatus = ($tracker['netDisb'] >= $tracker['netOb'] && $tracker['netOb'] > 0) ? 'Disbursed' : 'Obligated';
+                            
+                            $fund->update([
+                                'obligation_serial'   => ($tracker['found_serial'] !== 'N/A') ? $tracker['found_serial'] : $fund->obligation_serial,
+                                'obligation_amount'   => $tracker['netOb'],
+                                'obligation_date'     => $tracker['latestObDate'],
+                                'disbursement_amount' => $tracker['netDisb'],
+                                'disbursement_date'   => $tracker['latestDisbDate'],
+                                'status'              => $newStatus,
+                                'status_date'         => now()
+                            ]);
+                        }
+                        
+                        $processedCount++;
+                        $this->updateCache($cacheKey, $processedCount, $total);
+                    }
+                } else {
+                    $processedCount += $fundsInSource->count();
+                }
+
+                // Memory cleanup: Clear the large rows array before next loop
+                unset($rows);
+
             } catch (\Exception $e) {
-                \Log::error("Sync failed for ID {$fund->id}");
-            }
-
-            $current = $index + 1;
-            $percent = round(($current / $total) * 100);
-
-            // Update Cache
-            Cache::put($cacheKey, [
-                'current' => $current,
-                'total' => $total,
-                'percent' => $percent,
-                'status' => 'processing'
-            ], 600);
-            
-            // --- CRITICAL: FORCE DATABASE COMMIT ---
-            // Since you use 'database' for cache, we need to ensure 
-            // the record is actually written so the other request sees it.
-            if (config('cache.default') == 'database') {
-                // Some environments require a small sleep or DB flush to see changes
-                usleep(100000); // 0.1 second delay to give the DB breathing room
+                \Log::error("Bulk Sync Error (Source $sourceId): " . $e->getMessage());
+                $processedCount += $fundsInSource->count();
+                $this->updateCache($cacheKey, $processedCount, $total);
             }
         }
 
+        $this->finalizeProgress($cacheKey, $total, $total, 'completed');
         return response()->json(['success' => true]);
     }
 
-    // Method to trigger the cancellation
+    /**
+     * Helper to update progress cache
+     */
+    private function updateCache($key, $current, $total) {
+        $percent = round(($current / $total) * 100);
+        Cache::put($key, [
+            'current' => $current,
+            'total' => $total,
+            'percent' => $percent,
+            'status' => 'processing'
+        ], 600);
+    }
+
+    private function finalizeProgress($key, $current, $total, $status) {
+        Cache::put($key, [
+            'current' => $current,
+            'total' => $total,
+            'percent' => round(($current / $total) * 100),
+            'status' => $status
+        ], 600);
+    }
+
     public function cancelSync()
     {
+        // Set the cancel signal for the specific user
         Cache::put("sync_cancel_" . Auth::id(), true, 60);
-        return response()->json(['success' => true]);
+        return response()->json(['success' => true, 'message' => 'Cancellation signal sent.']);
     }
 
     public function getSyncProgress()
     {
-        // Clear the internal Laravel cache for this request to get fresh DB data
-        Cache::forget("sync_progress_" . Auth::id()); 
+        $userId = Auth::id();
+        $data = Cache::get("sync_progress_{$userId}");
         
-        $data = Cache::get("sync_progress_" . Auth::id());
-        return response()->json($data ?: ['percent' => 0]);
+        // If no data exists, the sync hasn't started or cache expired
+        if (!$data) {
+            return response()->json(['percent' => 0, 'status' => 'idle']);
+        }
+        
+        return response()->json($data);
     }
 
     public function destroy($id)

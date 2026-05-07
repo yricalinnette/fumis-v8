@@ -200,34 +200,42 @@
                                 <div id="{{ $collapseId }}" class="collapse {{ $isCurrent ? 'show' : '' }}">
                                     <div class="card-body p-0">
                                         
-                                        @foreach($yearGroups->groupBy('source.name') as $sourceName => $groupedActivities)
-                                            @php
-                                                $source = $groupedActivities->first()->source;
-                                                $totalPooled = $groupedActivities->sum('pooled_amount');
-                                                $activityIds = $groupedActivities->pluck('id');
+                                        {{-- Loop 1: Iterate through each Section Group --}}
+                                        @foreach($groupedBySection as $sectionName => $fundSourcesInThisSection)
+                                            {{-- Section Header --}}
+                                            <div class="section-divider mt-5 mb-3 ml-3">
+                                                <h4 class="text-navy font-weight-bold border-bottom pb-2">
+                                                    <i class="fas fa-layer-group mr-2 text-primary"></i> {{ strtoupper($sectionName) }}
+                                                </h4>
+                                            </div>
 
-                                                $totalObligations = \App\Models\Fund::whereIn('transaction_type_id', $activityIds)
-                                                    ->whereYear('obligation_date', $year) 
-                                                    ->sum('obligation_amount');
+                                            {{-- Loop 2: Iterate through individual Fund Sources in this section --}}
+                                            @foreach($fundSourcesInThisSection as $source)
+                                                @php
+                                                    $activities = $source->activities;
+                                                    $totalPooled = $activities->sum('pooled_amount');
+                                                    $activityIds = $activities->pluck('id');
 
-                                                $sumDistributedRaw = $groupedActivities->sum('budget_adjusted');
-                                                $netDistributedTotal = $sumDistributedRaw - $totalPooled;
-                                                $originalSourceTotal = $source->total_amount; 
-                                                $pooledAdjusted = $originalSourceTotal - $totalPooled;
-                                            @endphp
+                                                    $totalObligations = \App\Models\Fund::whereIn('transaction_type_id', $activityIds)
+                                                        ->whereYear('obligation_date', $currentYear) 
+                                                        ->sum('obligation_amount');
 
-                                            <div class="mx-3 mt-4 mb-3">
-                                                <div class="card card-outline card-primary shadow-sm">
-                                                    <div class="card-header bg-navy py-2">
-                                                        <div class="row align-items-center">
-                                                            <div class="col-md-4">
-                                                                <h5 class="mb-0 font-weight-bold text-white">
-                                                                    <i class="fas fa-university mr-2 text-warning"></i>
-                                                                    {{ strtoupper($sourceName) }}
-                                                                </h5>
-                                                            </div>
+                                                    $sumDistributedRaw = $activities->sum('budget_adjusted');
+                                                    $netDistributedTotal = $sumDistributedRaw - $totalPooled;
+                                                    $pooledAdjusted = $sumDistributedRaw - $totalPooled;
+                                                @endphp
 
-                                                            <div class="col-md-8 text-right">
+                                                <div class="mx-3 mt-4 mb-3">
+                                                    <div class="card card-outline card-primary shadow-sm">
+                                                        <div class="card-header bg-navy py-2">
+                                                            <div class="row align-items-center">
+                                                                <div class="col-md-4">
+                                                                    <h5 class="mb-0 font-weight-bold text-white">
+                                                                        <i class="fas fa-university mr-2 text-warning"></i>
+                                                                        {{ strtoupper($source->name) }}
+                                                                    </h5>
+                                                                </div>
+                                                                <div class="col-md-8 text-right">
                                                                 <div class="d-flex justify-content-end align-items-center">
                                                                     {{-- NEW: Print Per Fund Source Button --}}
                                                                     <div class="px-3 border-right border-secondary">
@@ -258,90 +266,93 @@
                                                                     </div>
                                                                 </div>
                                                             </div>
+                                                            </div>
                                                         </div>
+                                                        
+                                                        <table class="table table-bordered table-sm m-0 mb-4 shadow-sm">
+                                                            <thead>
+                                                                <tr class="bg-gray-light text-center">
+                                                                    <th rowspan="2" style="width: 15%; vertical-align: middle;">OBJECTIVE</th>
+                                                                    <th rowspan="2" style="width: 25%; vertical-align: middle;">ACTIVITIES</th>
+                                                                    <th colspan="2" style="width: 15%;">TIMEFRAME</th>
+                                                                    <th colspan="4" style="width: 15%;">TARGETS</th>
+                                                                    <th rowspan="2" style="width: 10%; vertical-align: middle;">COST</th>
+                                                                    <th rowspan="2" style="width: 12%; vertical-align: middle;">ACTIONS</th>
+                                                                </tr>
+                                                                <tr class="bg-gray-light text-center">
+                                                                    <th>Start</th><th>End</th>
+                                                                    <th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {{-- FIX: Group the $activities collection of THIS specific source by objective --}}
+                                                                @foreach($activities->groupBy('objective') as $objective => $activitiesByObjective)
+                                                                    @foreach($activitiesByObjective as $index => $activity)
+                                                                        @php
+                                                                            $hasTransactions = \App\Models\Fund::where('transaction_type_id', $activity->id)->exists();
+                                                                            $targets = is_array($activity->physical_targets) ? $activity->physical_targets : json_decode($activity->physical_targets, true) ?? [];
+                                                                        @endphp
+                                                                        <tr>
+                                                                            @if($index === 0)
+                                                                                <td rowspan="{{ $activitiesByObjective->count() }}" class="align-top font-weight-bold p-2 bg-white">
+                                                                                    {{ $objective }}
+                                                                                </td>
+                                                                            @endif
+
+                                                                            <td class="p-2">
+                                                                                {{ $activity->name }}
+                                                                                @if($activity->pooled_amount > 0)
+                                                                                    <div class="small text-danger font-italic">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</div>
+                                                                                @endif
+                                                                            </td>
+
+                                                                            <td class="text-center">{{ \Carbon\Carbon::parse($activity->start_date)->format('d M Y') }}</td>
+                                                                            <td class="text-center">{{ \Carbon\Carbon::parse($activity->end_date)->format('d M Y') }}</td>
+
+                                                                            <td class="text-center">{{ $targets['Q1'] ?? '' }}</td>
+                                                                            <td class="text-center">{{ $targets['Q2'] ?? '' }}</td>
+                                                                            <td class="text-center">{{ $targets['Q3'] ?? '' }}</td>
+                                                                            <td class="text-center">{{ $targets['Q4'] ?? '' }}</td>
+
+                                                                            <td class="text-right font-weight-bold">
+                                                                                ₱{{ number_format($activity->budget_adjusted - $activity->pooled_amount, 2) }}
+                                                                            </td>
+
+                                                                            <td class="text-center">
+                                                                                <div class="btn-group">
+                                                                                    <button type="button" class="btn btn-xs btn-info" onclick="openEditWfpModal({{ $activity->id }}, {{ $hasTransactions ? 'true' : 'false' }})">
+                                                                                        <i class="fas fa-edit"></i>
+                                                                                    </button>
+                                                                                    
+                                                                                    @if(!$hasTransactions)
+                                                                                        <button type="button" 
+                                                                                            class="btn btn-xs btn-warning btn-pool-fund" 
+                                                                                            data-id="{{ $activity->id }}"
+                                                                                            data-name="{{ $activity->name }}"
+                                                                                            data-budget="{{ $activity->budget }}"
+                                                                                            data-pooled="{{ $activity->pooled_amount ?? 0 }}"
+                                                                                            data-remarks="{{ $activity->remarks ?? '' }}">
+                                                                                            <i class="fas fa-hand-holding-usd"></i>
+                                                                                        </button>
+                                                                                        <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST" class="d-inline">
+                                                                                            @csrf @method('DELETE')
+                                                                                            <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Delete this activity?')">
+                                                                                                <i class="fas fa-trash"></i>
+                                                                                            </button>
+                                                                                        </form>
+                                                                                    @else
+                                                                                        <span class="badge badge-secondary"><i class="fas fa-lock"></i></span>
+                                                                                    @endif
+                                                                                </div>
+                                                                            </td>
+                                                                        </tr>
+                                                                    @endforeach
+                                                                @endforeach
+                                                            </tbody>
+                                                        </table>
                                                     </div>
                                                 </div>
-                                            </div>
-
-                                            <table class="table table-bordered table-sm m-0 mb-4 shadow-sm">
-                                                <thead>
-                                                    <tr class="bg-gray-light text-center">
-                                                        <th rowspan="2" style="width: 15%; vertical-align: middle;">OBJECTIVE</th>
-                                                        <th rowspan="2" style="width: 25%; vertical-align: middle;">ACTIVITIES</th>
-                                                        <th colspan="2" style="width: 15%;">TIMEFRAME</th>
-                                                        <th colspan="4" style="width: 15%;">TARGETS</th>
-                                                        <th rowspan="2" style="width: 10%; vertical-align: middle;">COST</th>
-                                                        <th rowspan="2" style="width: 12%; vertical-align: middle;">ACTIONS</th>
-                                                    </tr>
-                                                    <tr class="bg-gray-light text-center">
-                                                        <th>Start</th><th>End</th>
-                                                        <th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    @foreach($groupedActivities->groupBy('objective') as $objective => $activitiesByObjective)
-                                                        @foreach($activitiesByObjective as $index => $activity)
-                                                            @php
-                                                                $hasTransactions = \App\Models\Fund::where('transaction_type_id', $activity->id)->exists();
-                                                                $targets = is_array($activity->physical_targets) ? $activity->physical_targets : json_decode($activity->physical_targets, true) ?? [];
-                                                            @endphp
-                                                            <tr>
-                                                                @if($index === 0)
-                                                                    <td rowspan="{{ $activitiesByObjective->count() }}" class="align-top font-weight-bold p-2 bg-white">
-                                                                        {{ $objective }}
-                                                                    </td>
-                                                                @endif
-
-                                                                <td class="p-2">
-                                                                    {{ $activity->name }}
-                                                                    @if($activity->pooled_amount > 0)
-                                                                        <div class="small text-danger font-italic">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</div>
-                                                                    @endif
-                                                                </td>
-
-                                                                <td class="text-center">{{ \Carbon\Carbon::parse($activity->start_date)->format('d M Y') }}</td>
-                                                                <td class="text-center">{{ \Carbon\Carbon::parse($activity->end_date)->format('d M Y') }}</td>
-
-                                                                <td class="text-center">{{ $targets['Q1'] ?? '' }}</td>
-                                                                <td class="text-center">{{ $targets['Q2'] ?? '' }}</td>
-                                                                <td class="text-center">{{ $targets['Q3'] ?? '' }}</td>
-                                                                <td class="text-center">{{ $targets['Q4'] ?? '' }}</td>
-
-                                                                <td class="text-right font-weight-bold">
-                                                                    ₱{{ number_format($activity->budget_adjusted - $activity->pooled_amount, 2) }}
-                                                                </td>
-
-                                                                <td class="text-center">
-                                                                    <div class="btn-group">
-                                                                        {{-- INDIVIDUAL PRINT BUTTON --}}
-                                                                        {{-- <a href="{{ route('settings.print', ['id' => $activity->id]) }}" target="_blank" class="btn btn-xs btn-danger">
-                                                                            <i class="fas fa-file-pdf"></i>
-                                                                        </a> --}}
-
-                                                                        <button type="button" class="btn btn-xs btn-info" onclick="openEditWfpModal({{ $activity->id }}, {{ $hasTransactions ? 'true' : 'false' }})">
-                                                                            <i class="fas fa-edit"></i>
-                                                                        </button>
-                                                                        
-                                                                        @if(!$hasTransactions)
-                                                                            <button type="button" class="btn btn-xs btn-warning" onclick="openPoolModal({{ $activity->id }}, '{{ addslashes($activity->name) }}', {{ $activity->budget_adjusted }}, {{ $activity->pooled_amount }})">
-                                                                                <i class="fas fa-hand-holding-usd"></i>
-                                                                            </button>
-                                                                            <form action="{{ route('settings.activity.destroy', $activity->id) }}" method="POST" class="d-inline">
-                                                                                @csrf @method('DELETE')
-                                                                                <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Delete this activity?')">
-                                                                                    <i class="fas fa-trash"></i>
-                                                                                </button>
-                                                                            </form>
-                                                                        @else
-                                                                            <span class="badge badge-secondary"><i class="fas fa-lock"></i></span>
-                                                                        @endif
-                                                                    </div>
-                                                                </td>
-                                                            </tr>
-                                                        @endforeach
-                                                    @endforeach
-                                                </tbody>
-                                            </table>
+                                            @endforeach
                                         @endforeach
                                     </div>
                                 </div>
@@ -358,7 +369,7 @@
                     <div class="card-header bg-white py-3">
                         <div class="d-flex justify-content-between align-items-center">
                             <h3 class="card-title text-bold mb-0">
-                                <i class="fas fa-users-cog mr-1"></i> Signatory Management
+                                <i class="fas fa-users-cog mr-1 text-primary"></i> Signatory Management
                             </h3>
                             <button type="button" class="btn btn-primary btn-sm" onclick="addSignatoryModal()">
                                 <i class="fas fa-plus mr-1"></i> Add Signatory Rule
@@ -366,48 +377,67 @@
                         </div>
                     </div>
                     <div class="card-body p-0">
-                        <table class="table table-hover mb-0">
-                            <thead>
-                                <tr class="bg-gray-light">
-                                    <th style="width: 20%">WFP Type</th>
-                                    <th style="width: 20%">Label</th>
-                                    <th style="width: 35%">Assigned Official</th>
-                                    <th style="width: 15%">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @foreach($signatorySettings as $setting)
-                                <tr>
-                                    <td class="text-uppercase text-bold text-primary">{{ $setting->wfp_type }}</td>
-                                    <td>{{ $setting->label }}</td>
-                                    <td>
-                                        <span class="text-bold">{{ $setting->employee_name }}</span><br>
-                                        <small class="text-muted">{{ $setting->designation }}</small>
-                                    </td>
-                                    
-                                    <td class="text-center">
-                                        <div class="d-flex justify-content-center">
-                                            <button class="btn btn-info btn-xs mr-1" 
-                                                    onclick="editSignatory({{ json_encode($setting) }})" 
-                                                    title="Edit">
-                                                <i class="fas fa-edit"></i>
-                                            </button>
-                                            <button class="btn btn-danger btn-xs" 
-                                                    onclick="deleteSignatory({{ $setting->id }})" 
-                                                    title="Delete">
-                                                <i class="fas fa-trash"></i>
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-                                @endforeach
-                            </tbody>
-                        </table>
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr class="bg-gray-light">
+                                        <th style="width: 15%">Section</th> {{-- NEW COLUMN --}}
+                                        <th style="width: 15%">WFP Type</th>
+                                        <th style="width: 15%">Label</th>
+                                        <th style="width: 35%">Assigned Official</th>
+                                        <th style="width: 10%" class="text-center">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @forelse($signatorySettings as $setting)
+                                    <tr>
+                                        <td>
+                                            <span class="badge badge-info px-2 py-1">
+                                                {{ $setting->section_display_name ?? 'N/A' }}
+                                            </span>
+                                        </td>
+                                        <td class="text-uppercase text-bold text-primary">{{ $setting->wfp_type }}</td>
+                                        <td>{{ $setting->label }}</td>
+                                        <td>
+                                            <span class="text-bold">{{ $setting->employee_name }}</span><br>
+                                            <small class="text-muted text-uppercase">{{ $setting->designation }}</small>
+                                        </td>
+                                        <td class="text-center">
+                                            <div class="btn-group">
+                                                <button class="btn btn-default btn-xs mr-1" 
+                                                        onclick="editSignatory({{ json_encode($setting) }})" 
+                                                        title="Edit">
+                                                    <i class="fas fa-edit text-info"></i>
+                                                </button>
+                                                <button class="btn btn-default btn-xs" 
+                                                        onclick="deleteSignatory({{ $setting->id }})" 
+                                                        title="Delete">
+                                                    <i class="fas fa-trash text-danger"></i>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    @empty
+                                    <tr>
+                                        <td colspan="5" class="text-center py-4 text-muted">
+                                            <i class="fas fa-folder-open fa-2x mb-2"></i><br>
+                                            No signatory rules found for your section.
+                                        </td>
+                                    </tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                     <div class="card-footer">
                         <small class="text-muted">
-                            <i class="fas fa-info-circle mr-1"></i> 
-                            <strong>Program</strong> type usually has 2 signatories. <strong>SAA/Consolidated</strong> usually has 3.
+                            <i class="fas fa-info-circle mr-1 text-info"></i> 
+                            <strong>Visibility:</strong> 
+                            @if($isAdminOrBudget)
+                                You are viewing signatories for <strong>ALL Sections</strong>.
+                            @else
+                                You are viewing signatories only for your <strong>assigned Section</strong>.
+                            @endif
                         </small>
                     </div>
                 </div>
@@ -533,14 +563,19 @@
                                         <option value="">-- Choose Source --</option>
                                         @php $hasCurrentYearSources = false; @endphp
                                         
-                                        @foreach($sources as $source)
-                                            @if($source->fiscal_year == date('Y'))
+                                        {{-- Use $fundSources which is pre-filtered by Section in the Controller --}}
+                                        @foreach($fundSources as $source)
+                                            @if($source->fiscal_year == $currentYear)
                                                 <option value="{{ $source->id }}">
                                                     {{ $source->name }} (FY {{ $source->fiscal_year }})
                                                 </option>
                                                 @php $hasCurrentYearSources = true; @endphp
                                             @endif
                                         @endforeach
+
+                                        @if(!$hasCurrentYearSources)
+                                            <option value="" disabled>No sources available for your section in {{ $currentYear }}</option>
+                                        @endif
                                     </select>
                                     
                                     @if(!$hasCurrentYearSources)
@@ -793,8 +828,8 @@
 </div>
 
 {{-- Import Summary Results --}}
-<div class="modal fade" id="importSummaryModal" tabindex="-1" role="dialog" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered modal-lg" role="document"> {{-- Changed to modal-lg for better table visibility --}}
+{{-- <div class="modal fade" id="importSummaryModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg" role="document"> 
         <div class="modal-content border-0 shadow-lg">
             <div class="modal-header bg-success text-white">
                 <h5 class="modal-title"><i class="fas fa-file-import mr-2"></i> Import Results Summary</h5>
@@ -856,14 +891,14 @@
                 </div>
             </div>
             <div class="modal-footer bg-white border-0">
-                <button type="button" class="btn btn-outline-secondary" data-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-outline-secondary" data-dismiss="modal">Close</button> --}}
                 {{-- <a href="#tabs-realignment" class="btn btn-primary" data-toggle="pill">Go to Realignment</a> --}}
-            </div>
+            {{-- </div>
         </div>
     </div>
-</div>
+</div> --}}
 
-
+{{-- delete source modal --}}
 <div class="modal fade" id="deleteSourceModal" tabindex="-1" role="dialog" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered" role="document">
         <div class="modal-content border-0 shadow-lg">
@@ -894,7 +929,7 @@
     </div>
 </div>
 
-
+{{-- pool fund modal --}}
 <div class="modal fade" id="poolFundModal" tabindex="-1" role="dialog">
     <div class="modal-dialog">
         <form action="{{ route('settings.activity.pool') }}" method="POST">
@@ -1063,23 +1098,37 @@
         });
     });
 
-    function openPoolModal(id, name, budget, currentPooled, currentRemarks) {
-        $('#pool_activity_id').val(id);
-        $('#pool_activity_name').text(name);
-        $('#pool_max_display').text(budget.toLocaleString());
-        $('#pool_input_amount').val(currentPooled);
-        $('#pool_input_amount').attr('max', budget); 
-        
-        // Set the existing remarks if any
-        $('#pool_remarks').val(currentRemarks); 
-        
-        $('#poolFundModal').modal('show');
-    }
+    $(document).ready(function() {
+        // Listen for clicks on buttons with the 'btn-pool-fund' class
+        $('.btn-pool-fund').on('click', function() {
+            // Retrieve data from the button's data attributes
+            const id = $(this).data('id');
+            const name = $(this).data('name');
+            const budget = parseFloat($(this).data('budget'));
+            const currentPooled = $(this).data('pooled');
+            const currentRemarks = $(this).data('remarks');
 
+            // Populate the Modal Fields
+            $('#pool_activity_id').val(id);
+            $('#pool_activity_name').text(name);
+            
+            // Display formatted number to user, but keep raw number for 'max' attribute
+            $('#pool_max_display').text(budget.toLocaleString(undefined, { minimumFractionDigits: 2 }));
+            
+            $('#pool_input_amount').val(currentPooled);
+            $('#pool_input_amount').attr('max', budget); 
+            
+            $('#pool_remarks').val(currentRemarks); 
+            
+            // Show the Modal
+            $('#poolFundModal').modal('show');
+        });
+    });
+
+    // Helper for the "Pool Entire Activity Budget" button
     function setFullPool() {
-        // Get the raw number from the max display text
-        let fullAmount = $('#pool_max_display').text().replace(/,/g, '');
-        $('#pool_input_amount').val(fullAmount);
+        const maxAmount = $('#pool_input_amount').attr('max');
+        $('#pool_input_amount').val(maxAmount);
     }
 
     $(function () {
@@ -1238,8 +1287,16 @@
 
             $('#edit_budget_amount').val(formattedBudget);
             
-            if (data.start_date) $('#edit_start_date').val(data.start_date.split('T')[0]);
-            if (data.end_date) $('#edit_end_date').val(data.end_date.split('T')[0]);
+            if (data.start_date) {
+                // Simply take the first 10 characters: '2026-01-01'
+                let cleanStart = data.start_date.substring(0, 10);
+                $('#edit_start_date').val(cleanStart);
+            }
+
+            if (data.end_date) {
+                let cleanEnd = data.end_date.substring(0, 10);
+                $('#edit_end_date').val(cleanEnd);
+            }
 
             // 2. Select2 Fields & Dependency Filtering
             $('#edit_objective').val(data.objective).trigger('change');

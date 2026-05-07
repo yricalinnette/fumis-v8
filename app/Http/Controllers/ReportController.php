@@ -49,86 +49,89 @@ class ReportController extends Controller
         $month = $request->get('month');
         $quarter = $request->get('quarter');
 
+        // 1. Check permissions using your Gate logic
+        $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
+
         $quarterMonths = [
             1 => [1, 2, 3], 2 => [4, 5, 6],
             3 => [7, 8, 9], 4 => [10, 11, 12],
         ];
 
-        $sources = \App\Models\SourceOfFund::where('fiscal_year', $year)
-            ->with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
-                // MATCHING LOGIC: Same date filtering as byTransactions
-                $query->where(function($q) use ($year) {
-                    $q->whereYear('obligation_date', $year)
-                    ->orWhere(function($sub) use ($year) {
-                        $sub->whereNull('obligation_date')->whereYear('created_at', $year);
-                    });
-                })
-                // MATCHING LOGIC: Exclude Invalid statuses
-                ->whereNotIn('status', ['Cancelled', 'Rejected']);
+        // 2. Fetch Section Names for mapping
+        $sectionNames = \DB::connection('db_common')->table('tbl_section')->pluck('secname', 'secid');
 
-                if ($month) {
-                    $query->whereMonth('obligation_date', $month);
-                } elseif ($quarter && isset($quarterMonths[$quarter])) {
-                    $query->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter]);
+        // 3. Build Query
+        $query = \App\Models\SourceOfFund::where('fiscal_year', $year);
+
+        // Apply Section Filter ONLY for regular users
+        if (!$isAdminOrBudget) {
+            $localDetail = \DB::table('employee_details')->where('user_id', auth()->id())->first();
+            if ($localDetail) {
+                $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+                if ($userSecId) {
+                    $query->where('section_id', $userSecId);
                 }
-            }])->get();
-        
+            }
+        }
 
-        $reportData = $sources->map(function ($source) use ($year) {
-            // 1. Calculate pooling
+        $sources = $query->with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
+            $query->where(function($q) use ($year) {
+                $q->whereYear('obligation_date', $year)
+                ->orWhere(function($sub) use ($year) {
+                    $sub->whereNull('obligation_date')->whereYear('created_at', $year);
+                });
+            })->whereNotIn('status', ['Cancelled', 'Rejected']);
+
+            if ($month) {
+                $query->whereMonth('obligation_date', $month);
+            } elseif ($quarter && isset($quarterMonths[$quarter])) {
+                $query->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter]);
+            }
+        }])->get();
+
+        // 4. Process and Add Section Names
+        $reportData = $sources->map(function ($source) use ($year, $sectionNames) {
             $totalPooled = (float) $source->activities->sum('pooled_amount');
-            
             $originalAllotted = (float) $source->total_amount; 
             $netAllotted = $originalAllotted - $totalPooled;
 
-            // 2. Aggregate Obligations and Disbursements
             $obligated = (float) $source->funds->sum('obligation_amount');
             $disbursed = (float) $source->funds->sum('disbursement_amount');
 
-            /**
-             * UPDATED: Procurable/Non-Procurable Logic
-             * We calculate the budget adjusted minus any amount that was pooled.
-             * This ensures the "Grand Total" percentage matches the "Net Allotted" amount.
-             **/
-            $procurableBudget = $source->activities
-                ->where('is_for_procurement', 1)
-                ->sum(function($activity) {
-                    // Subtract pooled amount from the budget to get the "active" procurable budget
-                    return $activity->budget_adjusted - $activity->pooled_amount;
-                });
+            $procurableBudget = $source->activities->where('is_for_procurement', 1)
+                ->sum(fn($activity) => $activity->budget_adjusted - $activity->pooled_amount);
 
-            $nonProcurableBudget = $source->activities
-                ->where('is_for_procurement', 0)
-                ->sum(function($activity) {
-                    return $activity->budget_adjusted - $activity->pooled_amount;
-                });
+            $nonProcurableBudget = $source->activities->where('is_for_procurement', 0)
+                ->sum(fn($activity) => $activity->budget_adjusted - $activity->pooled_amount);
 
-            // 3. STRICT PENDING LOGIC
-            $pending = (float) $source->funds->filter(function($f) {
-                return (empty($f->obligation_date) || $f->obligation_amount <= 0) && 
-                    ($f->disbursement_amount <= 0);
-            })->sum('amount');
+            $pending = (float) $source->funds->filter(fn($f) => 
+                (empty($f->obligation_date) || $f->obligation_amount <= 0) && ($f->disbursement_amount <= 0)
+            )->sum('amount');
 
-            // 4. UNOBLIGATED BALANCE
             $unobligated = $netAllotted - ($obligated + $pending);
 
             return [
-                'source_name'               => $source->name,
-                'original_source_total'     => $originalAllotted, 
-                'total_pooled'              => $totalPooled,      
-                'source_total'              => $netAllotted,      
-                'total_obligated'           => $obligated,       
-                'total_disbursed'           => $disbursed,
-                'total_pending'             => $pending, 
-                'procurable_budget_total'   => $procurableBudget,
-                'non_procurable_budget_total' => $nonProcurableBudget,
-                'total_unobligated'         => $unobligated > 0 ? $unobligated : 0, 
-                'overall_oblig_rate'        => $netAllotted > 0 ? ($obligated / $netAllotted) * 100 : 0,
-                'overall_disb_rate'         => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
+                'section_id'                  => $source->section_id,
+                'section_name'                => $sectionNames[$source->section_id] ?? 'General/Unassigned',
+                'source_name'                 => $source->name,
+                'source_total'                => $netAllotted, 
+                'total_obligated'             => $obligated, 
+                'total_disbursed'             => $disbursed,
+                'total_pending'               => $pending, 
+                'procurable_budget_total'     => $procurableBudget,     // Ensure this matches
+                'non_procurable_budget_total' => $nonProcurableBudget, // Ensure this matches
+                'total_unobligated'           => $unobligated > 0 ? $unobligated : 0,
+                'overall_oblig_rate'          => $netAllotted > 0 ? ($obligated / $netAllotted) * 100 : 0,
+                'overall_disb_rate'           => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
             ];
         });
 
-        return view('admin.reports.by_source', compact('reportData', 'year'));
+        // 5. Group by Section for the View
+        $groupedReport = $reportData->groupBy('section_name');
+
+        return view('admin.reports.by_source', compact('groupedReport', 'year'));
     }
 
     public function budgetByLineItem(Request $request)
@@ -137,37 +140,38 @@ class ReportController extends Controller
         $month = $request->get('month');
         $quarter = $request->get('quarter');
 
+        // 1. Check permissions using your Gate logic
+        $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
+
         $quarterMonths = [
             1 => [1, 2, 3], 2 => [4, 5, 6],
             3 => [7, 8, 9], 4 => [10, 11, 12],
         ];
 
-        $sources = \App\Models\SourceOfFund::where('fiscal_year', $year)
-            ->with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
-                $query->where(function($q) use ($year) {
-                    $q->whereYear('obligation_date', $year)
-                    ->orWhere(function($sub) use ($year) {
-                        $sub->whereNull('obligation_date')
-                            ->whereYear('created_at', $year);
-                    });
-                });
+        // 2. Fetch Section Names for mapping from db_common
+        $sectionNames = \DB::connection('db_common')->table('tbl_section')->pluck('secname', 'secid');
 
-                if ($month) {
-                    $query->where(function($q) use ($month) {
-                        $q->whereMonth('obligation_date', $month)
-                        ->orWhere(function($sub) { $sub->whereNull('obligation_date'); });
-                    });
-                } elseif ($quarter && isset($quarterMonths[$quarter])) {
-                    $query->where(function($q) use ($quarterMonths, $quarter) {
-                        $q->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter])
-                        ->orWhere(function($sub) { $sub->whereNull('obligation_date'); });
-                    });
+        // 3. Build Query
+        $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
+            ->with(['activities', 'funds']);
+
+        // Apply Section Filter ONLY for regular users
+        if (!$isAdminOrBudget) {
+            $localDetail = \DB::table('employee_details')->where('user_id', auth()->id())->first();
+            if ($localDetail) {
+                $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+                if ($userSecId) {
+                    $query->where('section_id', $userSecId);
                 }
-            }])->get();
+            }
+        }
 
-        $reportData = $sources->map(function ($source) use ($year) {
+        $sources = $query->get();
+
+        $reportData = $sources->map(function ($source) use ($year, $sectionNames) {
             $originalSourceTotal = (float) $source->total_amount;
-            $totalPooledAmount = (float) $source->activities->sum('pooled_amount');
             
             $lineItems = $source->activities->map(function ($activity) use ($source, $year) {
                 $activityFunds = $source->funds->where('transaction_type_id', $activity->id);
@@ -175,67 +179,52 @@ class ReportController extends Controller
                 $obligated = (float) $activityFunds->sum('obligation_amount');
                 $disbursed = (float) $activityFunds->sum('disbursement_amount');
 
-                // PENDING: In-flight transactions (No obligation yet)
-                $pending = (float) $activityFunds->filter(function($f) use ($year) {
-                    return (empty($f->obligation_date) || $f->obligation_amount <= 0) && 
-                        ($f->disbursement_amount <= 0) &&
-                        ($f->created_at->year == $year) &&
-                        (!in_array($f->status, ['Cancelled', 'Rejected']));
-                })->sum('amount');
+                // Logic: Unpaid Obligations = Obligation - Disbursement
+                $unpaid = $obligated - $disbursed;
 
-                // SAVINGS: Obligated but not fully spent (only counted if disbursement exists)
-                $savings = ($obligated > $disbursed && $disbursed > 0) ? ($obligated - $disbursed) : 0;
-                
                 $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
                 $pooled = (float) ($activity->pooled_amount ?? 0);
                 $activityBudgetNet = $activityBudgetGross - $pooled;
 
-                $untouched = $activityBudgetNet - ($obligated + $pending);
-                $untouched = $untouched > 0 ? $untouched : 0;
-
+                $untouched = $activityBudgetNet - ($obligated + ($activityFunds->whereNull('obligation_date')->sum('amount')));
 
                 return [
                     'name'              => $activity->name,
-                    'activity_budget'   => $activityBudgetGross, 
                     'net_budget'        => $activityBudgetNet,
                     'pooled_amount'     => $pooled,
-                    'pending_amount'    => $pending,
-                    'savings'           => (float) $savings, // ADDED THIS KEY
                     'obligated_amount'  => $obligated,
                     'disbursed_amount'  => $disbursed,
+                    'unpaid_amount'     => $unpaid,
+                    'pending_amount'    => (float) $activityFunds->filter(fn($f) => empty($f->obligation_date) && $f->status !== 'Cancelled')->sum('amount'),
+                    'untouched_amount'  => $untouched > 0 ? $untouched : 0,
                     'obligation_rate'   => $activityBudgetNet > 0 ? ($obligated / $activityBudgetNet) * 100 : 0,
                     'disbursement_rate' => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
-                    'untouched_amount' => $untouched,
                 ];
             });
 
-            $totalActivityBudget = $lineItems->sum('net_budget');
-            $unassignedBalance = $originalSourceTotal - $source->activities->sum('budget_adjusted');
-
             return [
+                'section_name'          => $sectionNames[$source->section_id] ?? 'Unassigned Section',
                 'source_name'           => $source->name,
                 'source_total'          => $originalSourceTotal,
-                'unassigned_balance'    => $unassignedBalance,
-                'total_pooled'          => $totalPooledAmount,
+                'unassigned_balance'    => $originalSourceTotal - $source->activities->sum('budget_adjusted'),
                 'line_items'            => $lineItems,
                 'total_pending'         => $lineItems->sum('pending_amount'),
-                'total_savings'         => $lineItems->sum('savings'),
+                'total_unpaid'          => $lineItems->sum('unpaid_amount'), 
                 'total_untouched'       => $lineItems->sum('untouched_amount'),
-                'total_activity_budget' => $totalActivityBudget,
+                'total_activity_budget' => $lineItems->sum('net_budget'),
                 'total_obligated'       => $lineItems->sum('obligated_amount'),
                 'total_disbursed'       => $lineItems->sum('disbursed_amount'),
                 'overall_disb_rate'     => $lineItems->sum('obligated_amount') > 0 ? ($lineItems->sum('disbursed_amount') / $lineItems->sum('obligated_amount')) * 100 : 0,
-                'overall_oblig_rate'    => $totalActivityBudget > 0 ? ($lineItems->sum('obligated_amount') / $totalActivityBudget) * 100 : 0,
+                'overall_oblig_rate'    => $lineItems->sum('net_budget') > 0 ? ($lineItems->sum('obligated_amount') / $lineItems->sum('net_budget')) * 100 : 0,
             ];
-        });
+        })->groupBy('section_name'); // Grouped by Section Name from db_common
 
         return view('admin.reports.by_line_item', compact('reportData', 'year'));
     }
 
     public function byTransactions(Request $request)
     {
-        // 1. Increase time limit to 5 minutes to allow for multiple sequential API calls
-        set_time_limit(300);
+        set_time_limit(60);
 
         $year = $request->get('year', date('Y'));
         $month = $request->get('month');
@@ -246,11 +235,16 @@ class ReportController extends Controller
             3 => [7, 8, 9], 4 => [10, 11, 12],
         ];
 
-        $dtrackService = new \App\Services\DTrackService();
-        $isDTrackReachable = true; // Circuit breaker flag
+        // 1. Check permissions
+        $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
 
-        // 2. Fetch Sources and Funds
-        $sources = \App\Models\SourceOfFund::where('fiscal_year', $year)
+        // 2. Fetch Section Names from db_common for mapping
+        $sectionNames = \DB::connection('db_common')
+            ->table('tbl_section')
+            ->pluck('secname', 'secid');
+
+        // 3. Build Source of Fund Query
+        $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
             ->with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
                 $query->where(function($q) use ($year) {
                     $q->whereYear('obligation_date', $year)
@@ -264,86 +258,74 @@ class ReportController extends Controller
                 } elseif ($quarter && isset($quarterMonths[$quarter])) {
                     $query->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter]);
                 }
-            }])->get();
+            }]);
 
-        // 3. Map Data and Sync DTrack (only if reachable)
-        $groupedData = $sources->map(function ($source) use ($year, $dtrackService, &$isDTrackReachable) {
-            $activities = $source->activities->map(function ($activity) use ($source, $year, $dtrackService, &$isDTrackReachable) {
-                
-                $activityFunds = $source->funds->where('transaction_type_id', $activity->id);
-                
-                // DTRACK SYNC LOGIC
-                foreach ($activityFunds as $fund) {
-                    if (!$isDTrackReachable) continue; 
-
-                    // LOGIC: Only sync if it has a DTrack number, isn't disbursed, 
-                    // and hasn't been updated in the last 120 minutes.
-                    $isStale = !$fund->updated_at || $fund->updated_at->diffInMinutes(now()) > 120;
-
-                    if ($fund->dtrack_no && $fund->status !== 'Disbursed' && $isStale) {
-                        try {
-                            // Use a very short 1.5s timeout for report loops
-                            $externalData = $dtrackService->getDTrackStatus($fund->dtrack_no, 1.5);
-                            
-                            $logs = $externalData['doc_register_destination'] ?? [];
-                            $latestLog = !empty($logs) ? end($logs) : null;
-
-                            if ($latestLog) {
-                                $dtrackStatus = $latestLog['actreq_desc'] ?? '';
-                                $office = $latestLog['dest_office'] ?? 'Unknown Office';
-                                
-                                if ($fund->status === 'Obligated') {
-                                    $fund->remarks = "Currently at: {$office} ({$dtrackStatus})";
-                                } else {
-                                    $fund->status = $this->mapStatus($dtrackStatus); 
-                                    $fund->remarks = "Currently at: {$office}";
-                                }
-
-                                $fund->status_date = now();
-                                $fund->save(); // This resets the 'updated_at' timer
-                            }
-                        } catch (\Exception $e) {
-                            // If it fails or times out, trigger the circuit breaker for this request
-                            $isDTrackReachable = false;
-                        }
-                    }
+        // 4. Apply Section Filter ONLY for regular users
+        if (!$isAdminOrBudget) {
+            $localDetail = \DB::table('employee_details')->where('user_id', auth()->id())->first();
+            if ($localDetail) {
+                $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+                if ($userSecId) {
+                    $query->where('section_id', $userSecId);
                 }
+            }
+        }
 
-                // Calculations
-                $obligated = (float) $activityFunds->sum('obligation_amount');
-                $disbursed = (float) $activityFunds->sum('disbursement_amount');
+        $sources = $query->get();
 
-                $pending = (float) $activityFunds->filter(function($f) {
-                    return (empty($f->obligation_date) || $f->obligation_amount <= 0) && 
-                        ($f->disbursement_amount <= 0);
-                })->sum('amount');
+        // 5. Group and Map Data: Section -> Source -> Activity -> Transactions
+        $groupedReport = $sources->groupBy('section_id')->map(function ($sectionSources, $sectionId) use ($sectionNames) {
+            
+            $sourcesData = $sectionSources->map(function ($source) {
+                
+                $fundsByActivity = $source->funds->groupBy('transaction_type_id');
 
-                $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
-                $pooled = (float) ($activity->pooled_amount ?? 0);
-                $activityBudgetNet = $activityBudgetGross - $pooled;
-                $untouched = $activityBudgetNet - ($obligated + $pending);
+                $activities = $source->activities->map(function ($activity) use ($fundsByActivity) {
+                    $activityFunds = $fundsByActivity->get($activity->id, collect());
+
+                    $obligated = (float) $activityFunds->sum('obligation_amount');
+                    $disbursed = (float) $activityFunds->sum('disbursement_amount');
+
+                    $pending = (float) $activityFunds->filter(function($f) {
+                        return (empty($f->obligation_date) || $f->obligation_amount <= 0) && 
+                            ($f->disbursement_amount <= 0);
+                    })->sum('amount');
+
+                    $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
+                    $pooled = (float) ($activity->pooled_amount ?? 0);
+                    $activityBudgetNet = $activityBudgetGross - $pooled;
+                    $untouched = $activityBudgetNet - ($obligated + $pending);
+
+                    return [
+                        'details'      => $activity,
+                        'net_budget'   => $activityBudgetNet,
+                        'obligated'    => $obligated,
+                        'disbursed'    => $disbursed,
+                        'pending'      => $pending,
+                        'untouched'    => $untouched > 0 ? $untouched : 0,
+                        'transactions' => $activityFunds->values() 
+                    ];
+                });
 
                 return [
-                    'details'      => $activity,
-                    'net_budget'   => $activityBudgetNet,
-                    'obligated'    => $obligated,
-                    'disbursed'    => $disbursed,
-                    'pending'      => $pending,
-                    'untouched'    => $untouched > 0 ? $untouched : 0,
-                    'transactions' => $activityFunds->values()
+                    'source_name'  => $source->name,
+                    'source_total' => $source->activities->sum(fn($a) => ($a->budget_adjusted ?? $a->budget) - ($a->pooled_amount ?? 0)),
+                    'activities'   => $activities
                 ];
             });
 
             return [
-                'source_name' => $source->name,
-                'activities'  => $activities
+                'section_name' => $sectionNames[$sectionId] ?? 'Unknown Section',
+                'sources'      => $sourcesData
             ];
         });
 
         return view('admin.reports.by_transactions', [
-            'groupedData' => $groupedData,
-            'year' => $year,
-            'dtrackOffline' => !$isDTrackReachable // Pass status to view
+            'groupedReport' => $groupedReport,
+            'year'          => $year,
+            'isAdmin'       => $isAdminOrBudget
         ]);
     }
 

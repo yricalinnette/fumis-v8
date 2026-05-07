@@ -664,6 +664,7 @@
 
 @include('funds.modal_form')
 
+{{-- Status Update Modal --}}
 <div class="modal fade" id="statusModal" tabindex="-1" role="dialog">
     <div class="modal-dialog modal-lg" role="document"> <div class="modal-content">
             <div class="modal-header bg-info">
@@ -727,6 +728,7 @@
     </div>
 </div>
 
+{{-- Sync Summary Modal --}}
 <div class="modal fade" id="syncSummaryModal" tabindex="-1" role="dialog" data-backdrop="static">
     <div class="modal-dialog modal-xl modal-dialog-centered" role="document">
         <div class="modal-content border-info">
@@ -795,7 +797,7 @@
     </div>
 </div>
 
-
+{{-- Sync Result Modal --}}
 <div class="modal fade" id="syncResultModal" tabindex="-1" role="dialog" aria-labelledby="syncResultModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered" role="document">
         <div class="modal-content border-0 shadow">
@@ -831,6 +833,7 @@
     </div>
 </div>
 
+{{-- View Transaction Modal --}}
 <div class="modal fade" id="viewTransactionModal" tabindex="-1" role="dialog">
     <div class="modal-dialog modal-lg" role="document">
         <div class="modal-content shadow-lg border-0">
@@ -1243,7 +1246,6 @@
             const btn = $(this);
             window.bulkSyncStopSignal = false;
             
-            // 1. Results Object
             let results = { 
                 success: 0, 
                 failed: 0, 
@@ -1255,23 +1257,30 @@
             let table = $('#funds-table').DataTable();
             const items = [];
 
-            // 2. Capture data from DataTable
+            // 1. Data Capture - Explicitly targeting Column 0 for DTrack
             table.rows().every(function() {
                 const rowNode = this.node();
                 const syncBtn = $(rowNode).find('.btn-sync-sheet');
                 
-                if (syncBtn.length > 0 && !syncBtn.is(':disabled')) {
+                // Status check in Column 6
+                const statusText = $(rowNode).find('td').eq(6).text().trim().toLowerCase(); 
+
+                // SUCCESS: DTrack is in Column 0
+                const dtrackNumber = $(rowNode).find('td').eq(0).text().trim();
+
+                if (statusText !== 'disbursed' && statusText !== 'cancelled' && syncBtn.length > 0 && !syncBtn.is(':disabled')) {
                     items.push({
                         id: syncBtn.data('id'),
-                        serial: syncBtn.data('serial') || $(rowNode).find('td').eq(2).text().trim()
+                        serial: dtrackNumber 
                     });
                 }
             });
 
-            if (items.length === 0) return alert('No valid transactions found.');
+            if (items.length === 0) return alert('No valid transactions found to sync.');
             if (!confirm(`Found ${items.length} item(s). Start Bulk Sync?`)) return;
 
-            btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Processing...');
+            // UI Updates
+            btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Syncing...');
             $('#sync-progress-container').slideDown();
             
             let total = items.length;
@@ -1292,35 +1301,24 @@
                     success: function(response) {
                         if (response.success && response.details) {
                             const d = response.details;
-                            
-                            // IMPORTANT: The data lives inside the first item of synced_items array
-                            const itemData = (d.synced_items && d.synced_items.length > 0) 
-                                            ? d.synced_items[0] 
-                                            : null;
+                            const itemData = (d.synced_items && d.synced_items.length > 0) ? d.synced_items[0] : null;
 
                             if (itemData) {
                                 results.success++;
-
-                                let duplicateRows = [];
-                                if (d.has_duplicates) {
-                                    results.duplicateCount++;
-                                    duplicateRows = [...(d.duplicate_ob_rows || []), ...(d.duplicate_disb_rows || [])];
-                                }
-
+                                let duplicateRows = [...(d.duplicate_ob_rows || []), ...(d.duplicate_disb_rows || [])];
                                 results.successList.push({
-                                    serial: itemData.serial, // Using itemData instead of d
-                                    status: itemData.status, // Using itemData instead of d
-                                    amount: itemData.amount, // Using itemData instead of d
+                                    serial: itemData.serial,
+                                    status: itemData.status,
+                                    amount: itemData.amount,
                                     duplicates: duplicateRows
                                 });
                             } else {
-                                // Handle case where sync worked but no item data was returned
-                                recordFailure(currentItem.serial, "No sync details returned");
+                                // Data missing in Sheet - use our captured Serial
+                                recordFailure(currentItem.serial, "No available data found in RAODS");
                             }
                         } else {
                             recordFailure(currentItem.serial, response.message || "Sync Failed");
                         }
-                        
                         finishItem();
                     },
                     error: function(xhr) {
@@ -1348,53 +1346,33 @@
                 $('#sync-percent-text').text(`${progress}% (${idx + 1}/${total})`);
             }
 
-            // 3. Updated showSummary Function
             function showSummary(res, halted) {
+                // Render Success Table
+                let successHtml = '';
+                res.successList.forEach(item => {
+                    successHtml += `
+                        <tr>
+                            <td><strong>${item.serial}</strong></td>
+                            <td><span class="badge ${item.status === 'Disbursed' ? 'badge-success' : 'badge-primary'}">${item.status}</span></td>
+                            <td>₱${item.amount}</td>
+                            <td>${item.duplicates.length > 0 ? item.duplicates.join(', ') : 'None'}</td>
+                        </tr>`;
+                });
+                $('#list-success-table').html(successHtml || '<tr><td colspan="4" class="text-center">No successful updates.</td></tr>');
+
+                // Render Failed List with Serial Number
+                let failedHtml = '';
+                res.failedList.forEach(item => {
+                    failedHtml += `
+                        <li class="list-group-item list-group-item-danger py-1">
+                            <strong>${item.serial}</strong>: ${item.reason}
+                        </li>`;
+                });
+                $('#list-failed').html(failedHtml || '<li class="list-group-item text-center">No failed transactions.</li>');
+
                 $('#sum-total').text(total);
                 $('#sum-success').text(res.success);
                 $('#sum-failed').text(res.failed);
-                $('#sum-duplicates').text(res.duplicateCount);
-
-                // Populate Success Table
-                let successHtml = '';
-                if (res.successList.length > 0) {
-                    res.successList.forEach(item => {
-                        let dupBadge = item.duplicates.length > 0 
-                            ? `<span class="badge badge-warning text-dark">Rows: ${item.duplicates.join(', ')}</span>` 
-                            : '<span class="text-muted small">None</span>';
-
-                        successHtml += `
-                            <tr>
-                                <td><strong>${item.serial}</strong></td>
-                                <td><span class="badge ${item.status === 'Disbursed' ? 'badge-success' : 'badge-primary'}">${item.status}</span></td>
-                                <td>₱${item.amount}</td>
-                                <td>${dupBadge}</td>
-                            </tr>`;
-                    });
-                } else {
-                    successHtml = '<tr><td colspan="4" class="text-center text-muted">No successful updates.</td></tr>';
-                }
-                $('#list-success-table').html(successHtml);
-
-                // Populate Failed List with Empty Check
-                let failedHtml = '';
-                if (res.failedList.length > 0) {
-                    res.failedList.forEach(item => {
-                        failedHtml += `
-                            <li class="list-group-item list-group-item-danger py-1">
-                                <strong>${item.serial}</strong>: ${item.reason}
-                            </li>`;
-                    });
-                } else {
-                    failedHtml = `
-                        <li class="list-group-item list-group-item-light py-3 text-center">
-                            <i class="fas fa-check-circle text-success mr-2"></i>
-                            <span class="text-muted">No failed transactions.</span>
-                        </li>`;
-                }
-                $('#list-failed').html(failedHtml);
-
-                if (halted) $('#halted-warning').removeClass('d-none');
                 
                 $('#syncSummaryModal').modal('show');
             }
@@ -1503,6 +1481,8 @@
                 "search": ""
             }
         });
+
+
 
         // Capture and log errors quietly instead of using alerts
         $('#funds-table').on('error.dt', function(e, settings, techNote, message) {
@@ -1919,7 +1899,7 @@
             });
         });
 
-        // Helper function to create rows (Reuse this for your "Add Funding Source" button too)
+        //  For dynamically adding new allocation rows in the modal for Fund Sources and Amounts
         function addNewAllocationRow(index, rowId = '') {
             const html = `
             <tr class="allocation-row">
@@ -2068,6 +2048,44 @@
             });
         });
     });
+
+    $(document).ready(function() {
+    let table = $('#funds-table').DataTable();
+
+    $('#sectionFilter').on('change', function() {
+        // Trim whitespace from the selected name
+        let selectedName = $.trim($(this).val());
+        let statusBadge = $('#filterStatus');
+
+        if (selectedName === "") {
+            table.column(2).search('').draw();
+            
+            statusBadge.removeClass('badge-primary').addClass('badge-light')
+                       .html('<i class="fas fa-list-ul mr-1"></i> Showing all records');
+        } else {
+            // REMOVE the '^' and '$' anchors to allow for whitespace or internal HTML
+            // We still escape the regex for safety
+            let searchPattern = $.fn.dataTable.util.escapeRegex(selectedName);
+            
+            // Apply the search
+            table.column(2)
+                 .search(searchPattern, true, false)
+                 .draw();
+
+            // Update the UI Badge
+            let count = table.page.info().recordsDisplay;
+            
+            if (count > 0) {
+                statusBadge.removeClass('badge-light badge-danger').addClass('badge-primary text-white')
+                           .html(`<i class="fas fa-check-circle mr-1"></i> Found ${count} records for ${selectedName}`);
+            } else {
+                // If it still shows 0, let's make the badge show a warning
+                statusBadge.removeClass('badge-light badge-primary').addClass('badge-danger text-white')
+                           .html(`<i class="fas fa-exclamation-triangle mr-1"></i> 0 records found for ${selectedName}`);
+            }
+        }
+    });
+});
 
     $(document).ready(function() {
         function updateCreditorStatus() {

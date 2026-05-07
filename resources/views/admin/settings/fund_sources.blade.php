@@ -175,103 +175,130 @@
         
         <div class="card-body p-0">
             <div class="table-responsive">
-                <table class="table table-hover mb-0" id="fundSourceTable">
-                    <thead class="thead-light">
+                <table class="table table-hover mb-0" id="fundSourceTable" style="border-collapse: separate; border-spacing: 0;">
+                    <thead class="bg-light">
                         <tr>
-                            <th class="border-top-0 py-3 text-uppercase small font-weight-bold">Budget Line / Fund Name</th>
-                            <th class="border-top-0 py-3 text-uppercase small font-weight-bold text-center">Sync Info</th>
-                            <th class="border-top-0 py-3 text-uppercase small font-weight-bold text-right">Original Allotment</th>
-                            <th class="border-top-0 py-3 text-uppercase small font-weight-bold text-center">Pooled Funds</th>
-                            <th class="border-top-0 py-3 text-uppercase small font-weight-bold text-center">Net Allotment</th>
-                            <th class="border-top-0 py-3 text-uppercase small font-weight-bold text-center">FY</th> 
-                            <th class="border-top-0 py-3 text-uppercase small font-weight-bold text-center">Action</th>
+                            <th class="border-0 py-3 pl-4 text-uppercase small font-weight-bold" style="width: 30%;">Budget Line / Fund Name</th>
+                            <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">Sync Status</th>
+                            <th class="border-0 py-3 text-uppercase small font-weight-bold text-right">Original Allotment</th>
+                            <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">Pooled Funds</th>
+                            <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">Net Allotment</th>
+                            <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">FY</th> 
+                            <th class="border-0 py-3 pr-4 text-uppercase small font-weight-bold text-center">Action</th>
                         </tr>
                     </thead>
                     <tbody>
-                        @foreach($sources as $source)
-                        @php
-                            $totalPooled = $source->activities->sum('pooled_amount');
-                            $netAmount = $source->total_amount - $totalPooled;
-                        @endphp
-                        <tr>
-                            <td class="align-middle">
-                                <div class="d-flex flex-column">
-                                    <span class="badge badge-light border text-muted mb-1 w-fit-content" style="font-size: 10px; width: fit-content;">
-                                        {{ $source->budgetLineItem->budget_line_item_name ?? 'N/A' }}
-                                    </span>
-                                    <span class="text-dark font-weight-bold" style="font-size: 1rem;">{{ $source->name }}</span>
-                                </div>
-                            </td>
-                            <td class="align-middle text-center">
-                                @if($source->spreadsheet_id)
-                                    <a href="https://docs.google.com/spreadsheets/d/{{ $source->spreadsheet_id }}" target="_blank" 
-                                    class="btn btn-xs btn-outline-success rounded-pill px-2" data-toggle="tooltip" title="View Google Sheet">
-                                        <i class="fas fa-file-excel mr-1"></i> Linked
-                                    </a>
-                                @else
-                                    <span class="badge badge-light text-muted border py-1 px-2 rounded-pill">
-                                        <i class="fas fa-keyboard mr-1"></i> Manual
-                                    </span>
-                                @endif
-                            </td>
-                            <td class="align-middle text-right font-weight-500">
-                                ₱{{ number_format($source->total_amount, 2) }}
-                            </td>
-                            <td class="align-middle text-center">
-                                @if($totalPooled > 0)
-                                    <span class="badge badge-soft-danger py-2 px-3 rounded-pill text-danger" 
-                                        style="background-color: #fceaea; border: 1px solid #f5c6cb; cursor: help;"
-                                        data-toggle="tooltip" data-html="true" title="Pooled from activities">
-                                        <i class="fas fa-arrow-down mr-1"></i> ₱{{ number_format($totalPooled, 2) }}
-                                    </span>
-                                @else
-                                    <span class="text-muted small">—</span>
-                                @endif
-                            </td>
-                            <td class="align-middle text-center">
-                                <span class="text-primary font-weight-bold" style="font-size: 1.1rem;">
-                                    ₱{{ number_format($netAmount, 2) }}
-                                </span>
-                            </td>
-                            <td class="align-middle text-center">
-                                <span class="badge badge-dark py-1 px-2">{{ $source->fiscal_year }}</span>
-                            </td> 
-                            <td class="align-middle text-center">
-                                <div class="action-btn-group">
-                                    {{-- Updated Edit Button with New Data Attributes --}}
-                                    <button type="button" class="btn btn-action btn-edit btn-edit-source" 
-                                        data-id="{{ $source->id }}" 
-                                        data-source_type="{{ $source->source_type }}"
-                                        data-name="{{ $source->name }}" 
-                                        data-budget_line_item_id="{{ $source->budget_line_item_id }}"
-                                        data-fiscal_year="{{ $source->fiscal_year }}"
-                                        data-allotment_class="{{ $source->allotment_class }}"
-                                        data-total_amount="{{ $source->total_amount }}" 
-                                        
-                                        {{-- SAA Specific Data --}}
-                                        data-saa_date="{{ $source->saa_date ? \Carbon\Carbon::parse($source->saa_date)->format('Y-m-d') : '' }}"
-                                        data-reference_number="{{ $source->reference_number }}"
-                                        data-fund_code="{{ $source->fund_code }}"
-                                        data-approp_code="{{ $source->approp_code }}"
-                                        
-                                        {{-- Google Sheet Data --}}
-                                        data-spreadsheet_id="{{ $source->spreadsheet_id }}" 
-                                        data-sheet_name="{{ $source->sheet_name }}"
-                                        
-                                        data-toggle="tooltip" title="Edit Fund Source">
-                                        <i class="fas fa-edit"></i>
-                                    </button>
+                        @foreach($sources->groupBy('section_id') as $sectionId => $groupedSources)
+                            @php
+                                $section = $sections->firstWhere('id', $sectionId);
+                                $sectionName = $section->section_name ?? 'Unassigned / General';
+                            @endphp
 
-                                    <button type="button" class="btn btn-action btn-delete delete-source-btn" 
-                                        data-id="{{ $source->id }}" 
-                                        data-name="{{ $source->name }}"
-                                        data-count="{{ $source->activities->count() }}"
-                                        data-toggle="tooltip" title="Delete Source">
-                                        <i class="fas fa-trash-alt"></i>
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
+                            {{-- Professional Section Header --}}
+                            <tr class="section-header-row" style="background-color: #f8f9fa;">
+                                <td colspan="7" class="py-2 pl-4 border-bottom border-top">
+                                    <div class="d-flex align-items-center">
+                                        <i class="fas fa-folder-open text-primary mr-2"></i>
+                                        <span class="text-dark font-weight-bold text-uppercase" style="font-size: 0.8rem; letter-spacing: 1px;">
+                                            {{ $sectionName }}
+                                        </span>
+                                        <span class="badge badge-pill badge-secondary ml-2" style="font-size: 0.7rem; opacity: 0.8;">
+                                            {{ $groupedSources->count() }}
+                                        </span>
+                                    </div>
+                                </td>
+                            </tr>
+
+                            @foreach($groupedSources as $source)
+                                @php
+                                    $totalPooled = $source->activities->sum('pooled_amount');
+                                    $netAmount = $source->total_amount - $totalPooled;
+                                @endphp
+                                <tr>
+                                    {{-- Fund Name Column --}}
+                                    <td class="align-middle pl-5 border-top-0"> {{-- Indented for hierarchy --}}
+                                        <div class="d-flex flex-column">
+                                            <span class="text-muted mb-1" style="font-size: 10px; font-weight: 600; text-transform: uppercase;">
+                                                {{ $source->budgetLineItem->budget_line_item_name ?? 'N/A' }}
+                                            </span>
+                                            <span class="text-dark font-weight-bold" style="font-size: 0.95rem;">
+                                                {{ $source->name }}
+                                            </span>
+                                        </div>
+                                    </td>
+
+                                    {{-- Dedicated Sync Status Column --}}
+                                    <td class="align-middle text-center border-top-0">
+                                        @if($source->spreadsheet_id)
+                                            <a href="https://docs.google.com/spreadsheets/d/{{ $source->spreadsheet_id }}" target="_blank" 
+                                            class="btn btn-xs btn-outline-success rounded-pill px-2" 
+                                            style="font-size: 11px; font-weight: 600;"
+                                            data-toggle="tooltip" title="View Google Sheet">
+                                                <i class="fas fa-file-excel mr-1"></i> Linked
+                                            </a>
+                                        @else
+                                            <span class="badge badge-light text-muted border py-1 px-2 rounded-pill" style="font-size: 10px;">
+                                                <i class="fas fa-keyboard mr-1"></i> Manual
+                                            </span>
+                                        @endif
+                                    </td>
+
+                                    <td class="align-middle text-right font-weight-500 border-top-0">
+                                        ₱{{ number_format($source->total_amount, 2) }}
+                                    </td>
+
+                                    <td class="align-middle text-center border-top-0">
+                                        @if($totalPooled > 0)
+                                            <span class="text-danger font-weight-500" style="font-size: 0.9rem;">
+                                                <i class="fas fa-arrow-down mr-1 small"></i>₱{{ number_format($totalPooled, 2) }}
+                                            </span>
+                                        @else
+                                            <span class="text-muted small">—</span>
+                                        @endif
+                                    </td>
+
+                                    <td class="align-middle text-center border-top-0">
+                                        <span class="text-primary font-weight-bold" style="font-size: 1.05rem;">
+                                            ₱{{ number_format($netAmount, 2) }}
+                                        </span>
+                                    </td>
+
+                                    <td class="align-middle text-center border-top-0">
+                                        <span class="badge badge-dark py-1 px-2" style="font-weight: 400;">{{ $source->fiscal_year }}</span>
+                                    </td> 
+
+                                    <td class="align-middle text-center border-top-0 pr-4">
+                                        <div class="btn-group shadow-sm">
+                                            <button type="button" class="btn btn-sm btn-white border btn-edit-source" 
+                                                data-id="{{ $source->id }}" 
+                                                data-source_type="{{ $source->source_type }}"
+                                                data-name="{{ $source->name }}" 
+                                                data-budget_line_item_id="{{ $source->budget_line_item_id }}"
+                                                data-fiscal_year="{{ $source->fiscal_year }}"
+                                                data-allotment_class="{{ $source->allotment_class }}"
+                                                data-total_amount="{{ $source->total_amount }}" 
+                                                data-section_id="{{ $source->section_id }}"
+                                                data-saa_date="{{ $source->saa_date ? \Carbon\Carbon::parse($source->saa_date)->format('Y-m-d') : '' }}"
+                                                data-reference_number="{{ $source->reference_number }}"
+                                                data-fund_code="{{ $source->fund_code }}"
+                                                data-approp_code="{{ $source->approp_code }}"
+                                                data-spreadsheet_id="{{ $source->spreadsheet_id }}" 
+                                                data-sheet_name="{{ $source->sheet_name }}"
+                                                data-toggle="tooltip" title="Edit">
+                                                <i class="fas fa-edit text-info"></i>
+                                            </button>
+
+                                            <button type="button" class="btn btn-sm btn-white border delete-source-btn" 
+                                                data-id="{{ $source->id }}" 
+                                                data-name="{{ $source->name }}"
+                                                data-count="{{ $source->activities->count() }}"
+                                                data-toggle="tooltip" title="Delete">
+                                                <i class="fas fa-trash-alt text-danger"></i>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            @endforeach
                         @endforeach
                     </tbody>
                 </table>
@@ -336,7 +363,7 @@
                                 </div>
                             </div>
                         </div>
-                    </div>
+                    </div>  
 
                     {{-- 3. SHARED FIELDS --}}
                     <div class="row">
@@ -384,14 +411,31 @@
                         </div>
                     </div>
 
-                    <div class="form-group">
-                        <label class="font-weight-bold">Allocated Amount</label>
-                        <div class="input-group">
-                            <div class="input-group-prepend">
-                                <span class="input-group-text bg-light">₱</span>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label class="font-weight-bold">Allocated Amount</label>
+                            <div class="input-group">
+                                <div class="input-group-prepend">
+                                    <span class="input-group-text bg-light">₱</span>
+                                </div>
+                                <input type="text" class="form-control amount-mask-display" id="edit_display_amount" required>
+                                <input type="hidden" name="total_amount" id="edit_raw_amount" class="amount-mask-raw">
                             </div>
-                            <input type="text" class="form-control amount-mask-display" id="edit_display_amount" required>
-                            <input type="hidden" name="total_amount" id="edit_raw_amount" class="amount-mask-raw">
+                        </div>
+
+                        {{-- Responsible Section --}}
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label>Responsible Section <span class="text-danger">*</span></label>
+                                {{-- Added id="edit_section_id" for JS population --}}
+                                <select name="section_id" id="edit_section_id" class="form-control border-info" required>
+                                    <option value="">-- Select Section --</option>
+                                    @foreach($sections as $section)
+                                        <option value="{{ $section->id }}">{{ $section->section_name }}</option>
+                                    @endforeach
+                                </select>
+                                <small class="text-muted">Unit managing this fund.</small>
+                            </div>
                         </div>
                     </div>
                     
@@ -507,41 +551,59 @@
                             </div>
                         </div>
 
-                        {{-- SHARED FIELDS: Year and Allotment Class --}}
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="form-group">
-                                    <label>Fiscal Year</label>
-                                    <select name="fiscal_year" class="form-control" required>
-                                        @php $currentYear = date('Y'); @endphp
-                                        @for($i = $currentYear - 1; $i <= $currentYear + 2; $i++)
-                                            <option value="{{ $i }}" {{ $i == $currentYear ? 'selected' : '' }}>{{ $i }}</option>
-                                        @endfor
-                                    </select>
+                        {{-- SHARED FIELDS: Year, Allotment Class, and Responsible Section --}}
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label>Fiscal Year</label>
+                                        <select name="fiscal_year" class="form-control" required>
+                                            @php $currentYear = date('Y'); @endphp
+                                            @for($i = $currentYear - 1; $i <= $currentYear + 2; $i++)
+                                                <option value="{{ $i }}" {{ $i == $currentYear ? 'selected' : '' }}>{{ $i }}</option>
+                                            @endfor
+                                        </select>
+                                    </div>
                                 </div>
-                            </div>
-                            <div class="col-md-6">
-                                <div class="form-group">
-                                    <label>Allotment Class <span class="text-danger">*</span></label>
-                                    <select name="allotment_class" class="form-control" required>
-                                        <option value="">-- Select Class --</option>
-                                        @foreach($allotmentClasses as $class)
-                                            <option value="{{ $class->allotment_class }}">{{ $class->allotment_class }}</option>
-                                        @endforeach
-                                    </select>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label>Allotment Class <span class="text-danger">*</span></label>
+                                        <select name="allotment_class" class="form-control" required>
+                                            <option value="">-- Select Class --</option>
+                                            @foreach($allotmentClasses as $class)
+                                                <option value="{{ $class->allotment_class }}">{{ $class->allotment_class }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
                                 </div>
+                                
                             </div>
-                        </div>
 
                         {{-- SHARED FIELDS: Amount --}}
-                        <div class="form-group">
-                            <label>Initial Allocated Amount <span class="text-danger">*</span></label>
-                            <div class="input-group">
-                                <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
-                                <input type="text" class="form-control amount-mask-display" placeholder="0.00" required>
-                                <input type="hidden" name="total_amount" class="amount-mask-raw">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label>Allocated Amount <span class="text-danger">*</span></label>
+                                <div class="input-group">
+                                    <div class="input-group-prepend"><span class="input-group-text">₱</span></div>
+                                    <input type="text" class="form-control amount-mask-display" placeholder="0.00" required>
+                                    <input type="hidden" name="total_amount" class="amount-mask-raw">
+                                </div>
+                            </div>
+
+                            {{-- Responsible Section --}}
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label>Responsible Section <span class="text-danger">*</span></label>
+                                    <select name="section_id" class="form-control border-info" required>
+                                        <option value="">-- Select Section --</option>
+                                        @foreach($sections as $section)
+                                            <option value="{{ $section->id }}">{{ $section->section_name }}</option>
+                                        @endforeach
+                                    </select>
+                                    <small class="text-muted">Unit managing this fund.</small>
+                                </div>
                             </div>
                         </div>
+                        
 
                         {{-- 3. Google Sheet Integration --}}
                         <div class="bg-light p-3 border rounded mt-3">
@@ -726,41 +788,44 @@
         });
 
         // 7. EDIT MODAL: Open and Populate
-        $('.btn-edit-source').on('click', function() {
-            const data = $(this).data();
-            
-            // Update Form Action
-            $('#edit-source-form').attr('action', `/settings/fund_sources/${data.id}`);
-            
-            // Set Source Type and Trigger Toggle
-            $('#edit_source_type').val(data.source_type).trigger('change');
-            
-            // Populate Common Fields
-            $('#edit_name').val(data.name);
-            $('#edit_budget_line_item_id').val(data.budget_line_item_id);
-            $('#edit_fiscal_year').val(data.fiscal_year);
-            $('#edit_allotment_class').val(data.allotment_class);
-            
-            // Handle Amount Masking on load
-            const amount = parseFloat(data.total_amount) || 0;
-            $('#edit_raw_amount').val(amount.toFixed(2));
-            $('#edit_display_amount').val(amount.toLocaleString(undefined, {
-                minimumFractionDigits: 2, 
-                maximumFractionDigits: 2
-            }));
-            
-            // SAA Specifics
-            $('#edit_saa_date').val(data.saa_date);
-            $('#edit_reference_number').val(data.reference_number);
-            $('#edit_fund_code').val(data.fund_code);
-            $('#edit_approp_code').val(data.approp_code);
-            
-            // Google Sheet Integration
-            $('#edit_spreadsheet_id').val(data.spreadsheet_id);
-            $('#edit_sheet_name').val(data.sheet_name);
+    $('.btn-edit-source').on('click', function() {
+        const data = $(this).data();
+        
+        // Update Form Action
+        $('#edit-source-form').attr('action', `/settings/fund_sources/${data.id}`);
+        
+        // Set Source Type and Trigger Toggle
+        $('#edit_source_type').val(data.source_type).trigger('change');
+        
+        // Populate Common Fields
+        $('#edit_name').val(data.name);
+        $('#edit_budget_line_item_id').val(data.budget_line_item_id);
+        $('#edit_fiscal_year').val(data.fiscal_year);
+        $('#edit_allotment_class').val(data.allotment_class);
 
-            $('#modal-edit-source').modal('show');
-        });
+        // --- ADDED THIS LINE TO AUTO-FILL THE SECTION ---
+        $('#edit_section_id').val(data.section_id);
+        
+        // Handle Amount Masking on load
+        const amount = parseFloat(data.total_amount) || 0;
+        $('#edit_raw_amount').val(amount.toFixed(2));
+        $('#edit_display_amount').val(amount.toLocaleString(undefined, {
+            minimumFractionDigits: 2, 
+            maximumFractionDigits: 2
+        }));
+        
+        // SAA Specifics
+        $('#edit_saa_date').val(data.saa_date);
+        $('#edit_reference_number').val(data.reference_number);
+        $('#edit_fund_code').val(data.fund_code);
+        $('#edit_approp_code').val(data.approp_code);
+        
+        // Google Sheet Integration
+        $('#edit_spreadsheet_id').val(data.spreadsheet_id);
+        $('#edit_sheet_name').val(data.sheet_name);
+
+        $('#modal-edit-source').modal('show');
+    });
 
     });
 

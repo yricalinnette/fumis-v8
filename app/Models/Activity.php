@@ -58,4 +58,11 @@ class Activity extends Model {
         // Ensure the foreign key matches your DB (budget_line_item_id)
         return $this->belongsTo(BudgetLineItem::class, 'budget_line_item_id');
     }
+    
+    protected function serializeDate(\DateTimeInterface $date)
+    {
+        // This forces Laravel to use your local format (YYYY-MM-DD HH:mm:ss) 
+        // instead of the ISO-8601 (T...Z) format when returning JSON.
+        return $date->format('Y-m-d H:i:s');
+    }
 }

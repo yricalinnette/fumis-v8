@@ -6,24 +6,19 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
-    public function up()
+    public function up(): void
     {
         Schema::table('funds', function (Blueprint $table) {
-            // We use date or datetime depending on if you need the specific hour
-            $table->date('status_date')->nullable()->after('amount');
+            // Adding 'status' before 'status_date' for better logical grouping
+            // We use 'Pending' as a safe default value
+            $table->string('status')->default('Pending')->after('amount');
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('funds', function (Blueprint $table) {
-            //
+            $table->dropColumn('status');
         });
     }
 };
