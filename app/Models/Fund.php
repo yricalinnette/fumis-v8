@@ -8,13 +8,16 @@ class Fund extends Model
 {
     protected $fillable = [
         'dtrack_no',
+        'dtrack_no_new',
         'source_of_fund_id',
         'transaction_type_id',
         'particulars',
         'transaction_date',
         'amount',
+        'creditor',
         'remarks',
         'document_updates',
+        'dtrack_update_date',
         'user_id',
         'secid',
         'status',
@@ -24,6 +27,7 @@ class Fund extends Model
         'obligation_amount',
         'disbursement_date',
         'disbursement_amount',
+        'remarks_salary',
     ];
 
     protected $casts = [

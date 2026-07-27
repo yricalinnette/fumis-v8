@@ -285,7 +285,7 @@
                                                                 </tr>
                                                             </thead>
                                                             <tbody>
-                                                                {{-- FIX: Group the $activities collection of THIS specific source by objective --}}
+                                                                {{-- Group the $activities collection of THIS specific source by objective --}}
                                                                 @foreach($activities->groupBy('objective') as $objective => $activitiesByObjective)
                                                                     @foreach($activitiesByObjective as $index => $activity)
                                                                         @php
@@ -299,10 +299,8 @@
                                                                                 </td>
                                                                             @endif
 
-                                                                            <td class="p-2">
-                                                                                {{ $activity->name }}
-                                                                                @if($activity->pooled_amount > 0)
-                                                                                    <div class="small text-danger font-italic">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</div>
+                                                                            {{-- FIXED: Added style="white-space: pre-wrap;" to preserve text formatting, indents, and carriage returns --}}
+                                                                            <td class="p-2" style="white-space: pre-wrap; vertical-align: top;">{{ $activity->name }}@if($activity->pooled_amount > 0)<div class="small text-danger font-italic">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</div>
                                                                                 @endif
                                                                             </td>
 

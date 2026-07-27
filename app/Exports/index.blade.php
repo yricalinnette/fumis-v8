@@ -350,9 +350,9 @@
                 <tr>
                     <th style="width: 120px;">DTRACK NO.</th>
                     <th style="width: 80px;">Date</th>
-                        @if(auth()->user()->is_admin)
-                            <th style="width: 100px;">Section</th>
-                        @endif
+                    @if(auth()->user()->is_admin)
+                        <th style="width: 100px;">Section</th>
+                    @endif
                     <th style="width: 160px;">Creditor</th> 
                     <th style="width: 90px;">Source</th>
                     <th style="width: 140px;">Activity</th> 
@@ -376,7 +376,7 @@
                     <td class="col-date" data-order="{{ \Carbon\Carbon::parse($fund->transaction_date)->format('Y-m-d') }}">
                         {{ \Carbon\Carbon::parse($fund->transaction_date)->format('M d, Y') }}
                     </td>
-                    @if($isAdmin)
+                   @if($isAdmin)
                         <td>
                             @php
                                 // Use ?? 0 to trigger the 'Admin' default if secid is missing or null
@@ -404,31 +404,8 @@
                         {!! $fund->source_names !!}
                     </td>
                     
-                    <td class="col-activity">
-                        @if(empty($fund->transaction_type_id))
-                            {{-- UNASSIGNED STATE --}}
-                            <div class="unassigned-container-{{ $fund->id }}">
-                                <span class="badge badge-warning text-dark mb-1">
-                                    <i class="fas fa-exclamation-triangle mr-1"></i> Missing Activity
-                                </span>
-                                <select class="form-control form-control-sm select2-activity border-warning mt-1" data-id="{{ $fund->id }}" style="width: 100%;">
-                                    <option value="" disabled selected>-- Select COS Position / Activity --</option>
-                                    
-                                    {{-- Group activities by their Fund Source Name using the source relation --}}
-                                    @foreach($allActivitiesList->groupBy(function($act) { return $act->source->name ?? 'Other / General Fund'; }) as $sourceName => $activitiesGroup)
-                                        <optgroup label="{{ $sourceName }}">
-                                            @foreach($activitiesGroup as $act)
-                                                <option value="{{ $act->id }}">{{ $act->name }}</option>
-                                            @endforeach
-                                        </optgroup>
-                                    @endforeach
-
-                                </select>
-                            </div>
-                        @else
-                            {{-- ASSIGNED STATE --}}
-                            <span class="font-weight-bold text-dark">{!! $fund->activity_names ?: 'N/A' !!}</span>
-                        @endif
+                    <td class="col-activity" style="font-size: 0.85rem; line-height: 1.2;">
+                        {!! $fund->activity_names !!}
                     </td>
                     
                     <td class="col-amount text-right">
@@ -496,12 +473,13 @@
                         @php
                             // 1. Determine if we use Merged or Detailed view for Status
                             $hasSignificantStatus = $fund->breakdown->contains(function($item) {
-                                return in_array($item->status, ['Obligated', 'Disbursed', 'Disbursed (with savings)', 'Completed', 'Cancelled']);
+                                return in_array($item->status, ['Obligated', 'Disbursed', 'Completed', 'Cancelled']);
                             });
-                            $firstStatus = $fund->breakdown->first()->status ?? 'N/A';
+                            $firstStatus = $fund->breakdown->first()->status;
                             $allSameStatus = $fund->breakdown->every('status', $firstStatus);
 
                             // 2. Remark Deduplication Logic
+                            // Get all unique, non-empty remarks from the breakdown
                             $uniqueRemarks = $fund->breakdown->pluck('remarks')->filter()->unique();
                             $allRemarksSame = $uniqueRemarks->count() <= 1;
                         @endphp
@@ -531,20 +509,17 @@
                                         <i class="fas fa-wallet text-muted mr-1"></i> {{ $item->source_name }}
                                     </div>
 
-                                    {{-- Status Badge Rendering --}}
                                     <span class="badge {{ 
                                         in_array($item->status, ['Disbursed', 'Completed']) ? 'badge-success' : 
-                                        ($item->status == 'Disbursed (with savings)' ? 'badge-info' : 
                                         ($item->status == 'Cancelled' ? 'badge-danger' : 
                                         ($item->status == 'Routed' ? 'badge-primary' : 
                                         ($item->status == 'For CAF/Obligation' ? 'badge-warning' : 
-                                        ($item->status == 'Obligated' ? 'bg-orange text-white' : 'badge-info')))))
+                                        ($item->status == 'Obligated' ? 'bg-orange text-white' : 'badge-info'))))
                                     }}">
                                         {{ $item->status }}
                                     </span>
 
                                     <div class="small mt-1">
-                                        {{-- --- OBLIGATED STATE --- --}}
                                         @if($item->status == 'Obligated')
                                             @if(empty($item->obligation_amount) || $item->obligation_amount == 0)
                                                 <div class="text-danger font-italic">
@@ -558,55 +533,43 @@
                                                 @endif
                                             @endif
 
-                                        {{-- --- DISBURSED / DISBURSED (WITH SAVINGS) / COMPLETED STATES --- --}}
-                                        @elseif(in_array($item->status, ['Disbursed', 'Disbursed (with savings)', 'Completed']))
+                                        @elseif(in_array($item->status, ['Disbursed', 'Completed']))
 
-                                            {{-- 1. Original Obligation Date --}}
+                                        {{-- 2. Original Obligation Date --}}
                                             @if($item->obligation_date)
                                                 <div class="text-muted" style="font-size: 0.7rem;">
                                                     <i class="far fa-calendar-alt mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($item->obligation_date)->format('M d, Y') }}
                                                 </div>
                                             @endif
 
-                                            {{-- 2. Disbursement Date & Lead Time --}}
+                                            {{-- 1. Disbursement Date (Primary) --}}
                                             @if($item->disbursement_date)
                                                 <div class="text-success font-weight-bold">
                                                     <i class="fas fa-check-circle mr-1"></i> Disb: {{ \Carbon\Carbon::parse($item->disbursement_date)->format('M d, Y') }}
                                                 </div>
 
-                                                @php
-                                                    $ob = \Carbon\Carbon::parse($item->obligation_date);
-                                                    $disb = \Carbon\Carbon::parse($item->disbursement_date);
-                                                    $days = $ob->diffInDays($disb);
-                                                @endphp
-                                                <div class="text-info font-italic" style="font-size: 0.65rem;">
-                                                    <i class="fas fa-hourglass-half mr-1"></i> Lead Time: {{ $days }} {{ Str::plural('day', $days) }}
-                                                </div>
-                                            @endif
-
-                                            {{-- 3. Savings Calculation & Display --}}
-                                            @if($item->status == 'Disbursed (with savings)' || ($item->obligation_amount > $item->disbursement_amount && $item->disbursement_amount > 0))
-                                                @php
-                                                    $savings = max(0, $item->obligation_amount - $item->disbursement_amount);
-                                                @endphp
-                                                @if($savings > 0)
-                                                    <div class="text-success font-weight-bold mt-1" style="font-size: 0.75rem;">
-                                                        <i class="fas fa-piggy-bank mr-1"></i> Savings: ₱{{ number_format($savings, 2) }}
+                                                {{-- 3. Lead Time Calculation --}}
+                                                @if($item->disbursement_date)
+                                                    @php
+                                                        $ob = \Carbon\Carbon::parse($item->obligation_date);
+                                                        $disb = \Carbon\Carbon::parse($item->disbursement_date);
+                                                        $days = $ob->diffInDays($disb);
+                                                    @endphp
+                                                    <div class="text-info font-italic" style="font-size: 0.65rem;">
+                                                        <i class="fas fa-hourglass-half mr-1"></i> Lead Time: {{ $days }} {{ Str::plural('day', $days) }}
                                                     </div>
                                                 @endif
                                             @endif
-
                                         @endif
 
-                                        {{-- Obligation Serial Number --}}
                                         @if($item->obligation_serial)
-                                            <div class="text-primary font-weight-bold mt-1">
+                                            <div class="text-primary font-weight-bold">
                                                 <i class="fas fa-barcode mr-1"></i> {{ $item->obligation_serial }}
                                             </div>
                                         @endif
                                     </div>
 
-                                    {{-- Individual Item Remarks --}}
+                                    {{-- Remarks --}}
                                     @if(!$allRemarksSame && $item->remarks)
                                         <div class="mt-1 text-muted small border-left pl-2" style="font-style: italic; background-color: #f9f9f9;">
                                             <i class="fas fa-comment-dots mr-1" style="font-size: 0.7rem;"></i> {{ $item->remarks }}
@@ -615,7 +578,7 @@
                                 </div>
                             @endforeach
 
-                            {{-- Merged Remarks for matching items --}}
+                            {{-- Show Merged Remarks at the bottom if all sources share the same remark --}}
                             @if($allRemarksSame && $uniqueRemarks->isNotEmpty())
                                 <div class="mt-2 text-muted small border-left pl-2" style="font-style: italic; background-color: #f8f9fa; border-left: 3px solid #dee2e6 !important;">
                                     <i class="fas fa-comments mr-1" style="font-size: 0.7rem;"></i> 
@@ -648,13 +611,13 @@
                         @endphp
 
                         {{-- 1. Update Status / History Button --}}
-                        <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
+                        {{-- <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
                             style="border-left: 3px solid #17a2b8;"
                             data-id="{{ $fund->id }}" data-dtrack="{{ $fund->dtrack_no }}"
                             {{ $isStatusUpdateDisabled ? 'disabled' : '' }}
                             data-toggle="tooltip" title="Update Status">
                             <i class="fas fa-history {{ $isStatusUpdateDisabled ? 'text-muted' : 'text-info' }}"></i> 
-                        </button>
+                        </button> --}}
 
                         {{-- 2. Edit Button --}}
                         <button type="button" class="btn btn-sm btn-default btn-edit-transaction"
@@ -1223,7 +1186,7 @@
         $groupIcons.attr('class', 'fas fa-circle-notch fa-spin text-warning');
 
         $.ajax({
-            url: `/funds/${fundId}/sync`,
+            url: `{{ url('/funds') }}/${fundId}/sync`,
             method: "GET",
             dataType: "json",
             success: function (response) {
@@ -1293,39 +1256,90 @@
                 failedList: [] 
             };
 
-            if (!confirm(`Start Bulk Sync? This will auto-import all new COS Salary rows and sync existing items.`)) return;
+            let table = $('#funds-table').DataTable();
+            const items = [];
 
-            // UI Updates - Step 1: Backend Auto-Import
-            btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Auto-Importing COS Salaries...');
-            $('#sync-progress-container').slideDown();
-            $('#sync-progress-bar').css('width', '5%');
-            $('#sync-percent-text').text('Reading Google Sheets...');
+            // 1. Data Capture - Explicitly targeting Column 0 for DTrack
+            table.rows().every(function() {
+                const rowNode = this.node();
+                const syncBtn = $(rowNode).find('.btn-sync-sheet');
+                
+                // Status check in Column 6
+                const statusText = $(rowNode).find('td').eq(6).text().trim().toLowerCase(); 
 
-            // Helper: Captures items from DataTable
-            function captureTableItems() {
-                let items = [];
-                if ($.fn.DataTable.isDataTable('#funds-table')) {
-                    let table = $('#funds-table').DataTable();
-                    table.rows().every(function() {
-                        const rowNode = this.node();
-                        const syncBtn = $(rowNode).find('.btn-sync-sheet');
-                        const statusText = $(rowNode).find('td').eq(6).text().trim().toLowerCase(); 
-                        const dtrackNumber = $(rowNode).find('td').eq(0).text().trim();
+                // SUCCESS: DTrack is in Column 0
+                const dtrackNumber = $(rowNode).find('td').eq(0).text().trim();
 
-                        if (statusText !== 'disbursed' && statusText !== 'cancelled' && syncBtn.length > 0 && !syncBtn.is(':disabled')) {
-                            items.push({
-                                id: syncBtn.data('id'),
-                                serial: dtrackNumber 
-                            });
-                        }
+                if (statusText !== 'disbursed' && statusText !== 'cancelled' && syncBtn.length > 0 && !syncBtn.is(':disabled')) {
+                    items.push({
+                        id: syncBtn.data('id'),
+                        serial: dtrackNumber 
                     });
                 }
-                return items;
+            });
+
+            if (items.length === 0) return alert('No valid transactions found to sync.');
+            if (!confirm(`Found ${items.length} item(s). Start Bulk Sync?`)) return;
+
+            // UI Updates
+            btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Syncing...');
+            $('#sync-progress-container').slideDown();
+            
+            let total = items.length;
+            let currentIdx = 0;
+
+            function processNext() {
+                if (window.bulkSyncStopSignal || currentIdx >= total) {
+                    showSummary(results, window.bulkSyncStopSignal);
+                    btn.prop('disabled', false).html('<i class="fas fa-sync"></i> Bulk Sync');
+                    return;
+                }
+
+                let currentItem = items[currentIdx];
+                
+                $.ajax({
+                    url: `{{ url('/funds') }}/${currentItem.id}/sync`,
+                    method: "GET",
+                    success: function(response) {
+                        if (response.success && response.details) {
+                            const d = response.details;
+                            const itemData = (d.synced_items && d.synced_items.length > 0) ? d.synced_items[0] : null;
+
+                            if (itemData) {
+                                results.success++;
+                                let duplicateRows = [...(d.duplicate_ob_rows || []), ...(d.duplicate_disb_rows || [])];
+                                results.successList.push({
+                                    serial: itemData.serial,
+                                    status: itemData.status,
+                                    amount: itemData.amount,
+                                    duplicates: duplicateRows
+                                });
+                            } else {
+                                // Data missing in Sheet - use our captured Serial
+                                recordFailure(currentItem.serial, "No available data found in RAODS");
+                            }
+                        } else {
+                            recordFailure(currentItem.serial, response.message || "Sync Failed");
+                        }
+                        finishItem();
+                    },
+                    error: function(xhr) {
+                        let errorMsg = xhr.responseJSON ? xhr.responseJSON.message : "Server Error";
+                        recordFailure(currentItem.serial, errorMsg);
+                        finishItem();
+                    }
+                });
             }
 
             function recordFailure(serial, reason) {
                 results.failed++;
                 results.failedList.push({ serial: serial, reason: reason });
+            }
+
+            function finishItem() {
+                updateUI(currentIdx, total);
+                currentIdx++;
+                processNext();
             }
 
             function updateUI(idx, total) {
@@ -1334,28 +1348,21 @@
                 $('#sync-percent-text').text(`${progress}% (${idx + 1}/${total})`);
             }
 
-            function showSummary(res) {
+            function showSummary(res, halted) {
                 // Render Success Table
                 let successHtml = '';
                 res.successList.forEach(item => {
-                    let badgeClass = 'badge-primary';
-                    if (item.status === 'Disbursed') {
-                        badgeClass = 'badge-success';
-                    } else if (item.status.indexOf('Disbursed') !== -1) {
-                        badgeClass = 'badge-info'; // Info badge for 'Disbursed (with savings)'
-                    }
-
                     successHtml += `
                         <tr>
                             <td><strong>${item.serial}</strong></td>
-                            <td><span class="badge ${badgeClass}">${item.status}</span></td>
+                            <td><span class="badge ${item.status === 'Disbursed' ? 'badge-success' : 'badge-primary'}">${item.status}</span></td>
                             <td>₱${item.amount}</td>
-                            <td>${item.duplicates && item.duplicates.length > 0 ? item.duplicates.join(', ') : 'None'}</td>
+                            <td>${item.duplicates.length > 0 ? item.duplicates.join(', ') : 'None'}</td>
                         </tr>`;
                 });
                 $('#list-success-table').html(successHtml || '<tr><td colspan="4" class="text-center">No successful updates.</td></tr>');
 
-                // Render Failed List
+                // Render Failed List with Serial Number
                 let failedHtml = '';
                 res.failedList.forEach(item => {
                     failedHtml += `
@@ -1365,126 +1372,14 @@
                 });
                 $('#list-failed').html(failedHtml || '<li class="list-group-item text-center">No failed transactions.</li>');
 
-                let totalProcessed = res.success + res.failed;
-                $('#sum-total').text(totalProcessed);
+                $('#sum-total').text(total);
                 $('#sum-success').text(res.success);
                 $('#sum-failed').text(res.failed);
                 
                 $('#syncSummaryModal').modal('show');
             }
 
-            let csrfToken = $('meta[name="csrf-token"]').attr('content') || $('input[name="_token"]').val();
-
-            // --- STEP 1: Run Backend Auto-Import Job ---
-            $.ajax({
-                url: '/funds/bulk-sync',
-                method: 'POST',
-                dataType: 'json',
-                headers: {
-                    'X-CSRF-TOKEN': csrfToken
-                },
-                data: {
-                    _token: csrfToken
-                },
-                success: function(response) {
-                    if (response && response.imported_items && response.imported_items.length > 0) {
-                        response.imported_items.forEach(item => {
-                            results.success++;
-                            results.successList.push({
-                                serial: item.serial,
-                                status: item.status,
-                                amount: item.amount,
-                                duplicates: []
-                            });
-                        });
-                    }
-                },
-                complete: function() {
-                    if ($.fn.DataTable.isDataTable('#funds-table')) {
-                        let dt = $('#funds-table').DataTable();
-                        if (dt.settings()[0].oFeatures.bServerSide || dt.settings()[0].ajax) {
-                            dt.ajax.reload(function() {
-                                startSequentialSync();
-                            }, false);
-                            return;
-                        }
-                    }
-                    startSequentialSync();
-                }
-            });
-
-            // --- STEP 2: Sequential Item Processing Loop ---
-            function startSequentialSync() {
-                let items = captureTableItems();
-                let total = items.length;
-                let currentIdx = 0;
-
-                if (total === 0) {
-                    btn.prop('disabled', false).html('<i class="fas fa-sync"></i> Bulk Sync');
-                    showSummary(results);
-                    return;
-                }
-
-                btn.html('<i class="fas fa-spinner fa-spin"></i> Syncing Items...');
-
-                function processNext() {
-                    if (window.bulkSyncStopSignal || currentIdx >= total) {
-                        showSummary(results);
-                        btn.prop('disabled', false).html('<i class="fas fa-sync"></i> Bulk Sync');
-                        
-                        if ($.fn.DataTable.isDataTable('#funds-table')) {
-                            let dt = $('#funds-table').DataTable();
-                            if (dt.settings()[0].oFeatures.bServerSide || dt.settings()[0].ajax) {
-                                dt.ajax.reload(null, false);
-                            }
-                        }
-                        return;
-                    }
-
-                    let currentItem = items[currentIdx];
-                    
-                    $.ajax({
-                        url: `/funds/${currentItem.id}/sync`,
-                        method: "GET",
-                        dataType: "json",
-                        success: function(response) {
-                            if (response && response.success && response.details) {
-                                const d = response.details;
-                                const itemData = (d.synced_items && d.synced_items.length > 0) ? d.synced_items[0] : null;
-
-                                if (itemData) {
-                                    results.success++;
-                                    let duplicateRows = [...(d.duplicate_ob_rows || []), ...(d.duplicate_disb_rows || [])];
-                                    results.successList.push({
-                                        serial: itemData.serial,
-                                        status: itemData.status,
-                                        amount: itemData.amount, // Displays the netDisb amount formatted
-                                        duplicates: duplicateRows
-                                    });
-                                } else {
-                                    recordFailure(currentItem.serial, "No available data found in RAODS");
-                                }
-                            } else {
-                                recordFailure(currentItem.serial, (response && response.message) ? response.message : "Sync Failed");
-                            }
-                            finishItem();
-                        },
-                        error: function(xhr) {
-                            let errorMsg = xhr.responseJSON ? xhr.responseJSON.message : "Server Error";
-                            recordFailure(currentItem.serial, errorMsg);
-                            finishItem();
-                        }
-                    });
-                }
-
-                function finishItem() {
-                    updateUI(currentIdx, total);
-                    currentIdx++;
-                    processNext();
-                }
-
-                processNext();
-            }
+            processNext();
         });
 
         
@@ -1701,6 +1596,7 @@
         // 4. AJAX SUBMIT LOGIC (Unified and Fixed)
         $('#fund-form').on('submit', function(e) {
             e.preventDefault();
+            
             if (!isBudgetValid) {
                 $(document).Toasts('create', {
                     class: 'bg-danger',
@@ -1714,7 +1610,9 @@
 
             const fundId = $('#edit_fund_id').val();
             const isEdit = fundId !== '';
-            const ajaxUrl = isEdit ? "/funds/" + fundId : "{{ route('funds.store') }}";
+            
+            // FIXED: Explicitly use absolute subfolder url helper engines for BOTH conditions
+            const ajaxUrl = isEdit ? `{{ url('/funds') }}/${fundId}` : `{{ url('/funds/store') }}`;
 
             $.ajax({
                 url: ajaxUrl,
@@ -1738,13 +1636,9 @@
                     });
 
                     // 4. Refresh the page after a short delay
-                    // This ensures the user sees the toast and the backend relationships are perfectly rendered
                     setTimeout(() => { 
                         location.reload(); 
                     }, 1000);
-
-                    // Everything else (UI building, DataTable row.add, etc.) is removed 
-                    // because the refresh will handle the data display.
                 },
                 error: function(xhr) {
                     $('.form-control').removeClass('is-invalid');
@@ -1832,7 +1726,7 @@
 
                     $('#statusModal').modal('show');
                 });
-            });
+        });
 
         /**
          * Helper function to handle showing/hiding serial fields
@@ -1944,7 +1838,7 @@
                 return false;
             }
 
-            $.get("/funds/" + id + "/edit", function(data) {
+            $.get(`{{ url('/funds') }}/${id}/edit`, function(data) {
                 if (!data.success) return;
 
                 const main = data.main;
@@ -1953,7 +1847,8 @@
                 // 2. Setup Form Basics
                 $('#fund-form')[0].reset();
                 $('#edit_fund_id').val(main.id);
-                $('#form_method').val('PATCH');
+                $('#form_method').val('PUT');
+                $('#fund-form').attr('action', `{{ url('/funds') }}/${main.id}`);
                 $('.modal-title').html('<i class="fas fa-edit mr-2 text-warning"></i>Edit Transaction: ' + main.dtrack_no);
                 
                 // 3. Global Fields
@@ -2048,6 +1943,7 @@
                 $('#fund-form')[0].reset();
                 $('#edit_fund_id').val('');
                 $('#form_method').val('POST');
+                $('#fund-form').attr('action', `{{ url('/funds') }}`);
                 $('.modal-title').html('<i class="fas fa-plus mr-2"></i>Add New Transaction');
                 $('.btn-save-fund').text('Save Transaction').removeClass('btn-warning').addClass('btn-success');
                 $('.select2').val(null).trigger('change');
@@ -2116,7 +2012,7 @@
             $('body').removeClass('modal-open').css('padding-right', '');
         });
 
-        $(document).on('click', '.btn-delete-transaction', function() {
+       $(document).on('click', '.btn-delete-transaction', function() {
             // Just in case the 'disabled' attribute doesn't stop the click
             if ($(this).is(':disabled')) return;
 
@@ -2136,63 +2032,69 @@
             }).then((result) => {
                 if (result.isConfirmed) {
                     $.ajax({
-                        url: "/funds/" + id,
-                        method: "POST", // Some servers prefer POST with _method spoofing
+                        // FIXED: Subfolder alias-aware URL tracking configuration
+                        url: `{{ url('/funds') }}/${id}`,
+                        method: "POST", 
                         data: {
-                            _token: "{{ csrf_token() }}",
-                            _method: "DELETE" // Tells Laravel to treat this POST as a DELETE
+                           _token: "{{ csrf_token() }}",
+                           _method: "DELETE" // Method spoofing header for Laravel destroy() mapping
                         },
                         success: function(response) {
                             if(response.success) {
-                                table.row(row).remove().draw(false);
-                                Swal.fire('Deleted!', response.message, 'success');
+                               // Safely remove the row from DataTables display
+                               table.row(row).remove().draw(false);
+                               Swal.fire('Deleted!', response.message, 'success');
                             } else {
-                                Swal.fire('Failed!', response.message, 'error');
+                               Swal.fire('Failed!', response.message, 'error');
                             }
+                        },
+                        error: function(xhr) {
+                            let errorMsg = xhr.responseJSON ? xhr.responseJSON.message : "Server connection failure.";
+                            Swal.fire('Error!', errorMsg, 'error');
                         }
                     });
                 }
             });
-        });
+        }); 
     });
 
     $(document).ready(function() {
-        let table = $('#funds-table').DataTable();
+    let table = $('#funds-table').DataTable();
 
-        $('#sectionFilter').on('change', function() {
-            // Trim whitespace from the selected name
-            let selectedName = $.trim($(this).val());
-            let statusBadge = $('#filterStatus');
+    $('#sectionFilter').on('change', function() {
+        // Trim whitespace from the selected name
+        let selectedName = $.trim($(this).val());
+        let statusBadge = $('#filterStatus');
 
-            if (selectedName === "") {
-                table.column(2).search('').draw();
-                
-                statusBadge.removeClass('badge-primary').addClass('badge-light')
-                        .html('<i class="fas fa-list-ul mr-1"></i> Showing all records');
+        if (selectedName === "") {
+            table.column(2).search('').draw();
+            
+            statusBadge.removeClass('badge-primary').addClass('badge-light')
+                       .html('<i class="fas fa-list-ul mr-1"></i> Showing all records');
+        } else {
+            // REMOVE the '^' and '$' anchors to allow for whitespace or internal HTML
+            // We still escape the regex for safety
+            let searchPattern = $.fn.dataTable.util.escapeRegex(selectedName);
+            
+            // Apply the search
+            table.column(2)
+                 .search(searchPattern, true, false)
+                 .draw();
+
+            // Update the UI Badge
+            let count = table.page.info().recordsDisplay;
+            
+            if (count > 0) {
+                statusBadge.removeClass('badge-light badge-danger').addClass('badge-primary text-white')
+                           .html(`<i class="fas fa-check-circle mr-1"></i> Found ${count} records for ${selectedName}`);
             } else {
-                // REMOVE the '^' and '$' anchors to allow for whitespace or internal HTML
-                // We still escape the regex for safety
-                let searchPattern = $.fn.dataTable.util.escapeRegex(selectedName);
-                
-                // Apply the search
-                table.column(2)
-                    .search(searchPattern, true, false)
-                    .draw();
-
-                // Update the UI Badge
-                let count = table.page.info().recordsDisplay;
-                
-                if (count > 0) {
-                    statusBadge.removeClass('badge-light badge-danger').addClass('badge-primary text-white')
-                            .html(`<i class="fas fa-check-circle mr-1"></i> Found ${count} records for ${selectedName}`);
-                } else {
-                    // If it still shows 0, let's make the badge show a warning
-                    statusBadge.removeClass('badge-light badge-primary').addClass('badge-danger text-white')
-                            .html(`<i class="fas fa-exclamation-triangle mr-1"></i> 0 records found for ${selectedName}`);
-                }
+                // If it still shows 0, let's make the badge show a warning
+                statusBadge.removeClass('badge-light badge-primary').addClass('badge-danger text-white')
+                           .html(`<i class="fas fa-exclamation-triangle mr-1"></i> 0 records found for ${selectedName}`);
             }
-        });
+        }
     });
+});
 
     $(document).ready(function() {
         function updateCreditorStatus() {
@@ -2474,85 +2376,6 @@
             }
         });
     }
-
-    $(document).ready(function() {
-    
-        // 1. Function to Initialize Select2 on missing activity dropdowns
-        function initSelect2OnActivities() {
-            $('.select2-activity').each(function() {
-                if (!$(this).hasClass("select2-hidden-accessible")) {
-                    $(this).select2({
-                        placeholder: "-- Select COS Position / Activity --",
-                        allowClear: true,
-                        dropdownAutoWidth: true,
-                        width: '100%'
-                    });
-                }
-            });
-        }
-
-        // 2. Bind to DataTables Page Redraw Event
-        if ($.fn.DataTable.isDataTable('#funds-table')) {
-            let table = $('#funds-table').DataTable();
-            
-            // Fires every time you change pages, sort, or filter
-            table.on('draw', function () {
-                initSelect2OnActivities();
-            });
-        }
-
-        // Initial run for Page 1
-        initSelect2OnActivities();
-
-        // 3. AJAX Update Listener for Select2 Change
-        $(document).on('change', '.select2-activity', function() {
-            const select = $(this);
-            const fundId = select.data('id');
-            const selectedActivityId = select.val();
-            const container = $(`.unassigned-container-${fundId}`);
-            const csrfToken = $('meta[name="csrf-token"]').attr('content') || $('input[name="_token"]').val();
-
-            if (!selectedActivityId) return;
-
-            select.prop('disabled', true);
-
-            $.ajax({
-                url: `/funds/${fundId}/update-transaction-type`,
-                method: 'PATCH',
-                headers: {
-                    'X-CSRF-TOKEN': csrfToken
-                },
-                data: {
-                    _token: csrfToken,
-                    transaction_type_id: selectedActivityId
-                },
-                success: function(response) {
-                    if (response && response.success) {
-                        const selectedText = select.find('option:selected').text();
-                        
-                        // Destroy Select2 instance before replacing HTML container
-                        if (select.data('select2')) {
-                            select.select2('destroy');
-                        }
-
-                        container.html(`
-                            <span class="font-weight-bold text-dark animate__animated animate__fadeIn">
-                                ${selectedText}
-                            </span>
-                            <i class="fas fa-check-circle text-success ml-1" title="Saved"></i>
-                        `);
-                    } else {
-                        alert(response.message || 'Error assigning activity.');
-                        select.prop('disabled', false);
-                    }
-                },
-                error: function(xhr) {
-                    alert(xhr.responseJSON ? xhr.responseJSON.message : 'Server communication error.');
-                    select.prop('disabled', false);
-                }
-            });
-        });
-    });
 
 </script>
 @endsection

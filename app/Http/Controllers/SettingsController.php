@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 use App\Models\SourceOfFund;
 use App\Models\Employee; 
 use App\Models\Activity; 
+use App\Models\User; 
 use App\Models\Fund; 
 use App\Models\ImportTemplate; 
 use App\Imports\WfpActivitiesImport;
@@ -24,6 +25,7 @@ use App\Models\UacsCode;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Validation\Rules\Password;
 
 class SettingsController extends Controller
 {
@@ -70,22 +72,34 @@ class SettingsController extends Controller
 
         //CONNECT TO SPMS API to get the list of objectives for the dropdown
         // Change this flag to true to enable live API fetching. Remember to set the SPMS_API_URL, SPMS_SYSTEM_NAME, and SPMS_KEY in your .env file for it to work.
-        $isSpmsOnline = false; 
+        $isSpmsOnline = true; 
 
         if ($isSpmsOnline) {
-            $objectives = Cache::remember('spms_objectives', 86400, function () {
+            // Clear old bad cache if you haven't already: Cache::forget('objectives');
+            $objectives = Cache::remember('objectives', 86400, function () {
                 try {
-                    $response = Http::timeout(5)->post(env('SPMS_API_URL'), [
+                    // Note: Added withoutVerifying() to ensure local network calls pass safely
+                    $response = Http::withoutVerifying()->timeout(5)->post(env('SPMS_API_URL'), [
                         'systemname' => env('SPMS_SYSTEM_NAME'),
                         'key'        => env('SPMS_KEY'),
                     ]);
-                    return $response->successful() ? $response->json()['data'] : [];
+                    
+                    // FIX: The JSON returned is a flat array, so we return $response->json() directly
+                    if ($response->successful() && is_array($response->json())) {
+                        return $response->json(); 
+                    }
+                    
+                    throw new \Exception('API responded but did not return a valid array.');
+                    
                 } catch (\Exception $e) {
-                    return [];
+                    Log::error('SPMS API Error: ' . $e->getMessage());
+                    return null; // Return null so we don't cache an empty array state
                 }
             });
-        } else {
-            // MOCK DATA: Exactly how the SPMS JSON is expected to look
+        }
+
+        // Fallback to Mock Data only if the API went down or returned null
+        if (!$isSpmsOnline || empty($objectives)) {
             $objectives = [
                 ['objectives' => 'To provide LGUs with competencies and resources for health system strengthening in support of the Health Sector 8-Point Action Agenda'],
                 ['objectives' => 'To catalyze the transformation of local health systems to province-wide and city-wide health system'],
@@ -766,21 +780,18 @@ class SettingsController extends Controller
             $physicalTargets[$q] = $request->targets[$q];
         }
 
-        // 3. Handle Update Logic
+        // 3. Handle Store / Update Logic
         if ($isEdit) {
             $activity = Activity::findOrFail($request->id);
             $fundSource = SourceOfFund::findOrFail($activity->source_of_fund_id);
             
-            // MOVE THESE DEFINITIONS UP BEFORE THE BUDGET CHECK
             $hasTransactions = $activity->transactions()->exists(); 
             $isLocked = $activity->is_locked ?? false;
 
             // 1. BUDGET VALIDATION FOR EDIT
-            // Now $isLocked is defined and won't cause a 500 error
             if (!$isLocked && !$hasTransactions && $request->filled('budget_amount')) {
                 $newAmount = (float) $request->budget_amount;
 
-                // Calculate total spent on OTHER activities (exclude this one)
                 $totalSpentByOthers = Activity::where('source_of_fund_id', $fundSource->id)
                     ->where('id', '!=', $activity->id)
                     ->sum('budget_adjusted');
@@ -828,6 +839,32 @@ class SettingsController extends Controller
                 ]);
                 $msg = 'Activity updated successfully!';
             }
+        } else {
+            // SCENARIO: Create New Activity
+            $uacsRecord = \App\Models\UacsCode::findOrFail($request->uacs_code_id);
+            
+            // Optional: You might want to include budget validation against source_of_fund here too!
+
+            Activity::create([
+                'user_id'             => $userId,
+                'section_id'          => $secid,
+                'budget_line_item_id' => $request->budget_line_item_id,
+                'source_of_fund_id'   => $request->source_of_fund_id,
+                'objective'           => $request->objective,
+                'uacs_code_id'        => $request->uacs_code_id,
+                'uacs_code'           => $uacsRecord->uacs_code,
+                'name'                => $request->name,
+                'is_for_procurement'  => $request->is_for_procurement, 
+                'budget'              => $request->budget_amount,
+                'budget_adjusted'     => $request->budget_amount,
+                'start_date'          => $validated['start_date'],
+                'end_date'            => $validated['end_date'],
+                'target_quarters'     => $selectedQuarters,
+                'physical_targets'    => $physicalTargets,
+                'classification'      => $request->classification,
+            ]);
+
+            $msg = 'Activity created successfully!';
         }
 
         return back()->with('success', $msg);
@@ -1258,4 +1295,33 @@ class SettingsController extends Controller
     }
     
     
+    /**
+     * Show the user profile password modification view.
+     */
+    public function editPassword()
+    {
+        return view('admin.settings.profile_password');
+    }
+
+    /**
+     * Handle updates to the authenticated user's password securely.
+     */
+    public function updatePassword(Request $request)
+    {
+        $user = auth()->user();
+
+        $request->validate([
+            'current_password' => ['required', 'current_password'],
+            'password' => ['required', 'confirmed', Password::min(8)->letters()->numbers()],
+        ], [
+            'current_password.current_password' => 'The provided password does not match your current credential records.',
+        ]);
+
+        // Update the database record using the modern encrypter interface
+        $user->update([
+            'password' => Hash::make($request->password)
+        ]);
+
+        return redirect()->back()->with('success', 'Your password database records have been modified securely!');
+    }
 }

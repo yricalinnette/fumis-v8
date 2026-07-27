@@ -116,6 +116,14 @@
                                 </a>
                             </li>
 
+                            {{-- Visible to Everyone: Self-Service Password Update --}}
+                            <li class="nav-item">
+                                <a href="{{ route('settings.profile.password') }}" class="nav-link {{ request()->routeIs('settings.profile.password') ? 'active' : '' }}">
+                                    <i class="fas fa-user-shield nav-icon text-info"></i>
+                                    <p>User Profile</p>
+                                </a>
+                            </li>
+
                             {{-- Visible to Budget Section & Admin Only --}}
                             @can('budget-section')
                                 <li class="nav-item">

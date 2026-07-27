@@ -40,4 +40,10 @@ return [
         'iv'  => env('DB_COMMON_IV'),
     ],
 
+    'spms' => [
+        'url' => env('SPMS_API_URL'),
+        'system_name' => env('SPMS_SYSTEM_NAME'),
+        'key' => env('SPMS_KEY'),
+    ],
+
 ];

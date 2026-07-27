@@ -7,6 +7,8 @@ use Illuminate\Http\Request;
 use App\Models\SourceOfFund;
 use App\Models\Employee;
 use App\Models\Activity;
+use App\Exports\BudgetBySourceExport;
+use Maatwebsite\Excel\Facades\Excel;
 
 class ReportController extends Controller
 {
@@ -43,33 +45,28 @@ class ReportController extends Controller
         return view('admin.reports', compact('funds', 'totalAmount', 'year'));
     }
 
-    public function budgetBySource(Request $request) 
+    private function getBudgetBySourceData(Request $request)
     {
         $year = $request->get('year', date('Y'));
         $month = $request->get('month');
         $quarter = $request->get('quarter');
+        $sourceType = $request->get('source_type');
 
-        // 1. Check permissions using your Gate logic
         $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
+        $quarterMonths = [1 => [1, 2, 3], 2 => [4, 5, 6], 3 => [7, 8, 9], 4 => [10, 11, 12]];
 
-        $quarterMonths = [
-            1 => [1, 2, 3], 2 => [4, 5, 6],
-            3 => [7, 8, 9], 4 => [10, 11, 12],
-        ];
-
-        // 2. Fetch Section Names for mapping
         $sectionNames = \DB::connection('db_common')->table('tbl_section')->pluck('secname', 'secid');
+        $query = SourceOfFund::where('fiscal_year', $year);
 
-        // 3. Build Query
-        $query = \App\Models\SourceOfFund::where('fiscal_year', $year);
+        if (!empty($sourceType)) {
+            $query->where('source_type', $sourceType);
+        }
 
-        // Apply Section Filter ONLY for regular users
         if (!$isAdminOrBudget) {
             $localDetail = \DB::table('employee_details')->where('user_id', auth()->id())->first();
             if ($localDetail) {
                 $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
-                    ->where('dbedid', $localDetail->dbedid)
-                    ->value('secid');
+                    ->where('dbedid', $localDetail->dbedid)->value('secid');
                 if ($userSecId) {
                     $query->where('section_id', $userSecId);
                 }
@@ -91,18 +88,14 @@ class ReportController extends Controller
             }
         }])->get();
 
-        // 4. Process and Add Section Names
-        $reportData = $sources->map(function ($source) use ($year, $sectionNames) {
+        $reportData = $sources->map(function ($source) use ($sectionNames) {
             $totalPooled = (float) $source->activities->sum('pooled_amount');
-            $originalAllotted = (float) $source->total_amount; 
-            $netAllotted = $originalAllotted - $totalPooled;
-
+            $netAllotted = (float) $source->total_amount - $totalPooled;
             $obligated = (float) $source->funds->sum('obligation_amount');
             $disbursed = (float) $source->funds->sum('disbursement_amount');
 
             $procurableBudget = $source->activities->where('is_for_procurement', 1)
                 ->sum(fn($activity) => $activity->budget_adjusted - $activity->pooled_amount);
-
             $nonProcurableBudget = $source->activities->where('is_for_procurement', 0)
                 ->sum(fn($activity) => $activity->budget_adjusted - $activity->pooled_amount);
 
@@ -120,18 +113,47 @@ class ReportController extends Controller
                 'total_obligated'             => $obligated, 
                 'total_disbursed'             => $disbursed,
                 'total_pending'               => $pending, 
-                'procurable_budget_total'     => $procurableBudget,     // Ensure this matches
-                'non_procurable_budget_total' => $nonProcurableBudget, // Ensure this matches
+                'procurable_budget_total'     => $procurableBudget,
+                'non_procurable_budget_total' => $nonProcurableBudget,
                 'total_unobligated'           => $unobligated > 0 ? $unobligated : 0,
                 'overall_oblig_rate'          => $netAllotted > 0 ? ($obligated / $netAllotted) * 100 : 0,
                 'overall_disb_rate'           => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
             ];
         });
 
-        // 5. Group by Section for the View
-        $groupedReport = $reportData->groupBy('section_name');
+        return $reportData->groupBy('section_name');
+    }
 
-        return view('admin.reports.by_source', compact('groupedReport', 'year'));
+    /**
+     * Modified View Method
+     */
+    public function budgetBySource(Request $request) 
+    {
+        $year = $request->get('year', date('Y'));
+        $groupedReport = $this->getBudgetBySourceData($request);
+
+        $sourceTypes = SourceOfFund::where('fiscal_year', $year)
+            ->whereNotNull('source_type')->where('source_type', '!=', '')
+            ->distinct()->pluck('source_type')->toArray();
+
+        if (empty($sourceTypes)) {
+            $sourceTypes = ['saa', 'regular', 'continuing'];
+        }
+
+        return view('admin.reports.by_source', compact('groupedReport', 'year', 'sourceTypes'));
+    }
+
+    /**
+     * NEW METHOD: Handles the Excel download execution
+     */
+    public function exportBudgetBySource(Request $request)
+    {
+        $groupedReport = $this->getBudgetBySourceData($request);
+        $year = $request->get('year', date('Y'));
+        
+        $filename = "Budget_By_Source_Report_{$year}.xlsx";
+
+        return Excel::download(new BudgetBySourceExport($groupedReport), $filename);
     }
 
     public function budgetByLineItem(Request $request)

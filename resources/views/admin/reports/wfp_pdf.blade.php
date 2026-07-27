@@ -151,6 +151,8 @@
         </tr>
     </table>
 
+    <br>
+
     {{-- Main Content --}}
     <table class="main-table">
         <thead class="bg-white">
@@ -173,7 +175,6 @@
         </thead>
         <tbody>
             @php
-                // These keys must match the 'classification' column values in your database
                 $order = [
                     'Strategic' => 'A. Strategic Function',
                     'Core'      => 'B. Core Function',
@@ -188,7 +189,6 @@
                     <td colspan="12" class="category-row">{{ $label }}</td>
                 </tr>
 
-                {{-- Use the $key (Strategic, Core, Support) to find the group --}}
                 @if(isset($groupedActivities[$key]) && count($groupedActivities[$key]) > 0)
                     @foreach($groupedActivities[$key] as $activity)
                         @php 
@@ -196,11 +196,14 @@
                             $grandTotal += $activity->budget_adjusted;
                         @endphp
                         <tr>
-                            <td class="text-left">{{ $activity->budgetLineItem->budget_line_item_name ?? 'N/A' }}</td>
-                            <td class="text-left">{{ $activity->objective }}</td>
-                            <td class="text-left"><strong>{{ $activity->name }}</strong></td>
-                            <td class="text-center">{{ \Carbon\Carbon::parse($activity->start_date)->format('j M Y') }}</td>
-                            <td class="text-center">{{ \Carbon\Carbon::parse($activity->end_date)->format('j M Y') }}</td>
+                            <td class="text-left" style="vertical-align: top;">{{ $activity->budgetLineItem->budget_line_item_name ?? 'N/A' }}</td>
+                            <td class="text-left" style="vertical-align: top;">{{ $activity->objective }}</td>
+                            
+                            {{-- FIXED: Added style="white-space: pre-wrap; vertical-align: top;" to preserve Excel spaces, indents, and newlines --}}
+                            <td class="text-left" style="white-space: pre-wrap; vertical-align: top;">{{ $activity->name }}</td>
+                            
+                            <td class="text-center" style="vertical-align: top;">{{ \Carbon\Carbon::parse($activity->start_date)->format('j M Y') }}</td>
+                            <td class="text-center" style="vertical-align: top;">{{ \Carbon\Carbon::parse($activity->end_date)->format('j M Y') }}</td>
                             
                             @php 
                                 $targets = is_array($activity->physical_targets) 
@@ -208,33 +211,32 @@
                                         : json_decode($activity->physical_targets, true) ?? []; 
                             @endphp
                             
-                            <td>{{ $targets['Q1'] ?? '' }}</td>
-                            <td>{{ $targets['Q2'] ?? '' }}</td>
-                            <td>{{ $targets['Q3'] ?? '' }}</td>
-                            <td>{{ $targets['Q4'] ?? '' }}</td>
+                            <td style="vertical-align: top;">{{ $targets['Q1'] ?? '' }}</td>
+                            <td style="vertical-align: top;">{{ $targets['Q2'] ?? '' }}</td>
+                            <td style="vertical-align: top;">{{ $targets['Q3'] ?? '' }}</td>
+                            <td style="vertical-align: top;">{{ $targets['Q4'] ?? '' }}</td>
                             
-                            <td class="text-right">{{ number_format($activity->budget_adjusted, 2) }}</td>
-                            <td>{{ $activity->source->name ?? 'N/A' }}</td>
-                            <td class="text-left">{{ $activity->computed_secname }}</td>
+                            <td class="text-right" style="vertical-align: top;">{{ number_format($activity->budget_adjusted, 2) }}</td>
+                            <td style="vertical-align: top;">{{ $activity->source->name ?? 'N/A' }}</td>
+                            <td class="text-left" style="vertical-align: top;">{{ $activity->computed_secname }}</td>
                         </tr>
                     @endforeach
                 @else
                     <tr>
-                        {{-- Changed text color to gray so it's visible if empty --}}
-                        <td colspan="12" style="color: #ffffff; font-style: italic; text-align: center;">No activities recorded under this classification.</td>
+                        <td colspan="12" style="color: #a0a0a0; font-style: italic; text-align: center;">No activities recorded under this classification.</td>
                     </tr>
                 @endif
 
                 <tr class="subtotal-row">
                     <td colspan="9" class="text-right">Sub-total {{ str_replace(['A. ', 'B. ', 'C. '], '', $label) }}</td>
-                    <td class="text-right">{{ number_format($subTotal, 2) }}</td>
+                    <td class="text-right">₱{{ number_format($subTotal, 2) }}</td>
                     <td colspan="2"></td>
                 </tr>
             @endforeach
 
             <tr class="grandtotal-row">
                 <td colspan="9" class="text-right">Total Cost (Strategic + Core + Support) Functions</td>
-                <td class="text-right">{{ number_format($grandTotal, 2) }}</td>
+                <td class="text-right">₱{{ number_format($grandTotal, 2) }}</td>
                 <td colspan="2"></td>
             </tr>
         </tbody>

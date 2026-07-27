@@ -16,7 +16,7 @@
 </style>
 
 <div class="container-fluid">
-    {{-- Header Section remains the same --}}
+    {{-- Header Section --}}
     <div class="row pt-3 mb-2">
         <div class="col-12 d-flex justify-content-between align-items-end">
             <div>
@@ -25,11 +25,16 @@
                 </h4>
                 <p class="text-muted small mb-0">
                     Summary for <strong>{{ request('year', date('Y')) }}</strong> 
+                    @if(request('source_type')) | Type: <span class="text-uppercase text-info font-weight-bold">{{ request('source_type') }}</span> @endif
                     @if(request('month')) | {{ date('F', mktime(0, 0, 0, request('month'), 1)) }}
                     @elseif(request('quarter')) | Quarter {{ request('quarter') }} @endif
                 </p>
             </div>
             <div class="btn-group shadow-sm">
+                {{-- NEW ADDITION: Excel Download Button carrying all request parameters --}}
+                <a href="{{ route('reports.by_source.export', request()->all()) }}" class="btn btn-sm btn-success">
+                    <i class="fas fa-file-excel mr-1"></i> Export to Excel
+                </a>
                 <button class="btn btn-sm btn-default" data-toggle="collapse" data-target="#filterCard">
                     <i class="fas fa-filter mr-1"></i> Filters
                 </button>
@@ -37,13 +42,24 @@
         </div>
     </div>
 
-    {{-- Filter Card remains the same --}}
+    {{-- Filter Card --}}
     <div class="collapse show filter-section" id="filterCard">
         <div class="card shadow-sm mb-4 border-navy">
             <div class="card-body py-3">
                 <form action="{{ route('reports.by_source') }}" method="GET" class="row align-items-end">
-                    {{-- ... (Your existing filter selects) ... --}}
-                    <div class="col-md-3">
+                    
+                    {{-- NEW ADDITION: Source Type Filter Element --}}
+                    <div class="col-md-2">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase">Source Type</label>
+                        <select name="source_type" class="form-control form-control-sm border-navy text-uppercase">
+                            <option value="">All Types</option>
+                            @foreach($sourceTypes ?? ['saa', 'regular', 'continuing'] as $type)
+                                <option value="{{ $type }}" {{ request('source_type') == $type ? 'selected' : '' }}>{{ $type }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+
+                    <div class="col-md-2">
                         <label class="text-xs font-weight-bold text-muted text-uppercase">Financial Quarter</label>
                         <select name="quarter" class="form-control form-control-sm border-navy">
                             <option value="">Full Year</option>
@@ -53,7 +69,8 @@
                             <option value="4" {{ request('quarter') == '4' ? 'selected' : '' }}>Q4 (Oct - Dec)</option>
                         </select>
                     </div>
-                    <div class="col-md-3">
+
+                    <div class="col-md-2">
                         <label class="text-xs font-weight-bold text-muted text-uppercase">Specific Month</label>
                         <select name="month" class="form-control form-control-sm border-navy">
                             <option value="">All Months</option>
@@ -62,6 +79,7 @@
                             @endforeach
                         </select>
                     </div>
+
                     <div class="col-md-2">
                         <label class="text-xs font-weight-bold text-muted text-uppercase">Fiscal Year</label>
                         <select name="year" class="form-control form-control-sm border-navy">
@@ -71,6 +89,7 @@
                             @endforeach
                         </select>
                     </div>
+
                     <div class="col-md-4">
                         <button type="submit" class="btn btn-sm btn-primary px-4 shadow-sm">Update Report</button>
                         <a href="{{ route('reports.by_source') }}" class="btn btn-sm btn-default border ml-2">Reset</a>
@@ -109,9 +128,8 @@
                             ];
                         @endphp
 
-                        @foreach($groupedReport as $sectionName => $sources)
+                        @forelse($groupedReport as $sectionName => $sources)
                             @php
-                                // Initialize Section Totals
                                 $sectionTotals = [
                                     'allotted' => 0, 'obligated' => 0, 'disbursed' => 0, 
                                     'pending' => 0, 'procurable' => 0, 'non_procurable' => 0
@@ -158,7 +176,6 @@
 
                                     $obligClass = $data['overall_oblig_rate'] >= 90 ? 'badge-success' : ($data['overall_oblig_rate'] > 0 ? 'badge-warning' : 'badge-danger');
                                 @endphp
-                                {{-- Source Row --}}
                                 <tr>
                                     <td class="pl-4 align-middle">
                                         <span class="text-navy font-weight-bold text-uppercase small d-block">{{ $data['source_name'] }}</span>
@@ -204,30 +221,40 @@
                                 <td class="text-right align-middle financial-number">₱{{ number_format($sectionTotals['obligated'] - $sectionTotals['disbursed'], 2) }}</td>
                                 <td class="text-right align-middle financial-number pr-4 text-primary">₱{{ number_format($sectionTotals['allotted'] - $sectionTotals['obligated'], 2) }}</td>
                             </tr>
-                        @endforeach
+                        @empty
+                            <tr>
+                                <td colspan="11" class="text-center py-5 text-muted">
+                                    <i class="fas fa-folder-open fa-2x mb-2"></i><br>
+                                    No records found matching the active filter configuration.
+                                </td>
+                            </tr>
+                        @endforelse
                     </tbody>
-                    {{-- <tfoot class="bg-navy-light shadow-sm">
-                        @php
-                            $gtObligRate = $grandTotals['allotted'] > 0 ? ($grandTotals['obligated'] / $grandTotals['allotted']) * 100 : 0;
-                            $gtDisbRate = $grandTotals['obligated'] > 0 ? ($grandTotals['disbursed'] / $grandTotals['obligated']) * 100 : 0;
-                        @endphp
-                        <tr class="font-weight-bold">
-                            <td class="pl-4 py-3 align-middle text-uppercase small">Grand Total</td>
-                            <td class="text-center align-middle text-navy text-xs">{{ number_format($grandTotals['allotted'] > 0 ? ($grandTotals['procurable'] / $grandTotals['allotted']) * 100 : 0, 1) }}%</td>
-                            <td class="text-center align-middle text-navy text-xs">{{ number_format($grandTotals['allotted'] > 0 ? ($grandTotals['non_procurable'] / $grandTotals['allotted']) * 100 : 0, 1) }}%</td>
-                            <td class="text-right align-middle financial-number">₱{{ number_format($grandTotals['allotted'], 2) }}</td>
-                            <td class="text-right text-info align-middle financial-number border-left-info">₱{{ number_format($grandTotals['obligated'], 2) }}</td>
-                            <td class="text-center align-middle bg-light"><span class="text-xs">{{ number_format($gtObligRate, 2) }}%</span></td>
-                            <td class="text-right text-success align-middle financial-number border-left-success">₱{{ number_format($grandTotals['disbursed'], 2) }}</td>
-                            <td class="text-center align-middle"><span class="text-xs">{{ number_format($gtDisbRate, 2) }}%</span></td>
-                            <td class="text-right text-warning align-middle financial-number border-left-warning">₱{{ number_format($grandTotals['pending'], 2) }}</td>
-                            <td class="text-right align-middle financial-number">₱{{ number_format($grandTotals['obligated'] - $grandTotals['disbursed'], 2) }}</td>
-                            <td class="text-right align-middle financial-number pr-4 text-primary">₱{{ number_format($grandTotals['allotted'] - $grandTotals['obligated'], 2) }}</td>
-                        </tr>
-                    </tfoot> --}}
+                    
+                    @if($grandTotals['allotted'] > 0)
+                        <tfoot class="bg-navy-light shadow-sm border-top" style="border-top: 2px solid #001f3f !important;">
+                            @php
+                                $gtObligRate = $grandTotals['allotted'] > 0 ? ($grandTotals['obligated'] / $grandTotals['allotted']) * 100 : 0;
+                                $gtDisbRate = $grandTotals['obligated'] > 0 ? ($grandTotals['disbursed'] / $grandTotals['obligated']) * 100 : 0;
+                            @endphp
+                            <tr class="font-weight-bold" style="color: #001f3f;">
+                                <td class="pl-4 py-3 align-middle text-uppercase small"><b>Grand Total</b></td>
+                                <td class="text-center align-middle text-xs">{{ number_format($grandTotals['allotted'] > 0 ? ($grandTotals['procurable'] / $grandTotals['allotted']) * 100 : 0, 1) }}%</td>
+                                <td class="text-center align-middle text-xs">{{ number_format($grandTotals['allotted'] > 0 ? ($grandTotals['non_procurable'] / $grandTotals['allotted']) * 100 : 0, 1) }}%</td>
+                                <td class="text-right align-middle financial-number">₱{{ number_format($grandTotals['allotted'], 2) }}</td>
+                                <td class="text-right text-info align-middle financial-number border-left-info">₱{{ number_format($grandTotals['obligated'], 2) }}</td>
+                                <td class="text-center align-middle bg-light"><span class="text-xs font-weight-bold">{{ number_format($gtObligRate, 2) }}%</span></td>
+                                <td class="text-right text-success align-middle financial-number border-left-success">₱{{ number_format($grandTotals['disbursed'], 2) }}</td>
+                                <td class="text-center align-middle"><span class="text-xs font-weight-bold">{{ number_format($gtDisbRate, 2) }}%</span></td>
+                                <td class="text-right text-warning align-middle financial-number border-left-warning">₱{{ number_format($grandTotals['pending'], 2) }}</td>
+                                <td class="text-right align-middle financial-number">₱{{ number_format($grandTotals['obligated'] - $grandTotals['disbursed'], 2) }}</td>
+                                <td class="text-right align-middle financial-number pr-4 text-primary">₱{{ number_format($grandTotals['allotted'] - $grandTotals['obligated'], 2) }}</td>
+                            </tr>
+                        </footer>
+                    @endif
                 </table>
             </div>
         </div>
     </div>
-</div>
+</div>  
 @endsection

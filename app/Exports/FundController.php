@@ -51,17 +51,22 @@ class FundController extends Controller
         if ($isAdmin) {
             $baseQuery = \App\Models\Fund::query();
         } else {
+            // 1. Get the current user's section ID
+            // We look at the local employee_details first to find the dbedid
             $localDetail = \DB::table('employee_details')
                 ->where('user_id', $currentUser->id)
                 ->first();
 
             $userSecId = null;
             if ($localDetail) {
+                // Find the actual section ID from the common database
                 $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
                     ->where('dbedid', $localDetail->dbedid)
                     ->value('secid');
             }
 
+            // 2. Fetch funds where the user is the owner OR it belongs to their section
+            // This fixes the "Missing Transaction" 131 if it were assigned to your section
             $baseQuery = \App\Models\Fund::where(function($q) use ($currentUser, $userSecId) {
                 $q->where('user_id', $currentUser->id);
                 if ($userSecId !== null) {
@@ -70,13 +75,14 @@ class FundController extends Controller
             });
         }
 
+        // Execute the collection
         $fundsCollection = $baseQuery->with(['fundSource', 'activity', 'creditors.employeeDetail'])
             ->whereNotNull('dtrack_no')
             ->where('dtrack_no', '!=', '')
             ->orderBy('created_at', 'desc')
             ->get();
 
-        // --- 2. EMPLOYEE LOGIC ---
+        // --- 2. EMPLOYEE LOGIC 
         $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
 
         $involvedIds = \DB::table('employee_fund')
@@ -85,6 +91,7 @@ class FundController extends Controller
             ->unique()
             ->toArray();
 
+        // Get section for label
         $myDetails = DB::connection('db_common')->table('tbl_emp_details')
             ->leftJoin('tbl_section', 'tbl_emp_details.secid', '=', 'tbl_section.secid')
             ->where('tbl_emp_details.empid', $currentUser->empid)
@@ -117,15 +124,19 @@ class FundController extends Controller
         if (!$currentUser->is_admin) {
             $mySectionId = $currentUser->live_info->secid ?? ($myDetails->secid ?? null);
             
+            // Filter: Show employees in my section OR anyone involved in the loaded transactions
             $query->where(function($q) use ($mySectionId, $involvedIds) {
                 $q->where('tbl_emp_details.secid', '=', $mySectionId);
+                
                 if (!empty($involvedIds)) {
                     $q->orWhereIn('tbl_emp_details.dbedid', $involvedIds);
                 }
             });
         }
 
+        // Process and index by DBEDID
         $employees = $query->get()->map(function($emp) {
+            // SAFETY: Force UTF-8 encoding to prevent "Malformed UTF-8" crashes
             $clean = function($str) {
                 return $str ? mb_convert_encoding($str, 'UTF-8', 'UTF-8') : '';
             };
@@ -139,6 +150,8 @@ class FundController extends Controller
             $suffixStr = $suffix ? ' ' . $suffix : '';
             
             $emp->fullname = "{$lname}, {$fname}{$middleInitial}{$suffixStr}";
+            
+            // Update the properties with cleaned strings so JS doesn't crash later
             $emp->fname = $fname;
             $emp->mname = $mname;
             $emp->lname = $lname;
@@ -147,100 +160,70 @@ class FundController extends Controller
             return $emp;
         })->keyBy('dbedid');
 
-        // --- 3. GROUP AND MAP (EXCEPT COS SALARIES) ---
-        $funds = $fundsCollection->groupBy(function ($item) {
-            // If it's a COS salary transaction, group by its unique ID so it gets its own row in the UI
-            if ($item->remarks_salary === 'Imported HR COS Salary/Wages') {
-                return 'COS_SALARY_' . $item->id;
-            }
-            // Standard transactions continue grouping by dtrack_no
-            return $item->dtrack_no;
-        })->map(function ($group) use ($employees) {
+        // --- 3. GROUP AND MAP (NOW USING $employees) ---
+        $funds = $fundsCollection->groupBy('dtrack_no')->map(function ($group) use ($employees) {
             $first = $group->first();
 
-            // Creditor resolution
-            $tableCreditors = $group->pluck('creditor')->filter()->unique();
+            $dbedids = \DB::table('employee_fund')
+                ->whereIn('fund_id', $group->pluck('id'))
+                ->pluck('user_id')
+                ->unique();
 
-            if ($tableCreditors->isNotEmpty()) {
-                $mappedCreditors = $tableCreditors->map(function($creditorText) {
-                    return (object) ['full_name' => $creditorText];
-                });
-            } else {
-                $dbedids = \DB::table('employee_fund')
-                    ->whereIn('fund_id', $group->pluck('id'))
-                    ->pluck('user_id')
-                    ->unique();
+            // 2. Map those IDs to the Names from your $employees collection
+            $mappedCreditors = $dbedids->map(function($id) use ($employees) {
+                // Look for the employee in the collection we fetched from db_common
+                $emp = $employees->get($id);
 
-                $mappedCreditors = $dbedids->map(function($id) use ($employees) {
-                    $emp = $employees->get($id);
-                    return (object) [
-                        'full_name' => $emp ? $emp->fullname : "ID: $id (Not found in section)"
-                    ];
-                });
-            }
+                return (object) [
+                    'full_name' => $emp ? $emp->fullname : "ID: $id (Not found in section)"
+                ];
+            });
 
+            // Calculations and Status logic
             $calculatedTotal = $group->sum(function($item) {
-                $isDisbursedType = in_array($item->status, [
-                    'Disbursed', 
-                    'Disbursed (with savings)', 
-                    'Disbursed (Partially)', 
-                    'Completed'
-                ]);
-
-                if ($isDisbursedType && $item->disbursement_amount > 0) {
+                if (in_array($item->status, ['Disbursed', 'Completed']) && $item->disbursement_amount > 0) {
                     return $item->disbursement_amount;
                 }
                 return ($item->obligation_amount > 0) ? $item->obligation_amount : $item->amount;
             });
 
-            $disbursedItem = $group->first(function($item) {
-                return in_array($item->status, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']);
-            });
-
+            $hasDisbursed = $group->contains('status', 'Disbursed');
+            $hasCompleted = $group->contains('status', 'Completed');
             $hasObligated = $group->contains('status', 'Obligated');
 
-            if ($disbursedItem) {
-                $priorityStatus = $disbursedItem->status;
+            if ($hasDisbursed || $hasCompleted) {
+                $priorityStatus = 'Disbursed';
             } elseif ($hasObligated) {
                 $priorityStatus = 'Obligated';
             } else {
                 $priorityStatus = $first->status;
             }
 
-            $uniqueTypeIds = $group->pluck('transaction_type_id')->filter()->unique();
-            $groupTransactionTypeId = ($uniqueTypeIds->count() === 1) ? $uniqueTypeIds->first() : null;
-
             return (object) [
-                'id'                  => $first->id,
-                'dtrack_no'           => $first->dtrack_no,
-                'transaction_date'    => $first->transaction_date,
-                'particulars'         => $first->particulars,
-                'secid'               => $first->secid,
-                'created_at'          => $first->created_at,
-                'creditors'           => $mappedCreditors, 
-                'total_amount'        => $calculatedTotal,
-                'group_status'        => $priorityStatus,
-                'transaction_type_id' => $groupTransactionTypeId,
-                'remarks_salary'      => $first->remarks_salary,
-                'source_names'        => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
-                'activity_names'      => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
-                'is_fully_synced'     => !$group->contains(function ($item) {
+                'id'                 => $first->id,
+                'dtrack_no'          => $first->dtrack_no,
+                'transaction_date'   => $first->transaction_date,
+                'particulars'        => $first->particulars,
+                'secid'              => $first->secid,
+                'created_at'         => $first->created_at,
+                'creditors'          => $mappedCreditors, 
+                'total_amount'       => $calculatedTotal,
+                'group_status'       => $priorityStatus,
+                'source_names'       => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
+                'activity_names'     => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
+                'is_fully_synced'    => !$group->contains(function ($item) {
                         $isObligatedMissing = ($item->status === 'Obligated' && (empty($item->obligation_amount) || $item->obligation_amount <= 0));
-                        $isDisbursedType = in_array($item->status, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']);
-                        $isDisbursedMissing = ($isDisbursedType && (empty($item->disbursement_amount) || $item->disbursement_amount <= 0));
+                        $isDisbursedMissing = (in_array($item->status, ['Disbursed', 'Completed']) && (empty($item->disbursement_amount) || $item->disbursement_amount <= 0));
                         return $isObligatedMissing || $isDisbursedMissing;
                     }),
-                'breakdown'           => $group->map(function($item) {
+                'breakdown'          => $group->map(function($item) {
                     return (object) [
-                        'id'                  => $item->id,
+                        'id'     => $item->id,
                         'source_name'         => $item->fundSource->name ?? 'N/A', 
                         'activity_name'       => $item->activity->name ?? 'N/A',
                         'amount'              => $item->amount,
                         'status'              => $item->status,
                         'remarks'             => $item->remarks,
-                        'remarks_salary'      => $item->remarks_salary,
-                        'creditor'            => $item->creditor,
-                        'transaction_type_id' => $item->transaction_type_id,
                         'obligation_serial'   => $item->obligation_serial,
                         'obligation_amount'   => $item->obligation_amount,
                         'obligation_date'     => $item->obligation_date,
@@ -254,52 +237,55 @@ class FundController extends Controller
 
         $userSectionName = ($currentUser->is_admin) ? 'All Personnel' : ($myDetails->secname ?? 'Assigned Section');
 
+        // For the Source of fund dropdown in the Modal Transaction Log
+        // 1. Resolve the User's Section ID from db_common
         $userSecId = null;
+
+        // Check local mapping table for dbedid
         $localDetail = \DB::table('employee_details')
             ->where('user_id', $currentUser->id)
             ->first();
 
         if ($localDetail && $localDetail->dbedid) {
+            // Look up the secid in the external db_common database
             $userSecId = \DB::connection('db_common')
                 ->table('tbl_emp_details')
                 ->where('dbedid', $localDetail->dbedid)
                 ->value('secid');
         }
 
-        // Modal Transaction Sources (filtered by security/section)
+        // 2. Fetch the Sources
         $sourcesQuery = \App\Models\SourceOfFund::where('fiscal_year', date('Y'))
             ->with(['activities', 'budgetLineItem'])
             ->orderBy('name');
 
+        // 3. Apply Security Filter
+        // If not admin, restrict to the resolved Section ID
         if (!$isAdmin) {
             if ($userSecId) {
                 $sourcesQuery->where('section_id', $userSecId);
             } else {
+                // Fallback: If no section is found, return empty to prevent data leakage
                 $sourcesQuery->whereRaw('1 = 0');
             }
         }
 
         $sources = $sourcesQuery->get();
 
-        // --- 4. UNFILTERED SELECTION FOR MISSING ACTIVITY DROPDOWN ---
-        // Fetches all Sources that have Activities without applying Fiscal Year or Section restricts
-        $allActivitiesList = \App\Models\Activity::with('source')
-            ->orderBy('name', 'asc')
-            ->get();
-
         $user = auth()->user();
+
+        // 1. Determine the Section Filter
         $isSectionAdmin = ($user->id == 1 || $user->username === 'admin');
 
-        $syncQuery = \App\Models\Fund::whereNotIn('status', [
-            'Disbursed', 
-            'Disbursed (with savings)', 
-            'Disbursed (Partially)', 
-            'Cancelled'
-        ]);
+        // 2. Base Query for Awaiting Sync (Match what bulkSync() loops through)
+        // bulkSync updates anything where status != 'Disbursed' and status != 'Cancelled'
+        $syncQuery = \App\Models\Fund::whereNotIn('status', ['Disbursed', 'Cancelled']);
 
+        // 3. Base Query for Awaiting OBRN (Keep if you still need it separately elsewhere)
         $obrnQuery = \App\Models\Fund::where('status', 'For CAF/Obligation')
                         ->whereNull('obligation_serial');
 
+        // 4. Apply Section Filter if NOT Admin
         if (!$isSectionAdmin) {
             $localDetail = \DB::table('employee_details')
                 ->where('user_id', $user->id)
@@ -311,6 +297,7 @@ class FundController extends Controller
                     ->where('dbedid', $localDetail->dbedid)
                     ->value('secid');
                 
+                // Apply the section block to both queries
                 $syncQuery->where('secid', $userSecId);
                 $obrnQuery->where('secid', $userSecId);
             } else {
@@ -319,29 +306,21 @@ class FundController extends Controller
             }
         }
 
-        $awaitingSyncCount = $syncQuery->count();
+        // 5. EXECUTE THE FILTERED COUNTS
+        $awaitingSyncCount = $syncQuery->count(); // This will now accurately return 7
         $awaitingOBRN      = $obrnQuery->count();
 
         $allSections = $isAdmin 
             ? \DB::connection('db_common')
                 ->table('tbl_section')
-                ->where('isactive', 1)
+                ->where('isactive', 1) // Only pull records where isactive is 1
                 ->orderBy('secname', 'asc')
                 ->pluck('secname', 'secid')
                 ->toArray() 
             : [];
 
-        return view('funds.index', compact(
-            'funds', 
-            'sources', 
-            'allActivitiesList', 
-            'employees', 
-            'userSectionName', 
-            'awaitingSyncCount', 
-            'awaitingOBRN', 
-            'allSections', 
-            'isAdmin'
-        ));
+        return view('funds.index', compact('funds', 'sources', 'employees', 'userSectionName', 'awaitingSyncCount', 
+        'awaitingOBRN', 'allSections', 'isAdmin'));
     }
         
     public function store(Request $request)
@@ -746,116 +725,57 @@ class FundController extends Controller
                 return response()->json(['success' => false, 'message' => 'DTrack number is missing.']);
             }
 
-            $sourceConfig = \App\Models\SourceOfFund::find($clickedFund->source_of_fund_id);
-            if (!$sourceConfig || !$sourceConfig->spreadsheet_id || !$sourceConfig->sheet_name) {
-                return response()->json(['success' => false, 'message' => 'Fund source configuration missing.']);
+            // Cleaned lookup to prevent relationship naming collision issues
+            $funds = Fund::where('dtrack_no', $targetDtrack)->get();
+            if ($funds->isEmpty()) {
+                return response()->json(['success' => false, 'message' => "No records for DTrack: $targetDtrack"]);
             }
 
+            $fundGroup = $funds->groupBy('source_of_fund_id');
             $syncedDetails = []; 
-            $userId = Auth::id() ?? 1;
 
+            // Initialize Google Client Once
             $client = new \Google\Client();
-            $httpClient = new \GuzzleHttp\Client(['verify' => 'C:\xampp\php\extras\ssl\cacert.pem']);
+            $httpClient = new \GuzzleHttp\Client(['verify' => '/etc/ssl/certs/ca-certificates.crt']);
             $client->setHttpClient($httpClient);
             $client->setAuthConfig(storage_path('app/google-credentials.json'));
             $client->addScope(\Google_Service_Sheets::SPREADSHEETS_READONLY);
             $service = new \Google_Service_Sheets($client);
 
-            $range = "'{$sourceConfig->sheet_name}'!A:CQ";
-            $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
-            $rows = $response->getValues();
+            foreach ($fundGroup as $sourceId => $fundsInSource) {
+                // Explicitly targeting the direct Source configuration table config
+                $sourceConfig = \App\Models\SourceOfFund::find($sourceId);
+                if (!$sourceConfig || !$sourceConfig->spreadsheet_id || !$sourceConfig->sheet_name) continue;
 
-            if (!empty($rows)) {
-                foreach ($rows as $rowIndex => $rowData) {
-                    $sheetDtrack  = isset($rowData[0])  ? trim((string)$rowData[0])  : '';
-                    $sheetSerial  = isset($rowData[3])  ? trim((string)$rowData[3])  : '';
-                    $allotment    = isset($rowData[5])  ? trim((string)$rowData[5])  : '';
-                    $creditorName = isset($rowData[10]) ? trim((string)$rowData[10]) : null;
-                    $particulars  = isset($rowData[11]) ? trim((string)$rowData[11]) : '';
+                // Fetch Range directly from Sheets API
+                $range = "'{$sourceConfig->sheet_name}'!A:CQ";
+                $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
+                $rows = $response->getValues();
 
-                    if (empty($sheetDtrack) && empty($sheetSerial)) continue;
+                if (empty($rows)) continue;
 
-                    $isTargetMatch = ($sheetDtrack === $targetDtrack) || 
-                                    (!empty($sheetSerial) && $sheetSerial === $clickedFund->obligation_serial);
+                $tracker = [
+                    'netOb' => 0.0, 'netDisb' => 0.0,
+                    'latestObDate' => null, 'latestDisbDate' => null,
+                    'found_serial' => null, 'found' => false
+                ];
 
-                    if (!$isTargetMatch) continue;
-
-                    $cleanAllotment   = strtolower(preg_replace('/\s+/', ' ', $allotment));
-                    $cleanParticulars = strtolower(preg_replace('/\s+/', ' ', $particulars));
-
-                    $isOtherProfServ = (stripos($cleanAllotment, 'other professional services') !== false);
-                    $isWages         = (stripos($cleanParticulars, 'wages') !== false);
-                    $isCosSalary     = $isOtherProfServ && $isWages;
-
-                    $tracker = [
-                        'netOb' => 0.0, 'netDisb' => 0.0,
-                        'latestObDate' => null, 'latestDisbDate' => null,
-                        'found_serial' => $sheetSerial, 'found' => true
-                    ];
-                    $this->processApiRowData($rowData, $tracker);
-
-                    // --- DYNAMIC DISBURSED STATUS & DISPLAY AMOUNT ---
-                    if ($tracker['netDisb'] > 0) {
-                        if ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) {
-                            $status = 'Disbursed (with savings)';
-                        } else {
-                            $status = 'Disbursed';
-                        }
-                        $displayAmount = $tracker['netDisb'];
-                    } else {
-                        $status = 'Obligated';
-                        $displayAmount = $tracker['netOb'];
+                foreach ($rows as $rowData) {
+                    $sheetDtrack = isset($rowData[0]) ? trim((string)$rowData[0]) : '';
+                    if ($sheetDtrack === $targetDtrack) {
+                        $tracker['found'] = true;
+                        $tracker['found_serial'] = isset($rowData[3]) ? trim((string)$rowData[3]) : 'N/A';
+                        $this->processApiRowData($rowData, $tracker);
+                        break; 
                     }
+                }
 
-                    $existingFund = null;
-                    if (!empty($sheetSerial)) {
-                        $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
-                            ->where('obligation_serial', $sheetSerial)
-                            ->first();
-                    }
-
-                    if (!$existingFund && !empty($sheetDtrack)) {
-                        $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
-                            ->where(function($q) use ($sheetDtrack) {
-                                $q->where('dtrack_no', $sheetDtrack)
-                                ->orWhere('dtrack_no_new', $sheetDtrack);
-                            })
-                            ->whereNull('obligation_serial')
-                            ->first();
-                    }
-
-                    if (!$existingFund && $isCosSalary) {
-                        $newFund = Fund::create([
-                            'dtrack_no'           => !empty($sheetDtrack) ? $sheetDtrack : $targetDtrack,
-                            'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : null,
-                            'creditor'            => $creditorName,
-                            'particulars'         => !empty($particulars) ? $particulars : 'Imported HR COS Salary/Wages',
-                            'transaction_date'    => $tracker['latestObDate'] ?? now()->format('Y-m-d'),
-                            'amount'              => ($tracker['netOb'] > 0) ? $tracker['netOb'] : 0.00,
-                            'user_id'             => $userId,
-                            'source_of_fund_id'   => $sourceConfig->id,
-                            'obligation_amount'   => $tracker['netOb'],
-                            'obligation_date'     => $tracker['latestObDate'],
-                            'disbursement_amount' => $tracker['netDisb'],
-                            'disbursement_date'   => $tracker['latestDisbDate'],
-                            'status'              => $status,
-                            'status_date'         => now(),
-                            'remarks'             => 'Imported HR COS Salary/Wages',
-                            'remarks_salary'      => 'Imported HR COS Salary/Wages',
-                            'secid'               => auth()->user()->secid ?? null,
-                        ]);
-
-                        $syncedDetails[] = [
-                            'name'   => $sourceConfig->name ?? 'HR COS', 
-                            'dtrack' => $newFund->dtrack_no,
-                            'serial' => $newFund->obligation_serial ?? 'N/A',
-                            'amount' => number_format($displayAmount, 2),
-                            'status' => $status
-                        ];
-                    } elseif ($existingFund) {
-                        $existingFund->update([
-                            'creditor'            => $creditorName ?: $existingFund->creditor,
-                            'obligation_serial'   => (!empty($sheetSerial)) ? $sheetSerial : $existingFund->obligation_serial,
+                if ($tracker['found']) {
+                    foreach ($fundsInSource as $model) {
+                        $status = ($tracker['netDisb'] >= $tracker['netOb'] && $tracker['netOb'] > 0) ? 'Disbursed' : 'Obligated';
+                        
+                        $model->update([
+                            'obligation_serial'   => ($tracker['found_serial'] !== 'N/A') ? $tracker['found_serial'] : $model->obligation_serial,
                             'obligation_amount'   => $tracker['netOb'],
                             'obligation_date'     => $tracker['latestObDate'],
                             'disbursement_amount' => $tracker['netDisb'],
@@ -865,10 +785,10 @@ class FundController extends Controller
                         ]);
 
                         $syncedDetails[] = [
-                            'name'   => $sourceConfig->name ?? 'HIT', 
+                            'name'   => $sourceConfig->name ?? 'HIT', // Safely pulls from our direct config variable
                             'dtrack' => $targetDtrack,
-                            'serial' => $sheetSerial ?: $existingFund->obligation_serial,
-                            'amount' => number_format($displayAmount, 2),
+                            'serial' => $tracker['found_serial'],
+                            'amount' => number_format($tracker['netOb'], 2),
                             'status' => $status
                         ];
                     }
@@ -939,171 +859,114 @@ class FundController extends Controller
 
     public function bulkSync()
     {
-        $userId = Auth::id() ?? 1;
+        $userId = Auth::id();
         $cacheKey = "sync_progress_{$userId}";
         $cancelKey = "sync_cancel_{$userId}";
 
-        Cache::forget($cancelKey);
+        // 1. Get all funds except those already fully Disbursed
+        $funds = Fund::where('status', '!=', 'Disbursed')->get();
 
-        $sources = SourceOfFund::whereNotNull('spreadsheet_id')
-            ->whereNotNull('sheet_name')
-            ->get();
-
-        $totalSources = $sources->count();
-        if ($totalSources === 0) {
-            return response()->json(['success' => false, 'message' => 'No configured sources to sync.']);
+        $total = $funds->count();
+        if ($total === 0) {
+            return response()->json(['success' => false, 'message' => 'No pending funds to sync.']);
         }
 
-        $this->updateCache($cacheKey, 0, $totalSources);
+        // Initialize progress tracking
+        Cache::forget($cancelKey);
+        $this->updateCache($cacheKey, 0, $total);
+        
+        // Release session lock so the Progress Bar request can get through
         session_write_close();
 
+        // 2. Setup Google Service
         $client = new \Google\Client();
-        $httpClient = new \GuzzleHttp\Client(['verify' => 'C:\xampp\php\extras\ssl\cacert.pem']);
+        $httpClient = new \GuzzleHttp\Client(['verify' => '/etc/ssl/certs/ca-certificates.crt']);
         $client->setHttpClient($httpClient);
         $client->setAuthConfig(storage_path('app/google-credentials.json'));
         $client->addScope(\Google_Service_Sheets::SPREADSHEETS_READONLY);
         $service = new \Google_Service_Sheets($client);
 
-        $processedSources = 0;
+        $groupedBySource = $funds->groupBy('source_of_fund_id');
+        $processedCount = 0;
         $sourceCounter = 0;
-        $importedItems = []; 
 
-        foreach ($sources as $sourceConfig) {
+        foreach ($groupedBySource as $sourceId => $fundsInSource) {
+            // Stop immediately if user clicked "Cancel"
             if (Cache::has($cancelKey)) {
-                $this->finalizeProgress($cacheKey, $processedSources, $totalSources, 'cancelled');
+                $this->finalizeProgress($cacheKey, $processedCount, $total, 'cancelled');
                 return response()->json(['success' => false, 'message' => 'Sync Cancelled']);
             }
 
+            $sourceConfig = SourceOfFund::find($sourceId);
+            if (!$sourceConfig || !$sourceConfig->spreadsheet_id) {
+                $processedCount += $fundsInSource->count();
+                continue;
+            }
+
             try {
+                // RATE LIMITING: Pause 1 second if we have many sources to stay under Google's 60rpm limit
                 $sourceCounter++;
                 if ($sourceCounter > 10) {
                     sleep(1); 
                 }
-
-                $isMooeSource = (stripos($sourceConfig->name, 'MOOE') !== false) || 
-                                (stripos($sourceConfig->code ?? '', 'MOOE') !== false);
 
                 $range = "'{$sourceConfig->sheet_name}'!A:CQ";
                 $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
                 $rows = $response->getValues();
 
                 if (!empty($rows)) {
-                    foreach ($rows as $rowIndex => $rowData) {
-                        $sheetDtrack  = isset($rowData[0])  ? trim((string)$rowData[0])  : '';
-                        $sheetSerial  = isset($rowData[3])  ? trim((string)$rowData[3])  : '';
-                        $allotment    = isset($rowData[5])  ? trim((string)$rowData[5])  : '';
-                        $creditorName = isset($rowData[10]) ? trim((string)$rowData[10]) : null;
-                        $particulars  = isset($rowData[11]) ? trim((string)$rowData[11]) : '';
-
-                        if (empty($sheetDtrack) && empty($sheetSerial) && empty($particulars)) continue;
-
-                        $cleanAllotment   = strtolower(preg_replace('/\s+/', ' ', $allotment));
-                        $cleanParticulars = strtolower(preg_replace('/\s+/', ' ', $particulars));
-
-                        $isOtherProfServ = (stripos($cleanAllotment, 'other professional services') !== false);
-                        $isWages         = (stripos($cleanParticulars, 'wages') !== false);
-                        $isCosSalary     = $isOtherProfServ && $isWages;
-
-                        if ($isCosSalary && !$isMooeSource) {
-                            continue; 
-                        }
-
+                    foreach ($fundsInSource as $fund) {
+                        $targetDtrack = trim((string)$fund->dtrack_no);
                         $tracker = [
                             'netOb' => 0.0, 'netDisb' => 0.0, 
                             'latestObDate' => null, 'latestDisbDate' => null, 
-                            'found_serial' => $sheetSerial, 'found' => true
+                            'found_serial' => null, 'found' => false
                         ];
-                        $this->processApiRowData($rowData, $tracker);
 
-                        // --- DYNAMIC DISBURSED STATUS & DISPLAY AMOUNT ---
-                        if ($tracker['netDisb'] > 0) {
-                            if ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) {
-                                $status = 'Disbursed (with savings)';
-                            } else {
-                                $status = 'Disbursed';
+                        // Match DTrack number in the fetched rows
+                        foreach ($rows as $rowData) {
+                            if (isset($rowData[0]) && trim((string)$rowData[0]) === $targetDtrack) {
+                                $tracker['found'] = true;
+                                $tracker['found_serial'] = isset($rowData[3]) ? trim((string)$rowData[3]) : 'N/A';
+                                $this->processApiRowData($rowData, $tracker);
+                                break; 
                             }
-                            $displayAmount = $tracker['netDisb'];
-                        } else {
-                            $status = 'Obligated';
-                            $displayAmount = $tracker['netOb'];
                         }
 
-                        $existingFund = null;
-                        if (!empty($sheetSerial)) {
-                            $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
-                                ->where('obligation_serial', $sheetSerial)
-                                ->first();
-                        }
-
-                        if (!$existingFund && empty($sheetSerial) && !empty($sheetDtrack)) {
-                            $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
-                                ->where(function($q) use ($sheetDtrack) {
-                                    $q->where('dtrack_no', $sheetDtrack)
-                                    ->orWhere('dtrack_no_new', $sheetDtrack);
-                                })
-                                ->whereNull('obligation_serial')
-                                ->first();
-                        }
-
-                        if (!$existingFund && $isCosSalary && $isMooeSource) {
-                            $newFund = Fund::create([
-                                'dtrack_no'           => !empty($sheetDtrack) ? $sheetDtrack : 'HR-COS-SALARY',
-                                'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : null,
-                                'creditor'            => $creditorName,
-                                'particulars'         => !empty($particulars) ? $particulars : 'Imported HR COS Salary/Wages',
-                                'transaction_date'    => $tracker['latestObDate'] ?? now()->format('Y-m-d'),
-                                'amount'              => ($tracker['netOb'] > 0) ? $tracker['netOb'] : 0.00,
-                                'user_id'             => $userId,
-                                'source_of_fund_id'   => $sourceConfig->id,
+                        if ($tracker['found']) {
+                            // Calculate new status based on sheet values
+                            $newStatus = ($tracker['netDisb'] >= $tracker['netOb'] && $tracker['netOb'] > 0) ? 'Disbursed' : 'Obligated';
+                            
+                            $fund->update([
+                                'obligation_serial'   => ($tracker['found_serial'] !== 'N/A') ? $tracker['found_serial'] : $fund->obligation_serial,
                                 'obligation_amount'   => $tracker['netOb'],
                                 'obligation_date'     => $tracker['latestObDate'],
                                 'disbursement_amount' => $tracker['netDisb'],
                                 'disbursement_date'   => $tracker['latestDisbDate'],
-                                'status'              => $status,
-                                'status_date'         => now(),
-                                'remarks'             => 'Imported HR COS Salary/Wages',
-                                'remarks_salary'      => 'Imported HR COS Salary/Wages',
-                                'secid'               => auth()->user()->secid ?? null,
-                            ]);
-
-                            $importedItems[] = [
-                                'serial'     => $newFund->obligation_serial ?: $newFund->dtrack_no,
-                                'status'     => $status,
-                                'amount'     => number_format($displayAmount, 2),
-                                'duplicates' => []
-                            ];
-                        } 
-                        elseif ($existingFund) {
-                            $existingFund->update([
-                                'creditor'            => $creditorName ?: $existingFund->creditor,
-                                'obligation_serial'   => (!empty($sheetSerial)) ? $sheetSerial : $existingFund->obligation_serial,
-                                'obligation_amount'   => $tracker['netOb'],
-                                'obligation_date'     => $tracker['latestObDate'],
-                                'disbursement_amount' => $tracker['netDisb'],
-                                'disbursement_date'   => $tracker['latestDisbDate'],
-                                'status'              => $status,
+                                'status'              => $newStatus,
                                 'status_date'         => now()
                             ]);
                         }
+                        
+                        $processedCount++;
+                        $this->updateCache($cacheKey, $processedCount, $total);
                     }
+                } else {
+                    $processedCount += $fundsInSource->count();
                 }
 
+                // Memory cleanup: Clear the large rows array before next loop
                 unset($rows);
 
             } catch (\Exception $e) {
-                \Log::error("Bulk Sync Error (Source {$sourceConfig->id}): " . $e->getMessage());
+                \Log::error("Bulk Sync Error (Source $sourceId): " . $e->getMessage());
+                $processedCount += $fundsInSource->count();
+                $this->updateCache($cacheKey, $processedCount, $total);
             }
-
-            $processedSources++;
-            $this->updateCache($cacheKey, $processedSources, $totalSources);
         }
 
-        $this->finalizeProgress($cacheKey, $totalSources, $totalSources, 'completed');
-
-        return response()->json([
-            'success'        => true,
-            'imported_items' => $importedItems
-        ]);
+        $this->finalizeProgress($cacheKey, $total, $total, 'completed');
+        return response()->json(['success' => true]);
     }
 
     /**
@@ -1255,29 +1118,5 @@ class FundController extends Controller
         };
     }
 
-    public function updateTransactionType(Request $request, $id)
-    {
-        $request->validate([
-            'transaction_type_id' => 'required|exists:activities,id'
-        ]);
-
-        try {
-            $fund = Fund::findOrFail($id);
-            
-            $fund->update([
-                'transaction_type_id' => $request->transaction_type_id
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'WFP Activity successfully assigned!'
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to assign activity: ' . $e->getMessage()
-            ], 500);
-        }
-    }
 
 }

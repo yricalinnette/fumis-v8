@@ -40,6 +40,7 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
         Route::get('/funds/group/{dtrack}', 'getGroupByDtrack');
         Route::patch('/funds/{id}/status', 'updateStatus')->name('funds.updateStatus');
         Route::get('/funds/awaiting-obligation', 'getAwaitingObligation')->name('funds.awaiting');
+        Route::patch('/funds/{id}/update-transaction-type', [FundController::class, 'updateTransactionType'])->name('funds.updateTransactionType');
 
         // RESTORED ROUTE: Required by index.blade.php
         Route::get('/funds/sync-count', function() {
@@ -80,6 +81,9 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
         Route::get('/budget-by-source', 'budgetBySource')->name('by_source');
         Route::get('/budget-by-line-item', 'budgetByLineItem')->name('by_line_item');
         Route::get('/by_transactions', 'byTransactions')->name('by_transactions');
+        // FIX: Place the export route right here!
+        // Because it's inside this group, its full name automatically becomes 'reports.by_source.export'
+        Route::get('/budget-by-source/export', 'exportBudgetBySource')->name('by_source.export');
     });
 
     // Profile Controller Group
@@ -105,6 +109,12 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
             Route::post('/realign', 'updateAllocation')->name('realign');
             Route::post('/activities/pool', 'poolFunds')->name('activity.pool');
             Route::get('/activity/{id}/edit', 'editWfp')->name('activity.edit');
+
+            // ==========================================================
+            // NEW ADDITION: Self-Service Password Routes (All Users)
+            // ==========================================================
+            Route::get('/profile/password', 'editPassword')->name('profile.password');
+            Route::put('/profile/password/update', 'updatePassword')->name('profile.password.update');
         });
     });
     Route::get('/admin/settings/get-realignment-table/{id}', [SettingsController::class, 'getRealignmentTable']);
