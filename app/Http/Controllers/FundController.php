@@ -70,7 +70,7 @@ class FundController extends Controller
             });
         }
 
-        $fundsCollection = $baseQuery->with(['fundSource', 'activity', 'creditors.employeeDetail'])
+        $fundsCollection = $baseQuery->with(['fundSource', 'activity','cosContract', 'creditors.employeeDetail'])
             ->whereNotNull('dtrack_no')
             ->where('dtrack_no', '!=', '')
             ->orderBy('created_at', 'desc')
@@ -222,6 +222,8 @@ class FundController extends Controller
                 'group_status'        => $priorityStatus,
                 'transaction_type_id' => $groupTransactionTypeId,
                 'remarks_salary'      => $first->remarks_salary,
+                'disbursed_months'    => $first->disbursed_months,
+                'contract'            => $first->cosContract,
                 'source_names'        => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
                 'activity_names'      => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
                 'is_fully_synced'     => !$group->contains(function ($item) {
@@ -239,6 +241,8 @@ class FundController extends Controller
                         'status'              => $item->status,
                         'remarks'             => $item->remarks,
                         'remarks_salary'      => $item->remarks_salary,
+                        'disbursed_months'    => $item->disbursed_months,
+                        'contract'            => $item->cosContract,
                         'creditor'            => $item->creditor,
                         'transaction_type_id' => $item->transaction_type_id,
                         'obligation_serial'   => $item->obligation_serial,
@@ -875,9 +879,23 @@ class FundController extends Controller
                 }
             }
 
+            // FAIL-SAFE: If no matching transaction rows were found in the sheet
+            if (empty($syncedDetails)) {
+                $serialOrDtrack = !empty($clickedFund->obligation_serial) ? $clickedFund->obligation_serial : $targetDtrack;
+                return response()->json([
+                    'success'           => false,
+                    'obligation_serial' => $serialOrDtrack,
+                    'message'           => 'No available data found in RAODS'
+                ]);
+            }
+
+            $freshFund = $clickedFund->fresh();
+            $dbSerial = !empty($freshFund->obligation_serial) ? $freshFund->obligation_serial : $freshFund->dtrack_no;
+
             return response()->json([
-                'success' => true,
-                'details' => [
+                'success'           => true,
+                'obligation_serial' => $dbSerial,
+                'details'           => [
                     'dtrack_no'    => $targetDtrack,
                     'synced_items' => $syncedDetails,
                     'count'        => count($syncedDetails)
@@ -945,13 +963,51 @@ class FundController extends Controller
 
         Cache::forget($cancelKey);
 
-        $sources = SourceOfFund::whereNotNull('spreadsheet_id')
-            ->whereNotNull('sheet_name')
-            ->get();
+        // --- FETCH SECID LOGIC ---
+        $user = Auth::user();
+        $secid = null;
+
+        if ($user && $user->username === 'admin') {
+            $secid = 0; // Default ID for Regional Office / Admin
+        } elseif ($user) {
+            $localDetail = \DB::table('employee_details')
+                ->where('user_id', $user->id)
+                ->select('dbedid')
+                ->first();
+
+            if ($localDetail && $localDetail->dbedid) {
+                $secid = \DB::connection('db_common')->table('tbl_emp_details')
+                    ->where('dbedid', $localDetail->dbedid)
+                    ->value('secid');
+            }
+        }
+
+        // Protection: Stop if non-admin has no section assigned
+        if (is_null($secid) && ($user->username ?? '') !== 'admin') {
+            return response()->json([
+                'success' => false, 
+                'message' => 'System Error: Your account is not linked to a section. Cannot determine section fund sources.'
+            ], 422);
+        }
+        // -------------------------
+
+        // --- SCOPE SOURCES BY USER SECTION ---
+        $sourcesQuery = SourceOfFund::whereNotNull('spreadsheet_id')
+            ->whereNotNull('sheet_name');
+
+        // Non-admin users only sync sources matching their section_id
+        if ($secid !== 0) {
+            $sourcesQuery->where('section_id', $secid);
+        }
+
+        $sources = $sourcesQuery->get();
 
         $totalSources = $sources->count();
         if ($totalSources === 0) {
-            return response()->json(['success' => false, 'message' => 'No configured sources to sync.']);
+            return response()->json([
+                'success' => false, 
+                'message' => 'No configured fund sources found for your section.'
+            ]);
         }
 
         $this->updateCache($cacheKey, 0, $totalSources);
@@ -980,8 +1036,15 @@ class FundController extends Controller
                     sleep(1); 
                 }
 
-                $isMooeSource = (stripos($sourceConfig->name, 'MOOE') !== false) || 
-                                (stripos($sourceConfig->code ?? '', 'MOOE') !== false);
+                // Check if this source is Capital Outlay (CO) via allotment_class, name, or code
+                $allotClass = strtoupper(trim((string)($sourceConfig->allotment_class ?? '')));
+                $sourceName = $sourceConfig->name ?? '';
+                $sourceCode = $sourceConfig->code ?? '';
+
+                $isCapitalOutlay = ($allotClass === 'CO') ||
+                                (stripos($sourceName, 'Capital Outlay') !== false) || 
+                                (stripos($sourceName, ' CO') !== false) ||
+                                (stripos($sourceCode, 'CO') !== false);
 
                 $range = "'{$sourceConfig->sheet_name}'!A:CQ";
                 $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
@@ -1004,18 +1067,75 @@ class FundController extends Controller
                         $isWages         = (stripos($cleanParticulars, 'wages') !== false);
                         $isCosSalary     = $isOtherProfServ && $isWages;
 
-                        if ($isCosSalary && !$isMooeSource) {
+                        // Strictly skip COS Salary rows for CO allotment class / fund sources
+                        if ($isCosSalary && $isCapitalOutlay) {
                             continue; 
                         }
 
+                        // --- 1. STRICT MATCH WITHIN THE SAME SOURCE_OF_FUND_ID ---
+                        $existingFund = null;
+
+                        if (!empty($sheetSerial)) {
+                            $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
+                                ->where('obligation_serial', $sheetSerial)
+                                ->when($isCosSalary && $creditorName, function($q) use ($creditorName) {
+                                    $q->where('creditor', $creditorName);
+                                })
+                                ->with('cosContract')
+                                ->first();
+                        }
+
+                        if (!$existingFund && !empty($sheetDtrack)) {
+                            $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
+                                ->where(function($q) use ($sheetDtrack) {
+                                    $q->where('dtrack_no', $sheetDtrack)
+                                    ->orWhere('dtrack_no_new', $sheetDtrack);
+                                })
+                                ->when($isCosSalary && $creditorName, function($q) use ($creditorName) {
+                                    $q->where('creditor', $creditorName);
+                                })
+                                ->with('cosContract')
+                                ->first();
+                        }
+
+                        // --- 2. EXCLUSION GUARD: SKIP DISBURSED / COMPLETED / CANCELLED ---
+                        if ($existingFund) {
+                            $isCompletedStatus = in_array($existingFund->status, [
+                                'Disbursed', 
+                                'Disbursed (with savings)', 
+                                'Completed', 
+                                'Cancelled'
+                            ]);
+                            
+                            $isContractFulfilled = false;
+                            if ($existingFund->cosContract && $existingFund->cosContract->total_months > 0) {
+                                $isContractFulfilled = ($existingFund->disbursed_months >= $existingFund->cosContract->total_months);
+                            }
+
+                            // If record is completed/disbursed or contract fulfilled
+                            if ($isCompletedStatus || $isContractFulfilled) {
+                                if ($existingFund->cosContract && $isContractFulfilled && $existingFund->cosContract->status !== 'Completed') {
+                                    $existingFund->cosContract->update(['status' => 'Completed']);
+                                }
+
+                                // BACKFILL NULL SECID EVEN FOR DISBURSED/COMPLETED ROWS
+                                if (is_null($existingFund->secid) && !is_null($secid)) {
+                                    $existingFund->update(['secid' => $secid]);
+                                }
+
+                                continue; // Skip further amount calculations & duplicate checks
+                            }
+                        }
+
+                        // --- 3. TRACKER & DYNAMIC DISBURSED STATUS ---
                         $tracker = [
                             'netOb' => 0.0, 'netDisb' => 0.0, 
                             'latestObDate' => null, 'latestDisbDate' => null, 
                             'found_serial' => $sheetSerial, 'found' => true
                         ];
-                        $this->processApiRowData($rowData, $tracker);
 
-                        // --- DYNAMIC DISBURSED STATUS & DISPLAY AMOUNT ---
+                        $this->processApiRowData($rowData, $tracker, $particulars);
+
                         if ($tracker['netDisb'] > 0) {
                             if ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) {
                                 $status = 'Disbursed (with savings)';
@@ -1028,24 +1148,51 @@ class FundController extends Controller
                             $displayAmount = $tracker['netOb'];
                         }
 
-                        $existingFund = null;
-                        if (!empty($sheetSerial)) {
-                            $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
-                                ->where('obligation_serial', $sheetSerial)
-                                ->first();
+                        // --- 4. COUNT DISBURSED MONTHS FROM POPULATED COLUMNS ---
+                        $cleanHelper = function($val) {
+                            $raw = str_replace([',', '₱', ' '], '', trim((string)$val));
+                            if (str_starts_with($raw, '(')) $raw = '-' . trim($raw, '()');
+                            return is_numeric($raw) ? (float)$raw : 0.0;
+                        };
+
+                        $disbursedMonthCount = 0;
+                        $totalIndexes = [17, 24, 31, 38, 45, 52, 59, 66, 73, 80, 87, 94];
+                        foreach ($totalIndexes as $tIdx) {
+                            if (isset($rowData[$tIdx]) && $cleanHelper($rowData[$tIdx]) != 0) {
+                                $disbursedMonthCount++;
+                            }
                         }
 
-                        if (!$existingFund && empty($sheetSerial) && !empty($sheetDtrack)) {
-                            $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
-                                ->where(function($q) use ($sheetDtrack) {
-                                    $q->where('dtrack_no', $sheetDtrack)
-                                    ->orWhere('dtrack_no_new', $sheetDtrack);
-                                })
-                                ->whereNull('obligation_serial')
-                                ->first();
+                        // --- 5. RESOLVE OR CREATE COS CONTRACT ---
+                        $contractId = null;
+                        if ($isCosSalary) {
+                            $contractDetails = $this->parseCosParticulars($particulars, $creditorName);
+                            if (!empty($contractDetails['start_date']) && !empty($contractDetails['end_date'])) {
+                                $contractStatus = ($disbursedMonthCount >= $contractDetails['total_months'] && $contractDetails['total_months'] > 0) 
+                                    ? 'Completed' 
+                                    : 'Active';
+
+                                $contract = \App\Models\CosContract::firstOrCreate(
+                                    [
+                                        'creditor_name' => $creditorName,
+                                        'start_date'    => $contractDetails['start_date'],
+                                        'end_date'      => $contractDetails['end_date'],
+                                    ],
+                                    [
+                                        'total_months'          => $contractDetails['total_months'],
+                                        'monthly_remuneration'  => $contractDetails['monthly_remuneration'],
+                                        'premium_amount'        => $contractDetails['premium_amount'],
+                                        'total_contract_amount' => $contractDetails['total_contract_amount'],
+                                        'status'                => $contractStatus,
+                                    ]
+                                );
+                                $contractId = $contract->id;
+                            }
                         }
 
-                        if (!$existingFund && $isCosSalary && $isMooeSource) {
+                        // --- 6. CREATE NEW RECORD ONLY IF NO MATCHING FUND UNDER SAME SOURCE_OF_FUND_ID ---
+                        if (!$existingFund && $isCosSalary && !$isCapitalOutlay) {
+
                             $newFund = Fund::create([
                                 'dtrack_no'           => !empty($sheetDtrack) ? $sheetDtrack : 'HR-COS-SALARY',
                                 'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : null,
@@ -1063,27 +1210,40 @@ class FundController extends Controller
                                 'status_date'         => now(),
                                 'remarks'             => 'Imported HR COS Salary/Wages',
                                 'remarks_salary'      => 'Imported HR COS Salary/Wages',
-                                'secid'               => auth()->user()->secid ?? null,
+                                'cos_contract_id'     => $contractId,
+                                'disbursed_months'    => $disbursedMonthCount,
+                                'secid'               => $secid, // Auto-fetched secid
                             ]);
 
                             $importedItems[] = [
-                                'serial'     => $newFund->obligation_serial ?: $newFund->dtrack_no,
-                                'status'     => $status,
-                                'amount'     => number_format($displayAmount, 2),
+                                'id'     => $newFund->id,
+                                'serial' => !empty($newFund->obligation_serial) ? $newFund->obligation_serial : $newFund->dtrack_no,
+                                'status' => $status,
+                                'amount' => number_format($displayAmount, 2),
                                 'duplicates' => []
                             ];
                         } 
                         elseif ($existingFund) {
-                            $existingFund->update([
+                            
+                            $updateData = [
                                 'creditor'            => $creditorName ?: $existingFund->creditor,
                                 'obligation_serial'   => (!empty($sheetSerial)) ? $sheetSerial : $existingFund->obligation_serial,
                                 'obligation_amount'   => $tracker['netOb'],
                                 'obligation_date'     => $tracker['latestObDate'],
                                 'disbursement_amount' => $tracker['netDisb'],
                                 'disbursement_date'   => $tracker['latestDisbDate'],
+                                'disbursed_months'    => $disbursedMonthCount,
                                 'status'              => $status,
-                                'status_date'         => now()
-                            ]);
+                                'status_date'         => now(),
+                                'secid'               => $existingFund->secid ?? $secid // Backfills secid if previously NULL
+                            ];
+
+                            if ($isCosSalary && $contractId) {
+                                $updateData['cos_contract_id'] = $contractId;
+                                $updateData['remarks_salary']  = 'Imported HR COS Salary/Wages';
+                            }
+
+                            $existingFund->update($updateData);
                         }
                     }
                 }
@@ -1104,6 +1264,42 @@ class FundController extends Controller
             'success'        => true,
             'imported_items' => $importedItems
         ]);
+    }
+
+    //for getting of the COS Salary wages from the RAODS Particulars column
+    private function parseCosParticulars($particulars, $creditorName = null)
+    {
+        $datePattern = '/period\s+of\s+([A-Za-z]+\.?\s+\d{1,2},\s+\d{4})\s+to\s+([A-Za-z]+\.?\s+\d{1,2},\s+\d{4})/i';
+        $ratePattern = '/renumeration\s+of\s+([\d,]+(?:\.\d{2})?)(?:.*?premium\s+of\s+([\d,]+(?:\.\d{2})?))?/i';
+
+        $startDate = null;
+        $endDate = null;
+        $months = 0;
+        $remuneration = 0.00;
+        $premium = 0.00;
+
+        if (preg_match($datePattern, $particulars, $matches)) {
+            try {
+                $startDate = \Carbon\Carbon::parse(trim($matches[1]))->format('Y-m-d');
+                $endDate   = \Carbon\Carbon::parse(trim($matches[2]))->format('Y-m-d');
+                $months    = \Carbon\Carbon::parse($startDate)->diffInMonths(\Carbon\Carbon::parse($endDate)) + 1;
+            } catch (\Exception $e) {}
+        }
+
+        if (preg_match($ratePattern, $particulars, $matches)) {
+            $remuneration = (float) str_replace(',', '', $matches[1] ?? 0);
+            $premium      = (float) str_replace(',', '', $matches[2] ?? 0);
+        }
+
+        return [
+            'creditor_name'         => $creditorName,
+            'start_date'            => $startDate,
+            'end_date'              => $endDate,
+            'total_months'          => (int) $months,
+            'monthly_remuneration'  => $remuneration,
+            'premium_amount'        => $premium,
+            'total_contract_amount' => ($remuneration + $premium) * $months,
+        ];
     }
 
     /**

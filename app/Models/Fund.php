@@ -28,6 +28,8 @@ class Fund extends Model
         'disbursement_date',
         'disbursement_amount',
         'remarks_salary',
+        'cos_contract_id', 
+        'disbursed_months', 
     ];
 
     protected $casts = [
@@ -86,6 +88,12 @@ class Fund extends Model
     {
         // Change from Employee::class to User::class
         return $this->belongsToMany(User::class, 'employee_fund', 'fund_id', 'user_id');
+    }
+
+    // Relationship to CosContract
+    public function cosContract()
+    {
+        return $this->belongsTo(CosContract::class, 'cos_contract_id');
     }
   
 }

@@ -262,9 +262,9 @@
                     </button> --}}
                     <button type="button" id="btn-bulk-sync" class="btn btn-white btn-sm font-weight-bold border-right px-3">
                         <i class="fas fa-cloud-download-alt mr-2 text-info"></i> Bulk Sync
-                        @if(isset($awaitingSyncCount) && $awaitingSyncCount > 0)
+                        {{-- @if(isset($awaitingSyncCount) && $awaitingSyncCount > 0)
                             <span class="badge badge-warning ml-1">{{ $awaitingSyncCount }}</span>
-                        @endif
+                        @endif --}}
                     </button>
                     <button type="button" class="btn btn-success btn-sm font-weight-bold px-4 btn-add-new">
                         <i class="fas fa-plus mr-2"></i> Add Transaction
@@ -515,6 +515,21 @@
                                 }}">
                                     {{ $firstStatus }}
                                 </span>
+
+                                {{-- --- COS CONTRACT BADGE (MERGED VIEW) --- --}}
+                                @if(isset($fund->remarks_salary) && $fund->remarks_salary === 'Imported HR COS Salary/Wages' && isset($fund->contract))
+                                    <div class="mt-1">
+                                        @if($fund->disbursed_months >= $fund->contract->total_months)
+                                            <span class="badge badge-success" title="Period: {{ $fund->contract->start_date }} to {{ $fund->contract->end_date }}">
+                                                <i class="fas fa-check-circle mr-1"></i> Contract Fully Disbursed ({{ $fund->disbursed_months }}/{{ $fund->contract->total_months }} mos)
+                                            </span>
+                                        @else
+                                            <span class="badge badge-info" title="Period: {{ $fund->contract->start_date }} to {{ $fund->contract->end_date }}">
+                                                <i class="fas fa-hourglass-half mr-1"></i> Paid {{ $fund->disbursed_months }} of {{ $fund->contract->total_months }} Months
+                                            </span>
+                                        @endif
+                                    </div>
+                                @endif
                                 
                                 @if($uniqueRemarks->isNotEmpty())
                                     <div class="mt-1 text-muted small border-left pl-2" style="font-style: italic;">
@@ -542,6 +557,21 @@
                                     }}">
                                         {{ $item->status }}
                                     </span>
+
+                                    {{-- --- COS CONTRACT BADGE (DETAILED VIEW) --- --}}
+                                    @if(isset($item->remarks_salary) && $item->remarks_salary === 'Imported HR COS Salary/Wages' && isset($item->contract))
+                                        <div class="mt-1">
+                                            @if($item->disbursed_months >= $item->contract->total_months)
+                                                <span class="badge badge-success" title="Period: {{ $item->contract->start_date }} to {{ $item->contract->end_date }}">
+                                                    <i class="fas fa-check-circle mr-1"></i> Contract Fully Disbursed ({{ $item->disbursed_months }}/{{ $item->contract->total_months }} mos)
+                                                </span>
+                                            @else
+                                                <span class="badge badge-info" title="Period: {{ $item->contract->start_date }} to {{ $item->contract->end_date }}">
+                                                    <i class="fas fa-hourglass-half mr-1"></i> Paid {{ $item->disbursed_months }} of {{ $item->contract->total_months }} Months
+                                                </span>
+                                            @endif
+                                        </div>
+                                    @endif
 
                                     <div class="small mt-1">
                                         {{-- --- OBLIGATED STATE --- --}}
@@ -1295,13 +1325,11 @@
 
             if (!confirm(`Start Bulk Sync? This will auto-import all new COS Salary rows and sync existing items.`)) return;
 
-            // UI Updates - Step 1: Backend Auto-Import
             btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Auto-Importing COS Salaries...');
             $('#sync-progress-container').slideDown();
             $('#sync-progress-bar').css('width', '5%');
             $('#sync-percent-text').text('Reading Google Sheets...');
 
-            // Helper: Captures items from DataTable
             function captureTableItems() {
                 let items = [];
                 if ($.fn.DataTable.isDataTable('#funds-table')) {
@@ -1310,12 +1338,14 @@
                         const rowNode = this.node();
                         const syncBtn = $(rowNode).find('.btn-sync-sheet');
                         const statusText = $(rowNode).find('td').eq(6).text().trim().toLowerCase(); 
-                        const dtrackNumber = $(rowNode).find('td').eq(0).text().trim();
 
-                        if (statusText !== 'disbursed' && statusText !== 'cancelled' && syncBtn.length > 0 && !syncBtn.is(':disabled')) {
+                        const isExcludedStatus = statusText === 'disbursed' || 
+                                                statusText === 'cancelled' || 
+                                                statusText.indexOf('disbursed (with savings)') !== -1;
+
+                        if (!isExcludedStatus && syncBtn.length > 0 && !syncBtn.is(':disabled')) {
                             items.push({
-                                id: syncBtn.data('id'),
-                                serial: dtrackNumber 
+                                id: syncBtn.data('id')
                             });
                         }
                     });
@@ -1335,14 +1365,13 @@
             }
 
             function showSummary(res) {
-                // Render Success Table
                 let successHtml = '';
                 res.successList.forEach(item => {
                     let badgeClass = 'badge-primary';
                     if (item.status === 'Disbursed') {
                         badgeClass = 'badge-success';
-                    } else if (item.status.indexOf('Disbursed') !== -1) {
-                        badgeClass = 'badge-info'; // Info badge for 'Disbursed (with savings)'
+                    } else if (item.status && item.status.indexOf('Disbursed') !== -1) {
+                        badgeClass = 'badge-info';
                     }
 
                     successHtml += `
@@ -1355,7 +1384,6 @@
                 });
                 $('#list-success-table').html(successHtml || '<tr><td colspan="4" class="text-center">No successful updates.</td></tr>');
 
-                // Render Failed List
                 let failedHtml = '';
                 res.failedList.forEach(item => {
                     failedHtml += `
@@ -1380,22 +1408,22 @@
                 url: '/funds/bulk-sync',
                 method: 'POST',
                 dataType: 'json',
-                headers: {
-                    'X-CSRF-TOKEN': csrfToken
-                },
-                data: {
-                    _token: csrfToken
-                },
+                headers: { 'X-CSRF-TOKEN': csrfToken },
+                data: { _token: csrfToken },
                 success: function(response) {
                     if (response && response.imported_items && response.imported_items.length > 0) {
                         response.imported_items.forEach(item => {
-                            results.success++;
-                            results.successList.push({
-                                serial: item.serial,
-                                status: item.status,
-                                amount: item.amount,
-                                duplicates: []
-                            });
+                            const exists = item.id ? results.successList.some(s => s.id === item.id) : false;
+                            if (!exists) {
+                                results.success++;
+                                results.successList.push({
+                                    id: item.id || null,
+                                    serial: item.serial,
+                                    status: item.status,
+                                    amount: item.amount,
+                                    duplicates: []
+                                });
+                            }
                         });
                     }
                 },
@@ -1448,30 +1476,45 @@
                         method: "GET",
                         dataType: "json",
                         success: function(response) {
-                            if (response && response.success && response.details) {
-                                const d = response.details;
-                                const itemData = (d.synced_items && d.synced_items.length > 0) ? d.synced_items[0] : null;
+                            const d = response.details || {};
+                            const hasSyncedItems = response.success && d.synced_items && d.synced_items.length > 0;
 
-                                if (itemData) {
-                                    results.success++;
-                                    let duplicateRows = [...(d.duplicate_ob_rows || []), ...(d.duplicate_disb_rows || [])];
-                                    results.successList.push({
-                                        serial: itemData.serial,
+                            if (hasSyncedItems) {
+                                const itemData = d.synced_items[0];
+                                const rowDbSerial = response.obligation_serial || itemData.serial || `ID-${currentItem.id}`;
+                                let duplicateRows = [...(d.duplicate_ob_rows || []), ...(d.duplicate_disb_rows || [])];
+                                
+                                let existingIdx = results.successList.findIndex(s => s.id === currentItem.id);
+                                
+                                if (existingIdx !== -1) {
+                                    results.successList[existingIdx] = {
+                                        id: currentItem.id,
+                                        serial: rowDbSerial,
                                         status: itemData.status,
-                                        amount: itemData.amount, // Displays the netDisb amount formatted
+                                        amount: itemData.amount,
+                                        duplicates: duplicateRows
+                                    };
+                                } else {
+                                    results.success++;
+                                    results.successList.push({
+                                        id: currentItem.id,
+                                        serial: rowDbSerial,
+                                        status: itemData.status,
+                                        amount: itemData.amount,
                                         duplicates: duplicateRows
                                     });
-                                } else {
-                                    recordFailure(currentItem.serial, "No available data found in RAODS");
                                 }
                             } else {
-                                recordFailure(currentItem.serial, (response && response.message) ? response.message : "Sync Failed");
+                                // Correctly Route Missing RAODS Items to Failed List
+                                const failSerial = response.obligation_serial || `ID ${currentItem.id}`;
+                                const failReason = (response && response.message) ? response.message : "No available data found in RAODS";
+                                recordFailure(failSerial, failReason);
                             }
                             finishItem();
                         },
                         error: function(xhr) {
                             let errorMsg = xhr.responseJSON ? xhr.responseJSON.message : "Server Error";
-                            recordFailure(currentItem.serial, errorMsg);
+                            recordFailure(`ID ${currentItem.id}`, errorMsg);
                             finishItem();
                         }
                     });
