@@ -1096,65 +1096,68 @@ class SettingsController extends Controller
             'empid'    => 'required|integer', // Represents the dbedid
             'username' => 'required|string|max:255', 
             'password' => 'required|min:8',
+            'role'     => 'required|in:staff,division,budget,admin',
         ]);
 
         $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
-        
-        // 2. Generate the Searchable Hash (One-way)
-        // We use strtolower to ensure "JohnDoe" and "johndoe" result in the same hash.
         $usernameHash = hash('sha256', strtolower($request->username));
-
-        // 3. Prepare Encrypted Value for MySQL
-        // Note: We use DB::raw for the update/create to let MySQL handle the AES encryption.
         $encryptedUsername = DB::raw("AES_ENCRYPT('{$request->username}', '{$key}')");
 
         DB::beginTransaction();
 
         try {
-            // CASE A: Check if this Employee (dbedid) is already linked to ANY user
             $existingDetail = \App\Models\EmployeeDetail::where('dbedid', $request->empid)->first();
 
             if ($existingDetail) {
                 $user = $existingDetail->user;
                 $user->update([
                     'username'      => $encryptedUsername,
-                    'username_hash' => $usernameHash, // Store the hash for login
+                    'username_hash' => $usernameHash,
                     'password'      => Hash::make($request->password),
+                    'is_admin'      => ($request->role === 'admin') ? 1 : 0,
                 ]);
-                $message = 'User account credentials updated and encrypted!';
+
+                // Save role to employee_details
+                $existingDetail->update([
+                    'role' => $request->role,
+                ]);
+
+                $message = 'User account credentials and access role updated!';
             } 
             else {
-                // CASE B & C: Check if a User with this username hash already exists (unlinked)
                 $user = \App\Models\User::where('username_hash', $usernameHash)->first();
 
                 if ($user) {
-                    // Link existing unlinked user to this dbedid
                     $user->employeeDetail()->updateOrCreate(
                         ['user_id' => $user->id],
-                        ['dbedid' => $request->empid]
+                        [
+                            'dbedid' => $request->empid,
+                            'role'   => $request->role,
+                        ]
                     );
                     
                     $user->update([
                         'username' => $encryptedUsername,
-                        'password' => Hash::make($request->password)
+                        'password' => Hash::make($request->password),
+                        'is_admin' => ($request->role === 'admin') ? 1 : 0,
                     ]);
                     
-                    $message = 'Existing user account linked and secured!';
+                    $message = 'Existing user account linked and access role assigned!';
                 } 
                 else {
-                    // CASE D: Brand new User and brand new Link
                     $user = \App\Models\User::create([
                         'username'      => $encryptedUsername,
                         'username_hash' => $usernameHash,
                         'password'      => Hash::make($request->password),
-                        'is_admin'      => 0,
+                        'is_admin'      => ($request->role === 'admin') ? 1 : 0,
                     ]);
 
                     $user->employeeDetail()->create([
                         'dbedid' => $request->empid,
+                        'role'   => $request->role,
                     ]);
 
-                    $message = 'New encrypted user account created and linked!';
+                    $message = 'New user account created with assigned access role!';
                 }
             }
 

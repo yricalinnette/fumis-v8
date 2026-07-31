@@ -254,7 +254,7 @@ class FundController extends Controller
                     ];
                 }),
             ];
-        })->sortByDesc('created_at')->values();
+        })->sortByDesc('transaction_date')->values();
 
         $userSectionName = ($currentUser->is_admin) ? 'All Personnel' : ($myDetails->secname ?? 'Assigned Section');
 
@@ -285,11 +285,24 @@ class FundController extends Controller
 
         $sources = $sourcesQuery->get();
 
-        // --- 4. UNFILTERED SELECTION FOR MISSING ACTIVITY DROPDOWN ---
-        // Fetches all Sources that have Activities without applying Fiscal Year or Section restricts
-        $allActivitiesList = \App\Models\Activity::with('source')
-            ->orderBy('name', 'asc')
-            ->get();
+        // --- 4. SECTION-SCOPED ACTIVITIES FOR MISSING ACTIVITY DROPDOWN ---
+        $activitiesQuery = \App\Models\Activity::with('source')
+            ->orderBy('name', 'asc');
+
+        if (!$isAdmin) {
+            if ($userSecId) {
+                $activitiesQuery->where(function ($q) use ($userSecId) {
+                    $q->where('section_id', $userSecId)
+                    ->orWhereHas('source', function ($sq) use ($userSecId) {
+                        $sq->where('section_id', $userSecId);
+                    });
+                });
+            } else {
+                $activitiesQuery->whereRaw('1 = 0');
+            }
+        }
+
+        $allActivitiesList = $activitiesQuery->get();
 
         $user = auth()->user();
         $isSectionAdmin = ($user->id == 1 || $user->username === 'admin');
@@ -770,35 +783,67 @@ class FundController extends Controller
             $rows = $response->getValues();
 
             if (!empty($rows)) {
+                // Shared tracker to accumulate netOb and netDisb across ALL matching adjustment/difference rows
+                $tracker = [
+                    'netOb' => 0.0, 
+                    'netDisb' => 0.0,
+                    'latestObDate' => null, 
+                    'latestDisbDate' => null,
+                    'found_serial' => null, 
+                    'found' => false
+                ];
+
+                $creditorName = null;
+                $particulars  = '';
+                $sheetSerial   = null;
+                $isCosSalary   = false;
+
+                // 1. ITERATE AND ACCUMULATE ALL MATCHING ENTRY ROWS (INCLUDING DIFFERENCE / ADJUSTMENT ROWS)
                 foreach ($rows as $rowIndex => $rowData) {
-                    $sheetDtrack  = isset($rowData[0])  ? trim((string)$rowData[0])  : '';
-                    $sheetSerial  = isset($rowData[3])  ? trim((string)$rowData[3])  : '';
-                    $allotment    = isset($rowData[5])  ? trim((string)$rowData[5])  : '';
-                    $creditorName = isset($rowData[10]) ? trim((string)$rowData[10]) : null;
-                    $particulars  = isset($rowData[11]) ? trim((string)$rowData[11]) : '';
+                    $sheetDtrack     = isset($rowData[0])  ? trim((string)$rowData[0])  : '';
+                    $sheetSerialRow  = isset($rowData[3])  ? trim((string)$rowData[3])  : '';
+                    $allotment       = isset($rowData[5])  ? trim((string)$rowData[5])  : '';
+                    $creditorRow     = isset($rowData[10]) ? trim((string)$rowData[10]) : null;
+                    $particularsRow  = isset($rowData[11]) ? trim((string)$rowData[11]) : '';
 
-                    if (empty($sheetDtrack) && empty($sheetSerial)) continue;
+                    if (empty($sheetDtrack) && empty($sheetSerialRow)) continue;
 
+                    // Match based on DTrack number OR Obligation Serial
                     $isTargetMatch = ($sheetDtrack === $targetDtrack) || 
-                                    (!empty($sheetSerial) && $sheetSerial === $clickedFund->obligation_serial);
+                                    (!empty($sheetSerialRow) && $sheetSerialRow === $clickedFund->obligation_serial);
 
                     if (!$isTargetMatch) continue;
 
+                    // STRICT CREDITOR MATCHING: Ensure adjustment rows belong to the same creditor
+                    if ($clickedFund->creditor && $creditorRow) {
+                        $normTargetCreditor = strtolower(preg_replace('/\s+/', ' ', trim($clickedFund->creditor)));
+                        $normSheetCreditor  = strtolower(preg_replace('/\s+/', ' ', trim($creditorRow)));
+                        if ($normTargetCreditor !== $normSheetCreditor) {
+                            continue;
+                        }
+                    }
+
+                    $tracker['found'] = true;
+
+                    if (!empty($sheetSerialRow)) $sheetSerial = $sheetSerialRow;
+                    if (!empty($creditorRow))    $creditorName = $creditorRow;
+                    if (!empty($particularsRow)) $particulars = $particularsRow;
+
                     $cleanAllotment   = strtolower(preg_replace('/\s+/', ' ', $allotment));
-                    $cleanParticulars = strtolower(preg_replace('/\s+/', ' ', $particulars));
+                    $cleanParticulars = strtolower(preg_replace('/\s+/', ' ', $particularsRow));
 
                     $isOtherProfServ = (stripos($cleanAllotment, 'other professional services') !== false);
                     $isWages         = (stripos($cleanParticulars, 'wages') !== false);
-                    $isCosSalary     = $isOtherProfServ && $isWages;
+                    if ($isOtherProfServ && $isWages) {
+                        $isCosSalary = true;
+                    }
 
-                    $tracker = [
-                        'netOb' => 0.0, 'netDisb' => 0.0,
-                        'latestObDate' => null, 'latestDisbDate' => null,
-                        'found_serial' => $sheetSerial, 'found' => true
-                    ];
+                    // Accumulate amounts & update latest dates for each matching row in the RAODS
                     $this->processApiRowData($rowData, $tracker);
+                }
 
-                    // --- DYNAMIC DISBURSED STATUS & DISPLAY AMOUNT ---
+                // 2. SAVE ACCUMULATED TOTALS TO DATABASE ONCE
+                if ($tracker['found']) {
                     if ($tracker['netDisb'] > 0) {
                         if ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) {
                             $status = 'Disbursed (with savings)';
@@ -818,11 +863,11 @@ class FundController extends Controller
                             ->first();
                     }
 
-                    if (!$existingFund && !empty($sheetDtrack)) {
+                    if (!$existingFund && !empty($targetDtrack)) {
                         $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
-                            ->where(function($q) use ($sheetDtrack) {
-                                $q->where('dtrack_no', $sheetDtrack)
-                                ->orWhere('dtrack_no_new', $sheetDtrack);
+                            ->where(function($q) use ($targetDtrack) {
+                                $q->where('dtrack_no', $targetDtrack)
+                                ->orWhere('dtrack_no_new', $targetDtrack);
                             })
                             ->whereNull('obligation_serial')
                             ->first();
@@ -830,7 +875,7 @@ class FundController extends Controller
 
                     if (!$existingFund && $isCosSalary) {
                         $newFund = Fund::create([
-                            'dtrack_no'           => !empty($sheetDtrack) ? $sheetDtrack : $targetDtrack,
+                            'dtrack_no'           => !empty($targetDtrack) ? $targetDtrack : $targetDtrack,
                             'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : null,
                             'creditor'            => $creditorName,
                             'particulars'         => !empty($particulars) ? $particulars : 'Imported HR COS Salary/Wages',
@@ -861,9 +906,9 @@ class FundController extends Controller
                             'creditor'            => $creditorName ?: $existingFund->creditor,
                             'obligation_serial'   => (!empty($sheetSerial)) ? $sheetSerial : $existingFund->obligation_serial,
                             'obligation_amount'   => $tracker['netOb'],
-                            'obligation_date'     => $tracker['latestObDate'],
+                            'obligation_date'     => $tracker['latestObDate'] ?: $existingFund->obligation_date,
                             'disbursement_amount' => $tracker['netDisb'],
-                            'disbursement_date'   => $tracker['latestDisbDate'],
+                            'disbursement_date'   => $tracker['latestDisbDate'] ?: $existingFund->disbursement_date,
                             'status'              => $status,
                             'status_date'         => now()
                         ]);
@@ -1453,8 +1498,57 @@ class FundController extends Controller
 
     public function updateTransactionType(Request $request, $id)
     {
+        $user = auth()->user();
+
+        $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
+        $isDivision       = \Illuminate\Support\Facades\Gate::allows('division-access');
+
+        // 1. Determine allowed section IDs
+        $allowedSectionIds = [];
+
+        if (!$isAdminOrBudget) {
+            if ($isDivision) {
+                $allowedSectionIds = $user->getDivisionSectionIds();
+            } else {
+                $localDetail = \DB::table('employee_details')->where('user_id', $user->id)->first();
+                if ($localDetail) {
+                    $userSecId = \DB::connection('db_common')
+                        ->table('tbl_emp_details')
+                        ->where('dbedid', $localDetail->dbedid)
+                        ->value('secid');
+
+                    if ($userSecId) {
+                        $allowedSectionIds = [$userSecId];
+                    }
+                }
+            }
+        }
+
+        // 2. Validate activity ID & scope
         $request->validate([
-            'transaction_type_id' => 'required|exists:activities,id'
+            'transaction_type_id' => [
+                'required',
+                'exists:activities,id',
+                function ($attribute, $value, $fail) use ($isAdminOrBudget, $allowedSectionIds) {
+                    if ($isAdminOrBudget) {
+                        return; // Superadmin / Budget users bypass section check
+                    }
+
+                    if (empty($allowedSectionIds)) {
+                        $fail('Your account is not assigned to any valid section.');
+                        return;
+                    }
+
+                    $isValidSectionActivity = \DB::table('activities')
+                        ->where('id', $value)
+                        ->whereIn('section_id', $allowedSectionIds)
+                        ->exists();
+
+                    if (!$isValidSectionActivity) {
+                        $fail('The selected activity does not belong to your assigned section.');
+                    }
+                }
+            ]
         ]);
 
         try {

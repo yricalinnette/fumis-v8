@@ -169,6 +169,16 @@
                                     <label class="custom-control-label" for="use_default_password">Use Default (Zaq12wsx)</label>
                                 </div>
 
+                                <div class="form-group">
+                                    <label><i class="fas fa-user-shield mr-1 text-primary"></i> Access Role</label>
+                                    <select name="role" id="role" class="form-control" required style="width: 100%;">
+                                        <option value="staff" selected>Section Staff (Default)</option>
+                                        <option value="division">Division Access (Views connected sections under Division)</option>
+                                        <option value="budget">Budget Unit Access</option>
+                                        <option value="admin">System Administrator</option>
+                                    </select>
+                                </div>
+
                                 <button type="submit" class="btn btn-primary">Create Account</button>
                             </form>
                         </div>

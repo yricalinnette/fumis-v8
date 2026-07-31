@@ -133,4 +133,34 @@ class User extends Authenticatable
     {
         return $this->employeeDetail->commonDetail->section->secname ?? 'N/A';
     }
+
+    /**
+     * Retrieve all secid values under the user's division.
+     */
+    public function getDivisionSectionIds()
+    {
+        $empDetail = $this->employeeDetail;
+        if (!$empDetail || !$empDetail->dbedid) {
+            return [];
+        }
+
+        // 1. Get the divid (Division ID) of the user's current section in db_common
+        $userSection = DB::connection('db_common')
+            ->table('tbl_emp_details as emp')
+            ->join('tbl_section as sec', 'emp.secid', '=', 'sec.secid')
+            ->where('emp.dbedid', $empDetail->dbedid)
+            ->select('sec.divid')
+            ->first();
+
+        if (!$userSection || !$userSection->divid) {
+            return [];
+        }
+
+        // 2. Return all secid values sharing the same divid
+        return DB::connection('db_common')
+            ->table('tbl_section')
+            ->where('divid', $userSection->divid)
+            ->pluck('secid')
+            ->toArray();
+    }
 }

@@ -53,6 +53,9 @@ class ReportController extends Controller
         $sourceType = $request->get('source_type');
 
         $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
+        $isDivision = \Illuminate\Support\Facades\Gate::allows('division-access');
+        $user = auth()->user();
+
         $quarterMonths = [1 => [1, 2, 3], 2 => [4, 5, 6], 3 => [7, 8, 9], 4 => [10, 11, 12]];
 
         $sectionNames = \DB::connection('db_common')->table('tbl_section')->pluck('secname', 'secid');
@@ -62,17 +65,24 @@ class ReportController extends Controller
             $query->where('source_type', $sourceType);
         }
 
+        // --- REPORT SCOPING LOGIC ---
         if (!$isAdminOrBudget) {
-            $localDetail = \DB::table('employee_details')->where('user_id', auth()->id())->first();
-            if ($localDetail) {
-                $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
-                    ->where('dbedid', $localDetail->dbedid)->value('secid');
-                if ($userSecId) {
-                    $query->where('section_id', $userSecId);
+            if ($isDivision) {
+                $divisionSecIds = $user->getDivisionSectionIds();
+                $query->whereIn('section_id', $divisionSecIds);
+            } else {
+                $localDetail = \DB::table('employee_details')->where('user_id', $user->id)->first();
+                if ($localDetail) {
+                    $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
+                        ->where('dbedid', $localDetail->dbedid)->value('secid');
+                    if ($userSecId) {
+                        $query->where('section_id', $userSecId);
+                    }
                 }
             }
         }
 
+        // Eager load funds with linked cosContract for savings calculation
         $sources = $query->with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
             $query->where(function($q) use ($year) {
                 $q->whereYear('obligation_date', $year)
@@ -86,7 +96,7 @@ class ReportController extends Controller
             } elseif ($quarter && isset($quarterMonths[$quarter])) {
                 $query->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter]);
             }
-        }])->get();
+        }, 'funds.cosContract'])->get();
 
         $reportData = $sources->map(function ($source) use ($sectionNames) {
             $totalPooled = (float) $source->activities->sum('pooled_amount');
@@ -103,21 +113,44 @@ class ReportController extends Controller
                 (empty($f->obligation_date) || $f->obligation_amount <= 0) && ($f->disbursement_amount <= 0)
             )->sum('amount');
 
+            // --- STRICT COS SALARY SAVINGS (Calculated ONLY if fully disbursed) ---
+            $savings = (float) $source->funds->filter(function ($fund) {
+                return $fund->remarks_salary === 'Imported HR COS Salary/Wages' || 
+                    $fund->status === 'Disbursed (with savings)';
+            })->sum(function ($fund) {
+                $isFullyDisbursed = false;
+
+                if ($fund->cosContract && $fund->cosContract->total_months > 0) {
+                    $isFullyDisbursed = ($fund->disbursed_months >= $fund->cosContract->total_months) || 
+                                    ($fund->cosContract->status === 'Completed');
+                } else {
+                    $isFullyDisbursed = in_array($fund->status, ['Completed', 'Disbursed (with savings)']);
+                }
+
+                if ($isFullyDisbursed) {
+                    $diff = (float)$fund->obligation_amount - (float)$fund->disbursement_amount;
+                    return ($fund->disbursement_amount > 0 && $diff > 0) ? $diff : 0.00;
+                }
+
+                return 0.00;
+            });
+
             $unobligated = $netAllotted - ($obligated + $pending);
 
             return [
-                'section_id'                  => $source->section_id,
-                'section_name'                => $sectionNames[$source->section_id] ?? 'General/Unassigned',
-                'source_name'                 => $source->name,
-                'source_total'                => $netAllotted, 
-                'total_obligated'             => $obligated, 
-                'total_disbursed'             => $disbursed,
-                'total_pending'               => $pending, 
-                'procurable_budget_total'     => $procurableBudget,
+                'section_id'                 => $source->section_id,
+                'section_name'               => $sectionNames[$source->section_id] ?? 'General/Unassigned',
+                'source_name'                => $source->name,
+                'source_total'               => $netAllotted, 
+                'total_obligated'            => $obligated, 
+                'total_disbursed'            => $disbursed,
+                'total_pending'              => $pending, 
+                'total_savings'              => $savings,
+                'procurable_budget_total'    => $procurableBudget,
                 'non_procurable_budget_total' => $nonProcurableBudget,
-                'total_unobligated'           => $unobligated > 0 ? $unobligated : 0,
-                'overall_oblig_rate'          => $netAllotted > 0 ? ($obligated / $netAllotted) * 100 : 0,
-                'overall_disb_rate'           => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
+                'total_unobligated'          => $unobligated > 0 ? $unobligated : 0,
+                'overall_oblig_rate'         => $netAllotted > 0 ? ($obligated / $netAllotted) * 100 : 0,
+                'overall_disb_rate'          => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
             ];
         });
 
@@ -162,30 +195,35 @@ class ReportController extends Controller
         $month = $request->get('month');
         $quarter = $request->get('quarter');
 
-        // 1. Check permissions using your Gate logic
         $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
+        $isDivision = \Illuminate\Support\Facades\Gate::allows('division-access');
+        $user = auth()->user();
 
         $quarterMonths = [
             1 => [1, 2, 3], 2 => [4, 5, 6],
             3 => [7, 8, 9], 4 => [10, 11, 12],
         ];
 
-        // 2. Fetch Section Names for mapping from db_common
         $sectionNames = \DB::connection('db_common')->table('tbl_section')->pluck('secname', 'secid');
 
-        // 3. Build Query
+        // Eager load funds along with their linked cosContract
         $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
-            ->with(['activities', 'funds']);
+            ->with(['activities', 'funds.cosContract']);
 
-        // Apply Section Filter ONLY for regular users
+        // --- REPORT SCOPING LOGIC ---
         if (!$isAdminOrBudget) {
-            $localDetail = \DB::table('employee_details')->where('user_id', auth()->id())->first();
-            if ($localDetail) {
-                $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
-                    ->where('dbedid', $localDetail->dbedid)
-                    ->value('secid');
-                if ($userSecId) {
-                    $query->where('section_id', $userSecId);
+            if ($isDivision) {
+                $divisionSecIds = $user->getDivisionSectionIds();
+                $query->whereIn('section_id', $divisionSecIds);
+            } else {
+                $localDetail = \DB::table('employee_details')->where('user_id', $user->id)->first();
+                if ($localDetail) {
+                    $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
+                        ->where('dbedid', $localDetail->dbedid)
+                        ->value('secid');
+                    if ($userSecId) {
+                        $query->where('section_id', $userSecId);
+                    }
                 }
             }
         }
@@ -200,8 +238,6 @@ class ReportController extends Controller
                 
                 $obligated = (float) $activityFunds->sum('obligation_amount');
                 $disbursed = (float) $activityFunds->sum('disbursement_amount');
-
-                // Logic: Unpaid Obligations = Obligation - Disbursement
                 $unpaid = $obligated - $disbursed;
 
                 $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
@@ -210,13 +246,46 @@ class ReportController extends Controller
 
                 $untouched = $activityBudgetNet - ($obligated + ($activityFunds->whereNull('obligation_date')->sum('amount')));
 
+                // --- STRICT COS SALARY SAVINGS (CALCULATED ONLY IF FULLY DISBURSED) ---
+                $cosSalaryFunds = $activityFunds->filter(function ($fund) {
+                    return $fund->remarks_salary === 'Imported HR COS Salary/Wages' || 
+                        $fund->status === 'Disbursed (with savings)';
+                });
+
+                $hasCosSalaryFunds = $cosSalaryFunds->count() > 0;
+
+                // Compute savings ONLY if the contract is fully disbursed (disbursed_months >= total_months OR Completed)
+                $savings = 0.00;
+                if ($hasCosSalaryFunds) {
+                    $savings = (float) $cosSalaryFunds->sum(function ($fund) {
+                        $isFullyDisbursed = false;
+
+                        if ($fund->cosContract && $fund->cosContract->total_months > 0) {
+                            $isFullyDisbursed = ($fund->disbursed_months >= $fund->cosContract->total_months) || 
+                                            ($fund->cosContract->status === 'Completed');
+                        } else {
+                            // Fallback check if no contract model exists
+                            $isFullyDisbursed = in_array($fund->status, ['Completed', 'Disbursed (with savings)']);
+                        }
+
+                        if ($isFullyDisbursed) {
+                            $diff = (float)$fund->obligation_amount - (float)$fund->disbursement_amount;
+                            return ($fund->disbursement_amount > 0 && $diff > 0) ? $diff : 0.00;
+                        }
+
+                        return 0.00;
+                    });
+                }
+
                 return [
                     'name'              => $activity->name,
+                    'has_cos_salary'    => $hasCosSalaryFunds,
                     'net_budget'        => $activityBudgetNet,
                     'pooled_amount'     => $pooled,
                     'obligated_amount'  => $obligated,
                     'disbursed_amount'  => $disbursed,
                     'unpaid_amount'     => $unpaid,
+                    'savings_amount'    => $savings,
                     'pending_amount'    => (float) $activityFunds->filter(fn($f) => empty($f->obligation_date) && $f->status !== 'Cancelled')->sum('amount'),
                     'untouched_amount'  => $untouched > 0 ? $untouched : 0,
                     'obligation_rate'   => $activityBudgetNet > 0 ? ($obligated / $activityBudgetNet) * 100 : 0,
@@ -232,6 +301,7 @@ class ReportController extends Controller
                 'line_items'            => $lineItems,
                 'total_pending'         => $lineItems->sum('pending_amount'),
                 'total_unpaid'          => $lineItems->sum('unpaid_amount'), 
+                'total_savings'         => $lineItems->sum('savings_amount'),
                 'total_untouched'       => $lineItems->sum('untouched_amount'),
                 'total_activity_budget' => $lineItems->sum('net_budget'),
                 'total_obligated'       => $lineItems->sum('obligated_amount'),
@@ -239,7 +309,7 @@ class ReportController extends Controller
                 'overall_disb_rate'     => $lineItems->sum('obligated_amount') > 0 ? ($lineItems->sum('disbursed_amount') / $lineItems->sum('obligated_amount')) * 100 : 0,
                 'overall_oblig_rate'    => $lineItems->sum('net_budget') > 0 ? ($lineItems->sum('obligated_amount') / $lineItems->sum('net_budget')) * 100 : 0,
             ];
-        })->groupBy('section_name'); // Grouped by Section Name from db_common
+        })->groupBy('section_name');
 
         return view('admin.reports.by_line_item', compact('reportData', 'year'));
     }
@@ -257,15 +327,17 @@ class ReportController extends Controller
             3 => [7, 8, 9], 4 => [10, 11, 12],
         ];
 
-        // 1. Check permissions
+        // 1. Check Gates
         $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
+        $isDivision = \Illuminate\Support\Facades\Gate::allows('division-access');
+        $user = auth()->user();
 
         // 2. Fetch Section Names from db_common for mapping
         $sectionNames = \DB::connection('db_common')
             ->table('tbl_section')
             ->pluck('secname', 'secid');
 
-        // 3. Build Source of Fund Query
+        // 3. Build Source of Fund Query (eager load cosContract for COS Salary savings logic)
         $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
             ->with(['activities', 'funds' => function ($query) use ($year, $month, $quarter, $quarterMonths) {
                 $query->where(function($q) use ($year) {
@@ -280,17 +352,23 @@ class ReportController extends Controller
                 } elseif ($quarter && isset($quarterMonths[$quarter])) {
                     $query->whereIn(\DB::raw('MONTH(obligation_date)'), $quarterMonths[$quarter]);
                 }
-            }]);
+            }, 'funds.cosContract']);
 
-        // 4. Apply Section Filter ONLY for regular users
+        // 4. TRANSACTION SCOPING LOGIC
         if (!$isAdminOrBudget) {
-            $localDetail = \DB::table('employee_details')->where('user_id', auth()->id())->first();
-            if ($localDetail) {
-                $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
-                    ->where('dbedid', $localDetail->dbedid)
-                    ->value('secid');
-                if ($userSecId) {
-                    $query->where('section_id', $userSecId);
+            if ($isDivision) {
+                $divisionSecIds = $user->getDivisionSectionIds();
+                $query->whereIn('section_id', $divisionSecIds);
+            } else {
+                $localDetail = \DB::table('employee_details')->where('user_id', $user->id)->first();
+                if ($localDetail) {
+                    $userSecId = \DB::connection('db_common')->table('tbl_emp_details')
+                        ->where('dbedid', $localDetail->dbedid)
+                        ->value('secid');
+
+                    if ($userSecId) {
+                        $query->where('section_id', $userSecId);
+                    }
                 }
             }
         }
@@ -315,19 +393,51 @@ class ReportController extends Controller
                             ($f->disbursement_amount <= 0);
                     })->sum('amount');
 
+                    // --- STRICT COS SALARY SAVINGS CALCULATION ---
+                    // Evaluates ONLY when contract is fully disbursed (disbursed_months >= total_months OR Completed)
+                    $cosSalaryFunds = $activityFunds->filter(function ($fund) {
+                        return $fund->remarks_salary === 'Imported HR COS Salary/Wages' || 
+                            $fund->status === 'Disbursed (with savings)';
+                    });
+
+                    $hasCosSalaryFunds = $cosSalaryFunds->count() > 0;
+                    $savings = 0.00;
+
+                    if ($hasCosSalaryFunds) {
+                        $savings = (float) $cosSalaryFunds->sum(function ($fund) {
+                            $isFullyDisbursed = false;
+
+                            if ($fund->cosContract && $fund->cosContract->total_months > 0) {
+                                $isFullyDisbursed = ($fund->disbursed_months >= $fund->cosContract->total_months) || 
+                                                ($fund->cosContract->status === 'Completed');
+                            } else {
+                                $isFullyDisbursed = in_array($fund->status, ['Completed', 'Disbursed (with savings)']);
+                            }
+
+                            if ($isFullyDisbursed) {
+                                $diff = (float)$fund->obligation_amount - (float)$fund->disbursement_amount;
+                                return ($fund->disbursement_amount > 0 && $diff > 0) ? $diff : 0.00;
+                            }
+
+                            return 0.00;
+                        });
+                    }
+
                     $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
                     $pooled = (float) ($activity->pooled_amount ?? 0);
                     $activityBudgetNet = $activityBudgetGross - $pooled;
                     $untouched = $activityBudgetNet - ($obligated + $pending);
 
                     return [
-                        'details'      => $activity,
-                        'net_budget'   => $activityBudgetNet,
-                        'obligated'    => $obligated,
-                        'disbursed'    => $disbursed,
-                        'pending'      => $pending,
-                        'untouched'    => $untouched > 0 ? $untouched : 0,
-                        'transactions' => $activityFunds->values() 
+                        'details'        => $activity,
+                        'net_budget'     => $activityBudgetNet,
+                        'obligated'      => $obligated,
+                        'disbursed'      => $disbursed,
+                        'pending'        => $pending,
+                        'savings'        => $savings,
+                        'has_cos_salary' => $hasCosSalaryFunds,
+                        'untouched'      => $untouched > 0 ? $untouched : 0,
+                        'transactions'   => $activityFunds->values() 
                     ];
                 });
 
@@ -339,7 +449,7 @@ class ReportController extends Controller
             });
 
             return [
-                'section_name' => $sectionNames[$sectionId] ?? 'Unknown Section',
+                'section_name' => $sectionNames[$sectionId] ?? 'Unknown / Unassigned Section',
                 'sources'      => $sourcesData
             ];
         });
@@ -347,7 +457,7 @@ class ReportController extends Controller
         return view('admin.reports.by_transactions', [
             'groupedReport' => $groupedReport,
             'year'          => $year,
-            'isAdmin'       => $isAdminOrBudget
+            'isAdmin'       => $isAdminOrBudget || $isDivision
         ]);
     }
 

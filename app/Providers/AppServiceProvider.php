@@ -16,20 +16,40 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        // 1. High-level Admin: Only is_admin = 1
+        // 1. Admin Gate
         Gate::define('admin-only', function (User $user) {
-            return (int)$user->is_admin === 1; 
+            if ((int)$user->is_admin === 1) return true;
+
+            return DB::table('employee_details')
+                ->where('user_id', $user->id)
+                ->where('role', 'admin')
+                ->exists();
         });
 
-        // 2. Budget Section: Admin OR Staff belonging to "Budget Unit"
+        // 2. Budget Unit Gate
         Gate::define('budget-section', function (User $user) {
-        if ((int)$user->is_admin === 1) return true;
+            if ((int)$user->is_admin === 1) return true;
 
-            return DB::table('employee_details as local_emp')
-                ->join('db_common.tbl_emp_details as common_emp', 'local_emp.dbedid', '=', 'common_emp.dbedid')
-                ->join('db_common.tbl_section as sections', 'common_emp.secid', '=', 'sections.secid')
-                ->where('local_emp.user_id', $user->id)
+            $empDetail = DB::table('employee_details')->where('user_id', $user->id)->first();
+            if (!$empDetail) return false;
+
+            if ($empDetail->role === 'budget' || $empDetail->role === 'admin') return true;
+
+            return DB::connection('db_common')
+                ->table('tbl_emp_details as common_emp')
+                ->join('tbl_section as sections', 'common_emp.secid', '=', 'sections.secid')
+                ->where('common_emp.dbedid', $empDetail->dbedid)
                 ->where('sections.secname', 'Budget Unit')
+                ->exists();
+        });
+
+        // 3. Division Access Gate
+        Gate::define('division-access', function (User $user) {
+            if ((int)$user->is_admin === 1) return true;
+
+            return DB::table('employee_details')
+                ->where('user_id', $user->id)
+                ->where('role', 'division')
                 ->exists();
         });
     }

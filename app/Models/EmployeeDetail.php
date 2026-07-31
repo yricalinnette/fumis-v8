@@ -8,7 +8,7 @@ use App\Models\External\CommonEmpDetail;
 
 class EmployeeDetail extends Model
 {
-    protected $fillable = ['user_id', 'dbedid'];
+    protected $fillable = ['user_id', 'dbedid', 'role'];
 
     public function user()
     {

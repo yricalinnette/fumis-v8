@@ -414,13 +414,43 @@
                                 <select class="form-control form-control-sm select2-activity border-warning mt-1" data-id="{{ $fund->id }}" style="width: 100%;">
                                     <option value="" disabled selected>-- Select COS Position / Activity --</option>
                                     
-                                    {{-- Group activities by their Fund Source Name using the source relation --}}
+                                    @php
+                                        $user = auth()->user();
+                                        $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
+                                        $isDivision       = \Illuminate\Support\Facades\Gate::allows('division-access');
+
+                                        // Extract user section ID once
+                                        $userSecId = null;
+                                        if (!$isAdminOrBudget && !$isDivision) {
+                                            $localDetail = \DB::table('employee_details')->where('user_id', $user->id)->first();
+                                            if ($localDetail) {
+                                                $userSecId = \DB::connection('db_common')
+                                                    ->table('tbl_emp_details')
+                                                    ->where('dbedid', $localDetail->dbedid)
+                                                    ->value('secid');
+                                            }
+                                        }
+                                        $divisionSecIds = $isDivision ? $user->getDivisionSectionIds() : [];
+                                    @endphp
+
+                                    {{-- Group activities by Fund Source Name --}}
                                     @foreach($allActivitiesList->groupBy(function($act) { return $act->source->name ?? 'Other / General Fund'; }) as $sourceName => $activitiesGroup)
-                                        <optgroup label="{{ $sourceName }}">
-                                            @foreach($activitiesGroup as $act)
-                                                <option value="{{ $act->id }}">{{ $act->name }}</option>
-                                            @endforeach
-                                        </optgroup>
+                                        @php
+                                            // Filter group items to matching section IDs
+                                            $filteredGroup = $activitiesGroup->filter(function($act) use ($isAdminOrBudget, $isDivision, $divisionSecIds, $userSecId) {
+                                                if ($isAdminOrBudget) return true;
+                                                if ($isDivision) return in_array($act->section_id, $divisionSecIds);
+                                                return $act->section_id == $userSecId;
+                                            });
+                                        @endphp
+
+                                        @if($filteredGroup->count() > 0)
+                                            <optgroup label="{{ $sourceName }}">
+                                                @foreach($filteredGroup as $act)
+                                                    <option value="{{ $act->id }}">{{ $act->name }}</option>
+                                                @endforeach
+                                            </optgroup>
+                                        @endif
                                     @endforeach
 
                                 </select>
@@ -2537,8 +2567,6 @@
         // 2. Bind to DataTables Page Redraw Event
         if ($.fn.DataTable.isDataTable('#funds-table')) {
             let table = $('#funds-table').DataTable();
-            
-            // Fires every time you change pages, sort, or filter
             table.on('draw', function () {
                 initSelect2OnActivities();
             });
@@ -2590,7 +2618,14 @@
                     }
                 },
                 error: function(xhr) {
-                    alert(xhr.responseJSON ? xhr.responseJSON.message : 'Server communication error.');
+                    let errorMsg = 'Server communication error.';
+                    if (xhr.responseJSON && xhr.responseJSON.errors) {
+                        errorMsg = Object.values(xhr.responseJSON.errors).flat().join('\n');
+                    } else if (xhr.responseJSON && xhr.responseJSON.message) {
+                        errorMsg = xhr.responseJSON.message;
+                    }
+
+                    alert(errorMsg);
                     select.prop('disabled', false);
                 }
             });
