@@ -524,20 +524,36 @@
 
                     <td class="col-status">
                         @php
-                            // 1. Determine if we use Merged or Detailed view for Status
+                            // 1. Determine Merged vs. Detailed View Mode
                             $hasSignificantStatus = $fund->breakdown->contains(function($item) {
                                 return in_array($item->status, ['Obligated', 'Disbursed', 'Disbursed (with savings)', 'Completed', 'Cancelled']);
                             });
                             $firstStatus = $fund->breakdown->first()->status ?? 'N/A';
                             $allSameStatus = $fund->breakdown->every('status', $firstStatus);
 
-                            // 2. Remark Deduplication Logic
-                            $uniqueRemarks = $fund->breakdown->pluck('remarks')->filter()->unique();
-                            $allRemarksSame = $uniqueRemarks->count() <= 1;
+                            // 2. Synced Remarks Categorization Helper Function
+                            $classifyRemark = function($item) {
+                                if (empty($item->remarks)) return null;
+
+                                $isCosSalary = (isset($item->remarks_salary) && $item->remarks_salary === 'Imported HR COS Salary/Wages') 
+                                            || \Illuminate\Support\Str::contains(strtolower($item->remarks), ['cos', 'salary', 'wages', 'payroll']);
+
+                                return [
+                                    'text' => $item->remarks,
+                                    'type' => $isCosSalary ? 'COS' : 'DTrack',
+                                    'label' => $isCosSalary ? 'COS Remarks' : 'DTrack Remarks',
+                                    'icon' => $isCosSalary ? 'fa-id-badge text-warning' : 'fa-route text-secondary',
+                                    'class' => $isCosSalary ? 'border-warning' : 'border-secondary'
+                                ];
+                            };
+
+                            // 3. Merged View Deduplication Collections
+                            $uniqueSyncedRemarks = $fund->breakdown->map($classifyRemark)->filter()->unique('text');
+                            $uniqueManualRemarks = $fund->breakdown->pluck('manual_remarks')->filter()->unique();
                         @endphp
 
                         @if(!$hasSignificantStatus && $allSameStatus)
-                            {{-- MERGED VIEW (Early Stage) --}}
+                            {{-- ================= MERGED VIEW (EARLY STAGE) ================= --}}
                             <div class="text-left">
                                 <span class="badge {{ 
                                     $firstStatus == 'Routed' ? 'badge-primary' : 
@@ -546,7 +562,7 @@
                                     {{ $firstStatus }}
                                 </span>
 
-                                {{-- --- COS CONTRACT BADGE (MERGED VIEW) --- --}}
+                                {{-- COS Contract Duration Badge --}}
                                 @if(isset($fund->remarks_salary) && $fund->remarks_salary === 'Imported HR COS Salary/Wages' && isset($fund->contract))
                                     <div class="mt-1">
                                         @if($fund->disbursed_months >= $fund->contract->total_months)
@@ -560,17 +576,39 @@
                                         @endif
                                     </div>
                                 @endif
-                                
-                                @if($uniqueRemarks->isNotEmpty())
-                                    <div class="mt-1 text-muted small border-left pl-2" style="font-style: italic;">
-                                        <i class="fas fa-comment-dots mr-1" style="font-size: 0.7rem;"></i> 
-                                        {{ $uniqueRemarks->implode('; ') }}
+
+                                {{-- Classified Synced Remarks (COS vs DTrack) --}}
+                                @foreach($uniqueSyncedRemarks as $remarkObj)
+                                    <div class="mt-1 text-muted small border-left pl-2 {{ $remarkObj['class'] }}" style="font-style: italic;">
+                                        <i class="fas {{ $remarkObj['icon'] }} mr-1" style="font-size: 0.7rem;"></i> 
+                                        <strong class="text-dark">{{ $remarkObj['label'] }}:</strong> {{ $remarkObj['text'] }}
                                     </div>
-                                @endif
+                                @endforeach
+
+                                {{-- Manual Internal Remarks Display & Input Trigger --}}
+                                <div class="mt-2 manual-remarks-wrapper-{{ $fund->id }}">
+                                    @if($uniqueManualRemarks->isNotEmpty())
+                                        <div class="text-dark small border-left border-primary pl-2 bg-light rounded py-1 pr-2">
+                                            <i class="fas fa-user-edit mr-1 text-primary" style="font-size: 0.75rem;"></i> 
+                                            <strong class="text-primary">Internal Remarks:</strong> 
+                                            <span class="manual-remarks-text-{{ $fund->id }}">{{ $uniqueManualRemarks->implode('; ') }}</span>
+                                            <button class="btn btn-link btn-xs text-muted p-0 ml-1 btn-edit-manual-remark" data-id="{{ $fund->id }}" data-current="{{ $uniqueManualRemarks->first() }}" title="Edit Internal Remark">
+                                                <i class="fas fa-pencil-alt" style="font-size: 0.65rem;"></i>
+                                            </button>
+                                        </div>
+                                    @else
+                                        <button class="btn btn-xs btn-outline-secondary mt-1 btn-edit-manual-remark" data-id="{{ $fund->id }}" data-current="" title="Add Internal Remark">
+                                            <i class="fas fa-plus-circle mr-1"></i> Add Internal Remarks
+                                        </button>
+                                    @endif
+                                </div>
                             </div>
                         @else
-                            {{-- DETAILED VIEW SECTION --}}
+                            {{-- ================= DETAILED VIEW SECTION ================= --}}
                             @foreach($fund->breakdown as $item)
+                                @php
+                                    $itemRemarkInfo = $classifyRemark($item);
+                                @endphp
                                 <div class="allocation-row {{ !$loop->last ? 'mb-3 border-bottom pb-2' : '' }}">
                                     <div class="small font-weight-bold text-dark mb-1">
                                         <i class="fas fa-wallet text-muted mr-1"></i> {{ $item->source_name }}
@@ -588,7 +626,7 @@
                                         {{ $item->status }}
                                     </span>
 
-                                    {{-- --- COS CONTRACT BADGE (DETAILED VIEW) --- --}}
+                                    {{-- COS Contract Duration Badge --}}
                                     @if(isset($item->remarks_salary) && $item->remarks_salary === 'Imported HR COS Salary/Wages' && isset($item->contract))
                                         <div class="mt-1">
                                             @if($item->disbursed_months >= $item->contract->total_months)
@@ -604,7 +642,7 @@
                                     @endif
 
                                     <div class="small mt-1">
-                                        {{-- --- OBLIGATED STATE --- --}}
+                                        {{-- OBLIGATED STATE --}}
                                         @if($item->status == 'Obligated')
                                             @if(empty($item->obligation_amount) || $item->obligation_amount == 0)
                                                 <div class="text-danger font-italic">
@@ -618,17 +656,14 @@
                                                 @endif
                                             @endif
 
-                                        {{-- --- DISBURSED / DISBURSED (WITH SAVINGS) / COMPLETED STATES --- --}}
+                                        {{-- DISBURSED / DISBURSED (WITH SAVINGS) / COMPLETED STATES --}}
                                         @elseif(in_array($item->status, ['Disbursed', 'Disbursed (with savings)', 'Completed']))
-
-                                            {{-- 1. Original Obligation Date --}}
                                             @if($item->obligation_date)
                                                 <div class="text-muted" style="font-size: 0.7rem;">
                                                     <i class="far fa-calendar-alt mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($item->obligation_date)->format('M d, Y') }}
                                                 </div>
                                             @endif
 
-                                            {{-- 2. Disbursement Date & Lead Time --}}
                                             @if($item->disbursement_date)
                                                 <div class="text-success font-weight-bold">
                                                     <i class="fas fa-check-circle mr-1"></i> Disb: {{ \Carbon\Carbon::parse($item->disbursement_date)->format('M d, Y') }}
@@ -644,7 +679,6 @@
                                                 </div>
                                             @endif
 
-                                            {{-- 3. Savings Calculation & Display --}}
                                             @if($item->status == 'Disbursed (with savings)' || ($item->obligation_amount > $item->disbursement_amount && $item->disbursement_amount > 0))
                                                 @php
                                                     $savings = max(0, $item->obligation_amount - $item->disbursement_amount);
@@ -655,7 +689,6 @@
                                                     </div>
                                                 @endif
                                             @endif
-
                                         @endif
 
                                         {{-- Obligation Serial Number --}}
@@ -666,22 +699,33 @@
                                         @endif
                                     </div>
 
-                                    {{-- Individual Item Remarks --}}
-                                    @if(!$allRemarksSame && $item->remarks)
-                                        <div class="mt-1 text-muted small border-left pl-2" style="font-style: italic; background-color: #f9f9f9;">
-                                            <i class="fas fa-comment-dots mr-1" style="font-size: 0.7rem;"></i> {{ $item->remarks }}
+                                    {{-- Classified Individual Synced Remark --}}
+                                    @if($itemRemarkInfo)
+                                        <div class="mt-1 text-muted small border-left pl-2 {{ $itemRemarkInfo['class'] }}" style="font-style: italic; background-color: #fcfcfc;">
+                                            <i class="fas {{ $itemRemarkInfo['icon'] }} mr-1" style="font-size: 0.7rem;"></i> 
+                                            <strong class="text-dark">{{ $itemRemarkInfo['label'] }}:</strong> {{ $itemRemarkInfo['text'] }}
                                         </div>
                                     @endif
+
+                                    {{-- Manual Internal Remarks (Per Allocation Item) --}}
+                                    <div class="mt-1 manual-remarks-wrapper-{{ $item->id }}">
+                                        @if($item->manual_remarks)
+                                            <div class="text-dark small border-left border-primary pl-2 bg-light rounded py-1 pr-2">
+                                                <i class="fas fa-user-edit mr-1 text-primary" style="font-size: 0.7rem;"></i> 
+                                                <strong class="text-primary">Internal Remarks:</strong> 
+                                                <span class="manual-remarks-text-{{ $item->id }}">{{ $item->manual_remarks }}</span>
+                                                <button class="btn btn-link btn-xs text-muted p-0 ml-1 btn-edit-manual-remark" data-id="{{ $item->id }}" data-current="{{ $item->manual_remarks }}" title="Edit Internal Remark">
+                                                    <i class="fas fa-pencil-alt" style="font-size: 0.65rem;"></i>
+                                                </button>
+                                            </div>
+                                        @else
+                                            <button class="btn btn-xs btn-outline-secondary mt-1 btn-edit-manual-remark" data-id="{{ $item->id }}" data-current="" title="Add Manual Remark">
+                                                <i class="fas fa-plus-circle mr-1"></i> Add Internal Remarks
+                                            </button>
+                                        @endif
+                                    </div>
                                 </div>
                             @endforeach
-
-                            {{-- Merged Remarks for matching items --}}
-                            @if($allRemarksSame && $uniqueRemarks->isNotEmpty())
-                                <div class="mt-2 text-muted small border-left pl-2" style="font-style: italic; background-color: #f8f9fa; border-left: 3px solid #dee2e6 !important;">
-                                    <i class="fas fa-comments mr-1" style="font-size: 0.7rem;"></i> 
-                                    {{ $uniqueRemarks->first() }}
-                                </div>
-                            @endif
                         @endif
                     </td>
 
@@ -2630,6 +2674,86 @@
                 }
             });
         });
+    });
+
+    $(document).ready(function() {
+        $(document).on('click', '.btn-edit-manual-remark', function(e) {
+            e.preventDefault();
+
+            const btn = $(this);
+            const fundId = btn.data('id');
+            const currentRemark = btn.data('current') || '';
+            const csrfToken = $('meta[name="csrf-token"]').attr('content') || $('input[name="_token"]').val();
+
+            // Use SweetAlert2 if available, fallback to prompt
+            if (typeof Swal !== 'undefined') {
+                Swal.fire({
+                    title: 'Update Internal Remark',
+                    input: 'textarea',
+                    inputLabel: 'Enter manual notes/remarks for this transaction:',
+                    inputValue: currentRemark,
+                    inputPlaceholder: 'Type your remarks here...',
+                    showCancelButton: true,
+                    confirmButtonText: 'Save Remark',
+                    confirmButtonColor: '#001f3f',
+                    preConfirm: (text) => {
+                        return text;
+                    }
+                }).then((result) => {
+                    if (result.isConfirmed) {
+                        saveManualRemark(fundId, result.value, csrfToken);
+                    }
+                });
+            } else {
+                const newRemark = prompt("Enter manual notes/remarks:", currentRemark);
+                if (newRemark !== null) {
+                    saveManualRemark(fundId, newRemark, csrfToken);
+                }
+            }
+        });
+
+        function saveManualRemark(fundId, remarkText, csrfToken) {
+            $.ajax({
+                url: `/funds/${fundId}/update-manual-remarks`,
+                method: 'PATCH',
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken
+                },
+                data: {
+                    _token: csrfToken,
+                    manual_remarks: remarkText
+                },
+                success: function(response) {
+                    if (response && response.success) {
+                        const wrapper = $(`.manual-remarks-wrapper-${fundId}`);
+
+                        if (response.manual_remarks) {
+                            wrapper.html(`
+                                <div class="text-dark small border-left border-primary pl-2 bg-light rounded py-1 pr-2 animate__animated animate__fadeIn">
+                                    <i class="fas fa-user-edit mr-1 text-primary" style="font-size: 0.7rem;"></i> 
+                                    <strong class="text-primary">Internal Remark:</strong> 
+                                    <span class="manual-remarks-text-${fundId}">${response.manual_remarks}</span>
+                                    <button class="btn btn-link btn-xs text-muted p-0 ml-1 btn-edit-manual-remark" data-id="${fundId}" data-current="${response.manual_remarks}" title="Edit Remark">
+                                        <i class="fas fa-pencil-alt" style="font-size: 0.65rem;"></i>
+                                    </button>
+                                </div>
+                            `);
+                        } else {
+                            wrapper.html(`
+                                <button class="btn btn-xs btn-outline-secondary mt-1 btn-edit-manual-remark" data-id="${fundId}" data-current="" title="Add Manual Remark">
+                                    <i class="fas fa-plus-circle mr-1"></i> Add Internal Remark
+                                </button>
+                            `);
+                        }
+                    } else {
+                        alert(response.message || 'Error updating remark.');
+                    }
+                },
+                error: function(xhr) {
+                    alert(xhr.responseJSON ? xhr.responseJSON.message : 'Failed to save remark.');
+                }
+            });
+        }
     });
 
 </script>

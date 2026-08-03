@@ -41,6 +41,8 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
         Route::patch('/funds/{id}/status', 'updateStatus')->name('funds.updateStatus');
         Route::get('/funds/awaiting-obligation', 'getAwaitingObligation')->name('funds.awaiting');
         Route::patch('/funds/{id}/update-transaction-type', [FundController::class, 'updateTransactionType'])->name('funds.updateTransactionType');
+        Route::patch('/funds/{id}/update-manual-remarks', [FundController::class, 'updateManualRemarks'])
+            ->name('funds.update_manual_remarks');
 
         // RESTORED ROUTE: Required by index.blade.php
         Route::get('/funds/sync-count', function() {

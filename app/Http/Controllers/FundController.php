@@ -240,6 +240,7 @@ class FundController extends Controller
                         'amount'              => $item->amount,
                         'status'              => $item->status,
                         'remarks'             => $item->remarks,
+                        'manual_remarks'      => $item->manual_remarks,
                         'remarks_salary'      => $item->remarks_salary,
                         'disbursed_months'    => $item->disbursed_months,
                         'contract'            => $item->cosContract,
@@ -1566,6 +1567,31 @@ class FundController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to assign activity: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function updateManualRemarks(Request $request, $id)
+    {
+        $request->validate([
+            'manual_remarks' => 'nullable|string|max:1000',
+        ]);
+
+        try {
+            $fund = Fund::findOrFail($id);
+            $fund->update([
+                'manual_remarks' => $request->manual_remarks,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Manual remark updated successfully!',
+                'manual_remarks' => $fund->manual_remarks
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update manual remark: ' . $e->getMessage()
             ], 500);
         }
     }

@@ -30,6 +30,7 @@ class Fund extends Model
         'remarks_salary',
         'cos_contract_id', 
         'disbursed_months', 
+        'manual_remarks',
     ];
 
     protected $casts = [
