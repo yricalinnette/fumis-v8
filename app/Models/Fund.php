@@ -96,5 +96,10 @@ class Fund extends Model
     {
         return $this->belongsTo(CosContract::class, 'cos_contract_id');
     }
+
+    public function cosSalaryDisbursements()
+    {
+        return $this->hasMany(CosSalaryDisbursement::class, 'fund_id');
+    }
   
 }

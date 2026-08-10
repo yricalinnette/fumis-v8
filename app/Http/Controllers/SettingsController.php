@@ -26,6 +26,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Validation\Rules\Password;
+use App\Models\Objective;
 
 class SettingsController extends Controller
 {
@@ -72,51 +73,49 @@ class SettingsController extends Controller
 
         //CONNECT TO SPMS API to get the list of objectives for the dropdown
         // Change this flag to true to enable live API fetching. Remember to set the SPMS_API_URL, SPMS_SYSTEM_NAME, and SPMS_KEY in your .env file for it to work.
-        $isSpmsOnline = true; 
+        // 1. Check if SPMS API is enabled
+        $isSpmsOnline = env('SPMS_ONLINE', true); 
 
         if ($isSpmsOnline) {
-            // Clear old bad cache if you haven't already: Cache::forget('objectives');
-            $objectives = Cache::remember('objectives', 86400, function () {
-                try {
-                    // Note: Added withoutVerifying() to ensure local network calls pass safely
+            try {
+                // Cache API response temporarily to avoid hitting the endpoint on every request
+                $spmsData = Cache::remember('spms_raw_objectives', 86400, function () {
                     $response = Http::withoutVerifying()->timeout(5)->post(env('SPMS_API_URL'), [
                         'systemname' => env('SPMS_SYSTEM_NAME'),
                         'key'        => env('SPMS_KEY'),
                     ]);
-                    
-                    // FIX: The JSON returned is a flat array, so we return $response->json() directly
+
                     if ($response->successful() && is_array($response->json())) {
-                        return $response->json(); 
+                        return $response->json();
                     }
-                    
-                    throw new \Exception('API responded but did not return a valid array.');
-                    
-                } catch (\Exception $e) {
-                    Log::error('SPMS API Error: ' . $e->getMessage());
-                    return null; // Return null so we don't cache an empty array state
+
+                    return null;
+                });
+
+                // Sync fetched SPMS objectives into your local 'objectives' database table
+                if (!empty($spmsData)) {
+                    foreach ($spmsData as $item) {
+                        $text = $item['objectives'] ?? $item['title'] ?? null;
+                        if (!empty($text)) {
+                            Objective::firstOrCreate(
+                                ['title' => trim($text)],
+                                [
+                                    'source'    => 'spms',
+                                    'is_active' => true
+                                ]
+                            );
+                        }
+                    }
                 }
-            });
+            } catch (\Exception $e) {
+                Log::error('SPMS API Sync Error: ' . $e->getMessage());
+            }
         }
 
-        // Fallback to Mock Data only if the API went down or returned null
-        if (!$isSpmsOnline || empty($objectives)) {
-            $objectives = [
-                ['objectives' => 'To provide LGUs with competencies and resources for health system strengthening in support of the Health Sector 8-Point Action Agenda'],
-                ['objectives' => 'To catalyze the transformation of local health systems to province-wide and city-wide health system'],
-                ['objectives' => 'To strengthen engagements with stakeholders towards a well-coordinated and aligned implementation of the 8-Point Action Agenda'],
-                ['objectives' => 'To ensure that relevant policies, guidelines, and programs are cascaded to LGUs and other health partners'],
-                ['objectives' => 'To ensure efficacy on the provision of technical assistance to LGUs and other health partners towards the achievement of UHC'],
-                ['objectives' => 'To ensure systematic preventive and corrective maintenance of all IT equipment and the effective delivery of other related ICT services.'],
-                ['objectives' => 'To ensure that internal clients are effectively supported through the transformation of office processes and that external clients receive reliable, high-quality information via the agency website, thereby enhancing operational efficiency and service delivery.'],
-                ['objectives' => 'To ensure the cybersecurity posture of DOH-EVCHD digital solutions and applications, safeguarding data integrity, confidentiality, and availability.'],
-                ['objectives' => 'To ensure alignment of policies, programs and standards towards sectoral goals on equity, access and quality of care'],
-                ['objectives' => 'To ensure efficient utilization of DOH funds'],
-                ['objectives' => 'To increase capacity of DOH personnel in order to improve workplace performance.'],
-                ['objectives' => 'To ensure compliance with cross-cutting requirements based on standard procedures and timelines in accordance to Anti-Red Tape Authority (ARTA) and other relevant laws'],
-                ['objectives' => 'Submission of reportorial requirements.'],
-                ['objectives' => 'To ensure delivery of quality service through performance of other task assigned in Committees (As clearing house and Inspection for ICT Supplies / Equipment and Licenses).']
-            ];
-        }
+        // 2. Fetch all active objectives (Local + SPMS synced + User created) directly from DB
+        $objectives = Objective::where('is_active', true)
+            ->orderBy('title', 'asc')
+            ->get();
 
         $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
 
@@ -719,7 +718,7 @@ class SettingsController extends Controller
         return back()->with('success', 'Funds pooled and remarks recorded.');
     }
 
-    //for manual encoding of WFP
+    // for manual encoding of WFP
     public function storeWfp(Request $request)
     {
         // 1. Unified Validation
@@ -738,10 +737,22 @@ class SettingsController extends Controller
             'target_quarters'     => 'required|array|min:1',
             'targets'             => 'required|array',
             'classification'      => 'required|in:Strategic,Core,Support',
-            'is_for_procurement'  => 'required|boolean', // Added validation for the new field
+            'is_for_procurement'  => 'required|boolean',
         ], [
             'target_quarters.required' => 'Please select at least one target quarter.',
         ]);
+
+        // AUTO-SAVE CUSTOM TYPED OBJECTIVE TO DATABASE
+        if ($request->filled('objective')) {
+            $objectiveText = trim($request->objective);
+            Objective::firstOrCreate(
+                ['title' => $objectiveText],
+                [
+                    'source'    => 'user_added',
+                    'is_active' => true
+                ]
+            );
+        }
 
         // 2. Validate numeric targets
         foreach ($request->target_quarters as $q) {
@@ -788,7 +799,7 @@ class SettingsController extends Controller
             $hasTransactions = $activity->transactions()->exists(); 
             $isLocked = $activity->is_locked ?? false;
 
-            // 1. BUDGET VALIDATION FOR EDIT
+            // BUDGET VALIDATION FOR EDIT
             if (!$isLocked && !$hasTransactions && $request->filled('budget_amount')) {
                 $newAmount = (float) $request->budget_amount;
 
@@ -805,9 +816,8 @@ class SettingsController extends Controller
                 }
             }
 
-            // 2. HANDLE THE ACTUAL UPDATE
+            // HANDLE THE ACTUAL UPDATE
             if ($hasTransactions || $isLocked) {
-                // SCENARIO: Locked (Timeframe and Targets only)
                 $activity->update([
                     'user_id'            => $userId,
                     'section_id'         => $secid,
@@ -819,7 +829,6 @@ class SettingsController extends Controller
                 ]);
                 $msg = 'Activity timeframe and targets updated. Financial fields were locked due to existing transactions.';
             } else {
-                // SCENARIO: Fully Editable
                 $uacsRecord = \App\Models\UacsCode::findOrFail($request->uacs_code_id);
                 $activity->update([
                     'user_id'            => $userId,
@@ -840,10 +849,8 @@ class SettingsController extends Controller
                 $msg = 'Activity updated successfully!';
             }
         } else {
-            // SCENARIO: Create New Activity
+            // Create New Activity
             $uacsRecord = \App\Models\UacsCode::findOrFail($request->uacs_code_id);
-            
-            // Optional: You might want to include budget validation against source_of_fund here too!
 
             Activity::create([
                 'user_id'             => $userId,

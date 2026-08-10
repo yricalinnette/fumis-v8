@@ -17,6 +17,39 @@
     .section-header-row { background-color: #e9ecef !important; color: #343a40; font-weight: 700; }
     .table-sticky thead th { position: sticky; top: 0; z-index: 10; background: #f8f9fa; box-shadow: inset 0 -2px 0 #dee2e6; font-size: 0.7rem; letter-spacing: 0.5px; }
     .bg-soft-light { background-color: #fafbfc; }
+
+    /* Custom Checkbox Container Styling */
+    .quarter-checkbox-group {
+        background-color: #f8f9fa;
+        border: 1px solid #ced4da;
+        border-radius: 6px;
+        padding: 5px 12px;
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    }
+    .quarter-checkbox-item {
+        display: inline-flex;
+        align-items: center;
+        cursor: pointer;
+        margin-bottom: 0;
+        font-weight: 700;
+        color: #333;
+        user-select: none;
+    }
+    .quarter-checkbox-item input[type="checkbox"] {
+        margin-right: 5px;
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+    }
+
+    /* Tooltip Custom styling for multi-line reasons */
+    .tooltip-inner {
+        white-space: pre-line !important;
+        text-align: left !important;
+        max-width: 320px !important;
+    }
     
     @media print { .filter-section { display: none !important; } }
 </style>
@@ -33,8 +66,15 @@
                     Financial Summary for Fiscal Year <strong>{{ request('year', date('Y')) }}</strong> 
                     @if(request('source_type')) | Type: <span class="text-uppercase text-info font-weight-bold">{{ request('source_type') }}</span> @endif
                     @if(request('month')) | Month: <strong>{{ date('F', mktime(0, 0, 0, request('month'), 1)) }}</strong>
-                    @elseif(request('quarter')) | Quarter: <strong>Q{{ request('quarter') }}</strong> @endif
+                    @elseif(!empty(request('quarters'))) 
+                        | Quarters: <strong>{{ implode(', ', array_map(fn($q) => 'Q'.$q, (array)request('quarters'))) }}</strong> 
+                    @elseif(request('quarter')) 
+                        | Quarter: <strong>Q{{ request('quarter') }}</strong> 
+                    @endif
                 </p>
+                <div class="text-info small mt-1">
+                    <i class="fas fa-info-circle mr-1"></i> Obligations and Disbursements are strictly filtered based on transaction dates in the selected period.
+                </div>
             </div>
             <div class="btn-group shadow-sm">
                 <a href="{{ route('reports.by_source.export', request()->all()) }}" class="btn btn-sm btn-success">
@@ -52,6 +92,28 @@
         <div class="card shadow-sm mb-4 border-navy">
             <div class="card-body py-3 bg-white">
                 <form action="{{ route('reports.by_source') }}" method="GET" class="row align-items-end">
+                    
+                    {{-- CUMULATIVE QUARTERS CHECKBOXES --}}
+                    <div class="col-md-5">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase d-block mb-1">
+                            Cumulative Quarters <span class="text-primary font-weight-normal text-lowercase">(select multiple for cumulative report)</span>
+                        </label>
+                        @php
+                            $selectedQuarters = (array) request('quarters', []);
+                            if (empty($selectedQuarters) && request()->has('quarter') && request('quarter') !== '') {
+                                $selectedQuarters = [request('quarter')];
+                            }
+                        @endphp
+                        <div class="quarter-checkbox-group">
+                            @foreach([1 => 'Q1', 2 => 'Q2', 3 => 'Q3', 4 => 'Q4'] as $qVal => $qLabel)
+                                <label class="quarter-checkbox-item">
+                                    <input type="checkbox" name="quarters[]" value="{{ $qVal }}" {{ in_array($qVal, $selectedQuarters) ? 'checked' : '' }}>
+                                    {{ $qLabel }}
+                                </label>
+                            @endforeach
+                        </div>
+                    </div>
+
                     <div class="col-md-2">
                         <label class="text-xs font-weight-bold text-muted text-uppercase">Source Type</label>
                         <select name="source_type" class="form-control form-control-sm border-navy text-uppercase">
@@ -59,17 +121,6 @@
                             @foreach($sourceTypes ?? ['saa', 'regular', 'continuing'] as $type)
                                 <option value="{{ $type }}" {{ request('source_type') == $type ? 'selected' : '' }}>{{ $type }}</option>
                             @endforeach
-                        </select>
-                    </div>
-
-                    <div class="col-md-2">
-                        <label class="text-xs font-weight-bold text-muted text-uppercase">Financial Quarter</label>
-                        <select name="quarter" class="form-control form-control-sm border-navy">
-                            <option value="">Full Year</option>
-                            <option value="1" {{ request('quarter') == '1' ? 'selected' : '' }}>Q1 (Jan - Mar)</option>
-                            <option value="2" {{ request('quarter') == '2' ? 'selected' : '' }}>Q2 (Apr - Jun)</option>
-                            <option value="3" {{ request('quarter') == '3' ? 'selected' : '' }}>Q3 (Jul - Sep)</option>
-                            <option value="4" {{ request('quarter') == '4' ? 'selected' : '' }}>Q4 (Oct - Dec)</option>
                         </select>
                     </div>
 
@@ -83,7 +134,7 @@
                         </select>
                     </div>
 
-                    <div class="col-md-2">
+                    <div class="col-md-1">
                         <label class="text-xs font-weight-bold text-muted text-uppercase">Fiscal Year</label>
                         <select name="year" class="form-control form-control-sm border-navy">
                             @php $currentYear = date('Y'); @endphp
@@ -93,11 +144,11 @@
                         </select>
                     </div>
 
-                    <div class="col-md-4">
-                        <button type="submit" class="btn btn-sm text-white px-4 shadow-sm" style="background-color: #001f3f;">
+                    <div class="col-md-2 text-right">
+                        <button type="submit" class="btn btn-sm text-white px-3 shadow-sm" style="background-color: #001f3f;">
                             <i class="fas fa-sync-alt mr-1"></i> Apply Filter
                         </button>
-                        <a href="{{ route('reports.by_source') }}" class="btn btn-sm btn-light border ml-2 text-muted">Reset</a>
+                        <a href="{{ route('reports.by_source') }}" class="btn btn-sm btn-light border ml-1 text-muted">Reset</a>
                     </div>
                 </form>
             </div>
@@ -111,9 +162,10 @@
                     <thead>
                         <tr class="text-muted text-uppercase">
                             <th class="pl-4 py-2" style="width: 18%;">Fund Source</th>
+                            <th class="text-right py-2">Total Fund Source</th>
                             <th class="text-center py-2">Procurable</th>
                             <th class="text-center py-2">Non-Procurable</th>
-                            <th class="text-right py-2">Total Allotment</th>
+                            <th class="text-right py-2">Adjusted Allotment</th>
                             <th class="text-right py-2 bg-light border-left-info">Obligated</th>
                             <th class="text-center py-2 bg-light">Oblig. %</th>
                             <th class="text-right py-2 border-left-success">Disbursed</th>
@@ -127,21 +179,21 @@
                     <tbody>
                         @php
                             $grandTotals = [
-                                'allotted' => 0, 'obligated' => 0, 'disbursed' => 0, 
-                                'pending' => 0, 'savings' => 0, 'procurable' => 0, 'non_procurable' => 0
+                                'gross_allotted' => 0, 'pooled' => 0, 'adjusted_allotment' => 0, 'obligated' => 0, 
+                                'disbursed' => 0, 'pending' => 0, 'savings' => 0, 'procurable' => 0, 'non_procurable' => 0
                             ];
                         @endphp
 
                         @forelse($groupedReport as $sectionName => $sources)
                             @php
                                 $sectionTotals = [
-                                    'allotted' => 0, 'obligated' => 0, 'disbursed' => 0, 
-                                    'pending' => 0, 'savings' => 0, 'procurable' => 0, 'non_procurable' => 0
+                                    'gross_allotted' => 0, 'pooled' => 0, 'adjusted_allotment' => 0, 'obligated' => 0, 
+                                    'disbursed' => 0, 'pending' => 0, 'savings' => 0, 'procurable' => 0, 'non_procurable' => 0
                                 ];
                             @endphp
 
                             <tr class="section-header-row">
-                                <td colspan="12" class="pl-4 py-2">
+                                <td colspan="13" class="pl-4 py-2">
                                     <i class="fas fa-building mr-2 text-secondary"></i>
                                     <span>{{ $sectionName }}</span>
                                 </td>
@@ -149,7 +201,9 @@
 
                             @foreach($sources as $data)
                                 @php
-                                    $currentAllotted  = $data['source_total'];
+                                    $currentGross     = $data['source_total'];
+                                    $currentPooled    = $data['total_pooled'] ?? 0;
+                                    $currentAdjusted  = $data['adjusted_allotment'];
                                     $currentObligated = $data['total_obligated'];
                                     $currentDisbursed = $data['total_disbursed'];
                                     $currentPending   = $data['total_pending'];
@@ -157,66 +211,97 @@
                                     $budgetP          = $data['procurable_budget_total']; 
                                     $budgetNP         = $data['non_procurable_budget_total'];
                                     
-                                    $percP  = $currentAllotted > 0 ? ($budgetP / $currentAllotted) * 100 : 0;
-                                    $percNP = $currentAllotted > 0 ? ($budgetNP / $currentAllotted) * 100 : 0;
+                                    $percP  = $currentAdjusted > 0 ? ($budgetP / $currentAdjusted) * 100 : 0;
+                                    $percNP = $currentAdjusted > 0 ? ($budgetNP / $currentAdjusted) * 100 : 0;
 
                                     $unpaid      = $currentObligated - $currentDisbursed;
                                     $unobligated = $data['total_unobligated'];
 
                                     // Update Section Totals
-                                    $sectionTotals['allotted']       += $currentAllotted;
-                                    $sectionTotals['obligated']      += $currentObligated;
-                                    $sectionTotals['disbursed']      += $currentDisbursed;
-                                    $sectionTotals['pending']        += $currentPending;
-                                    $sectionTotals['savings']        += $currentSavings;
-                                    $sectionTotals['procurable']     += $budgetP;
-                                    $sectionTotals['non_procurable'] += $budgetNP;
+                                    $sectionTotals['gross_allotted']    += $currentGross;
+                                    $sectionTotals['pooled']            += $currentPooled;
+                                    $sectionTotals['adjusted_allotment']+= $currentAdjusted;
+                                    $sectionTotals['obligated']         += $currentObligated;
+                                    $sectionTotals['disbursed']         += $currentDisbursed;
+                                    $sectionTotals['pending']           += $currentPending;
+                                    $sectionTotals['savings']           += $currentSavings;
+                                    $sectionTotals['procurable']        += $budgetP;
+                                    $sectionTotals['non_procurable']    += $budgetNP;
 
                                     // Update Grand Totals
-                                    $grandTotals['allotted']       += $currentAllotted;
-                                    $grandTotals['obligated']      += $currentObligated;
-                                    $grandTotals['disbursed']      += $currentDisbursed;
-                                    $grandTotals['pending']        += $currentPending;
-                                    $grandTotals['savings']        += $currentSavings;
-                                    $grandTotals['procurable']     += $budgetP;
-                                    $grandTotals['non_procurable'] += $budgetNP;
+                                    $grandTotals['gross_allotted']    += $currentGross;
+                                    $grandTotals['pooled']            += $currentPooled;
+                                    $grandTotals['adjusted_allotment']+= $currentAdjusted;
+                                    $grandTotals['obligated']         += $currentObligated;
+                                    $grandTotals['disbursed']         += $currentDisbursed;
+                                    $grandTotals['pending']           += $currentPending;
+                                    $grandTotals['savings']           += $currentSavings;
+                                    $grandTotals['procurable']        += $budgetP;
+                                    $grandTotals['non_procurable']    += $budgetNP;
 
                                     $obligClass = $data['overall_oblig_rate'] >= 90 ? 'badge-success' : ($data['overall_oblig_rate'] >= 50 ? 'badge-info' : 'badge-warning');
                                 @endphp
                                 <tr>
+                                    {{-- Source Name --}}
                                     <td class="pl-4 align-middle">
                                         <span class="text-navy font-weight-bold text-uppercase small d-block">{{ $data['source_name'] }}</span>
                                     </td>
 
+                                    {{-- Total Fund Source (Gross) --}}
+                                    <td class="text-right align-middle financial-number text-dark">
+                                        ₱{{ number_format($currentGross, 2) }}
+                                    </td>
+
+                                    {{-- Procurable % & Amount --}}
                                     <td class="text-center align-middle">
                                         <span class="text-xs font-weight-bold text-info">{{ number_format($percP, 1) }}%</span>
                                         <small class="d-block text-muted financial-number" style="font-size: 0.65rem;">₱{{ number_format($budgetP, 2) }}</small>
                                     </td>
 
+                                    {{-- Non-Procurable % & Amount --}}
                                     <td class="text-center align-middle">
                                         <span class="text-xs font-weight-bold text-secondary">{{ number_format($percNP, 1) }}%</span>
                                         <small class="d-block text-muted financial-number" style="font-size: 0.65rem;">₱{{ number_format($budgetNP, 2) }}</small>
                                     </td>
 
-                                    <td class="text-right align-middle financial-number">₱{{ number_format($currentAllotted, 2) }}</td>
+                                    {{-- Adjusted Allotment (Gross - Pooled) with Hover Tooltip for Reasons --}}
+                                    <td class="text-right align-middle financial-number">
+                                        <div class="font-weight-bold">₱{{ number_format($currentAdjusted, 2) }}</div>
+                                        
+                                        @if($data['has_pooled'])
+                                            <div class="mt-0.5">
+                                                <span class="badge badge-warning text-dark font-weight-bold px-1.5 py-0.5 cursor-pointer" 
+                                                      style="font-size: 0.62rem;" 
+                                                      data-toggle="tooltip" 
+                                                      data-placement="left" 
+                                                      title="Pooling Reason(s):&#10;{{ $data['pooled_reasons'] }}">
+                                                    <i class="fas fa-layer-group mr-1"></i> Less Pooled: ₱{{ number_format($currentPooled, 2) }}
+                                                </span>
+                                            </div>
+                                        @endif
+                                    </td>
                                     
+                                    {{-- Obligated --}}
                                     <td class="text-right align-middle financial-number text-info font-weight-bold border-left-info bg-soft-light">
                                         ₱{{ number_format($currentObligated, 2) }}
                                     </td>
 
+                                    {{-- Obligated % --}}
                                     <td class="text-center align-middle bg-soft-light">
                                         <span class="badge {{ $obligClass }}">{{ number_format($data['overall_oblig_rate'], 1) }}%</span>
                                     </td>
 
+                                    {{-- Disbursed --}}
                                     <td class="text-right align-middle financial-number text-success font-weight-bold border-left-success">
                                         ₱{{ number_format($currentDisbursed, 2) }}
                                     </td>
 
+                                    {{-- Disbursed % --}}
                                     <td class="text-center align-middle">
                                         <span class="badge badge-light border">{{ number_format($data['overall_disb_rate'], 1) }}%</span>
                                     </td>
 
-                                    {{-- REALIZED COS SAVINGS COLUMN --}}
+                                    {{-- Savings --}}
                                     <td class="text-right align-middle border-left-teal financial-number {{ $currentSavings > 0 ? 'text-teal font-weight-bold' : 'text-muted' }}">
                                         @if($currentSavings > 0)
                                             ₱{{ number_format($currentSavings, 2) }}
@@ -225,14 +310,17 @@
                                         @endif
                                     </td>
 
+                                    {{-- Pending --}}
                                     <td class="text-right align-middle financial-number text-warning border-left-warning">
                                         ₱{{ number_format($currentPending, 2) }}
                                     </td>
 
+                                    {{-- Unpaid --}}
                                     <td class="text-right align-middle financial-number bg-soft-light">
                                         ₱{{ number_format($unpaid, 2) }}
                                     </td>
 
+                                    {{-- Unobligated --}}
                                     <td class="text-right align-middle financial-number pr-4 border-left-primary bg-soft-light {{ $unobligated < 0 ? 'text-danger' : 'text-primary' }}">
                                         ₱{{ number_format($unobligated, 2) }}
                                     </td>
@@ -241,14 +329,20 @@
 
                             {{-- Section Subtotal Row --}}
                             @php
-                                $secObligRate = $sectionTotals['allotted'] > 0 ? ($sectionTotals['obligated'] / $sectionTotals['allotted']) * 100 : 0;
+                                $secObligRate = $sectionTotals['adjusted_allotment'] > 0 ? ($sectionTotals['obligated'] / $sectionTotals['adjusted_allotment']) * 100 : 0;
                                 $secDisbRate  = $sectionTotals['obligated'] > 0 ? ($sectionTotals['disbursed'] / $sectionTotals['obligated']) * 100 : 0;
                             @endphp
                             <tr class="bg-navy-light shadow-sm">
                                 <td class="pl-4 py-2 align-middle text-uppercase small"><b>Total: {{ $sectionName }}</b></td>
-                                <td class="text-center align-middle text-xs font-weight-bold">{{ number_format($sectionTotals['allotted'] > 0 ? ($sectionTotals['procurable'] / $sectionTotals['allotted']) * 100 : 0, 1) }}%</td>
-                                <td class="text-center align-middle text-xs font-weight-bold">{{ number_format($sectionTotals['allotted'] > 0 ? ($sectionTotals['non_procurable'] / $sectionTotals['allotted']) * 100 : 0, 1) }}%</td>
-                                <td class="text-right align-middle financial-number">₱{{ number_format($sectionTotals['allotted'], 2) }}</td>
+                                <td class="text-right align-middle financial-number">₱{{ number_format($sectionTotals['gross_allotted'], 2) }}</td>
+                                <td class="text-center align-middle text-xs font-weight-bold">{{ number_format($sectionTotals['adjusted_allotment'] > 0 ? ($sectionTotals['procurable'] / $sectionTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
+                                <td class="text-center align-middle text-xs font-weight-bold">{{ number_format($sectionTotals['adjusted_allotment'] > 0 ? ($sectionTotals['non_procurable'] / $sectionTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
+                                <td class="text-right align-middle financial-number">
+                                    ₱{{ number_format($sectionTotals['adjusted_allotment'], 2) }}
+                                    @if($sectionTotals['pooled'] > 0)
+                                        <small class="d-block text-danger font-weight-normal" style="font-size: 0.65rem;">(Pooled: ₱{{ number_format($sectionTotals['pooled'], 2) }})</small>
+                                    @endif
+                                </td>
                                 <td class="text-right align-middle financial-number border-left-info text-info">₱{{ number_format($sectionTotals['obligated'], 2) }}</td>
                                 <td class="text-center align-middle"><span class="badge badge-info">{{ number_format($secObligRate, 1) }}%</span></td>
                                 <td class="text-right align-middle financial-number border-left-success text-success">₱{{ number_format($sectionTotals['disbursed'], 2) }}</td>
@@ -256,11 +350,11 @@
                                 <td class="text-right align-middle financial-number border-left-teal text-teal">₱{{ number_format($sectionTotals['savings'], 2) }}</td>
                                 <td class="text-right align-middle financial-number border-left-warning text-warning">₱{{ number_format($sectionTotals['pending'], 2) }}</td>
                                 <td class="text-right align-middle financial-number">₱{{ number_format($sectionTotals['obligated'] - $sectionTotals['disbursed'], 2) }}</td>
-                                <td class="text-right align-middle financial-number pr-4 border-left-primary text-primary">₱{{ number_format($sectionTotals['allotted'] - $sectionTotals['obligated'], 2) }}</td>
+                                <td class="text-right align-middle financial-number pr-4 border-left-primary text-primary">₱{{ number_format($sectionTotals['adjusted_allotment'] - $sectionTotals['obligated'], 2) }}</td>
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="12" class="text-center py-5 text-muted">
+                                <td colspan="13" class="text-center py-5 text-muted">
                                     <i class="fas fa-folder-open fa-2x mb-2 d-block"></i>
                                     No records found matching the active filter configuration.
                                 </td>
@@ -268,17 +362,23 @@
                         @endforelse
                     </tbody>
                     
-                    @if($grandTotals['allotted'] > 0)
+                    @if($grandTotals['gross_allotted'] > 0)
                         <tfoot class="bg-navy-light shadow-sm border-top" style="border-top: 2px solid #001f3f !important;">
                             @php
-                                $gtObligRate = $grandTotals['allotted'] > 0 ? ($grandTotals['obligated'] / $grandTotals['allotted']) * 100 : 0;
+                                $gtObligRate = $grandTotals['adjusted_allotment'] > 0 ? ($grandTotals['obligated'] / $grandTotals['adjusted_allotment']) * 100 : 0;
                                 $gtDisbRate  = $grandTotals['obligated'] > 0 ? ($grandTotals['disbursed'] / $grandTotals['obligated']) * 100 : 0;
                             @endphp
                             <tr class="font-weight-bold" style="color: #001f3f;">
                                 <td class="pl-4 py-3 align-middle text-uppercase small"><b>GRAND TOTAL</b></td>
-                                <td class="text-center align-middle text-xs">{{ number_format($grandTotals['allotted'] > 0 ? ($grandTotals['procurable'] / $grandTotals['allotted']) * 100 : 0, 1) }}%</td>
-                                <td class="text-center align-middle text-xs">{{ number_format($grandTotals['allotted'] > 0 ? ($grandTotals['non_procurable'] / $grandTotals['allotted']) * 100 : 0, 1) }}%</td>
-                                <td class="text-right align-middle financial-number">₱{{ number_format($grandTotals['allotted'], 2) }}</td>
+                                <td class="text-right align-middle financial-number">₱{{ number_format($grandTotals['gross_allotted'], 2) }}</td>
+                                <td class="text-center align-middle text-xs">{{ number_format($grandTotals['adjusted_allotment'] > 0 ? ($grandTotals['procurable'] / $grandTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
+                                <td class="text-center align-middle text-xs">{{ number_format($grandTotals['adjusted_allotment'] > 0 ? ($grandTotals['non_procurable'] / $grandTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
+                                <td class="text-right align-middle financial-number">
+                                    ₱{{ number_format($grandTotals['adjusted_allotment'], 2) }}
+                                    @if($grandTotals['pooled'] > 0)
+                                        <small class="d-block text-danger font-weight-normal" style="font-size: 0.65rem;">(Pooled: ₱{{ number_format($grandTotals['pooled'], 2) }})</small>
+                                    @endif
+                                </td>
                                 <td class="text-right text-info align-middle financial-number border-left-info">₱{{ number_format($grandTotals['obligated'], 2) }}</td>
                                 <td class="text-center align-middle bg-light"><span class="badge badge-success">{{ number_format($gtObligRate, 1) }}%</span></td>
                                 <td class="text-right text-success align-middle financial-number border-left-success">₱{{ number_format($grandTotals['disbursed'], 2) }}</td>
@@ -286,7 +386,7 @@
                                 <td class="text-right text-teal align-middle financial-number border-left-teal">₱{{ number_format($grandTotals['savings'], 2) }}</td>
                                 <td class="text-right text-warning align-middle financial-number border-left-warning">₱{{ number_format($grandTotals['pending'], 2) }}</td>
                                 <td class="text-right align-middle financial-number">₱{{ number_format($grandTotals['obligated'] - $grandTotals['disbursed'], 2) }}</td>
-                                <td class="text-right align-middle financial-number pr-4 border-left-primary text-primary">₱{{ number_format($grandTotals['allotted'] - $grandTotals['obligated'], 2) }}</td>
+                                <td class="text-right align-middle financial-number pr-4 border-left-primary text-primary">₱{{ number_format($grandTotals['adjusted_allotment'] - $grandTotals['obligated'], 2) }}</td>
                             </tr>
                         </tfoot>
                     @endif
@@ -295,4 +395,15 @@
         </div>
     </div>
 </div>  
+@endsection
+
+@section('scripts')
+<script>
+    $(document).ready(function() {
+        // Initialize Tooltips for Pooled Reasons
+        $('[data-toggle="tooltip"]').tooltip({
+            html: true
+        });
+    });
+</script>
 @endsection

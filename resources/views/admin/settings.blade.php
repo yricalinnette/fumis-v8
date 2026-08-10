@@ -668,13 +668,21 @@
                         {{-- Objective --}}
                         <div class="col-md-6">
                             <div class="form-group">
-                                <label class="font-weight-bold text-dark">Objective</label>
-                                <select name="objective" id="edit_objective" class="form-control select2-modal" required style="width: 100%;">
-                                    <option value="">-- Select Objective --</option>
+                                <label class="font-weight-bold text-dark">
+                                    Objective <span class="text-danger">*</span>
+                                </label>
+                                <select name="objective" id="edit_objective" class="form-control select2-objective-tags" required style="width: 100%;">
+                                    <option value="">-- Select or Type New Objective --</option>
                                     @foreach($objectives as $obj)
-                                        <option value="{{ $obj['objectives'] }}">{{ $obj['objectives'] }}</option>
+                                        @php
+                                            $title = is_array($obj) ? ($obj['objectives'] ?? $obj['title'] ?? '') : ($obj->title ?? $obj->objectives ?? '');
+                                        @endphp
+                                        @if(!empty($title))
+                                            <option value="{{ $title }}">{{ $title }}</option>
+                                        @endif
                                     @endforeach
                                 </select>
+                                <small class="text-muted"><i class="fas fa-info-circle mr-1"></i>Type directly into the dropdown to add a new custom objective.</small>
                             </div>
                         </div>
                         
@@ -1267,17 +1275,15 @@
         let url = "{{ url('settings/activity') }}/" + activityId + "/edit";
 
         $.get(url, function(data) {
-            // 0. RESET UI & ENABLE ALL (Start clean)
+            // 0. RESET UI & ENABLE ALL
             $('#editWfpForm input, #editWfpForm select, #editWfpForm textarea').prop('disabled', false);
             $('#modalManualEncodingLabel').html('<i class="fas fa-edit mr-2"></i> EDIT WFP ACTIVITY');
 
             // 1. Basic Fields Mapping
             $('#edit_activity_id').val(data.id);
             $('#edit_name').val(data.name);
-            // Inside openEditWfpModal $.get callback:
+            
             let rawBudget = data.budget_original || data.budget_adjusted || 0;
-
-            // Convert to formatted string: 1000 -> 1,000.00
             let formattedBudget = parseFloat(rawBudget).toLocaleString('en-US', {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2
@@ -1286,55 +1292,56 @@
             $('#edit_budget_amount').val(formattedBudget);
             
             if (data.start_date) {
-                // Simply take the first 10 characters: '2026-01-01'
-                let cleanStart = data.start_date.substring(0, 10);
-                $('#edit_start_date').val(cleanStart);
+                $('#edit_start_date').val(data.start_date.substring(0, 10));
             }
 
             if (data.end_date) {
-                let cleanEnd = data.end_date.substring(0, 10);
-                $('#edit_end_date').val(cleanEnd);
+                $('#edit_end_date').val(data.end_date.substring(0, 10));
             }
 
-            // 2. Select2 Fields & Dependency Filtering
-            $('#edit_objective').val(data.objective).trigger('change');
+            // 2. Select2 Objective Mapping with Tags Handling
+            if (data.objective) {
+                let $objSelect = $('#edit_objective');
+                // If the objective value isn't currently in the dropdown list, append it dynamically
+                if ($objSelect.find("option[value='" + data.objective + "']").length === 0) {
+                    let newOption = new Option(data.objective, data.objective, true, true);
+                    $objSelect.append(newOption).trigger('change');
+                } else {
+                    $objSelect.val(data.objective).trigger('change');
+                }
+            } else {
+                $('#edit_objective').val(null).trigger('change');
+            }
+
             if (data.uacs_code_id) $('#edit_uacs_code_id').val(data.uacs_code_id).trigger('change');
 
-            // Trigger Budget Line first to filter the Fund Source options
+            // Filter Fund Source options
             $('#edit_budget_line_item').val(data.budget_line_item_id).trigger('change');
-            // Set the specific Fund Source value
             $('#edit_source_of_fund_id').val(data.source_of_fund_id).trigger('change');
             $('#edit_is_for_procurement').val(data.is_for_procurement);
 
-            // Map the classification value from database to the dropdown
             if (data.classification) {
                 $('#edit_classification').val(data.classification).trigger('change');
             } else {
                 $('#edit_classification').val('').trigger('change');
             }
 
-            // --- 3. APPLY RESTRICTION RULES (With Timing Fix) ---
-            
-            // Budget Line and Fund Source are ALWAYS disabled on Edit
+            // 3. APPLY RESTRICTION RULES
             setTimeout(function() {
                 $('#edit_budget_line_item').prop('disabled', true);
                 $('#edit_source_of_fund_id').prop('disabled', true);
-                $('.select2-modal').trigger('change.select2');
+                $('.select2-modal, .select2-objective-tags').trigger('change.select2');
             }, 100);
 
-            // Check for Transactions, Manual Lock, OR Pooled Amount
             let isRestricted = hasTransactions || data.is_locked || (data.pooled_amount > 0);
 
             if (isRestricted) {
-                // Disable core fields
                 $('#edit_objective, #edit_uacs_code_id, #edit_name, #edit_budget_amount, #edit_classification').prop('disabled', true);
                 
-                // Update Label to show specific reason
                 let lockReason = "Restricted";
                 if (data.pooled_amount > 0) lockReason = "Restricted - Amount Pooled";
                 else if (hasTransactions) lockReason = "Restricted - Transactions Exist";
 
-                
                 $('#modalManualEncodingLabel').html(`<i class="fas fa-lock mr-2"></i> EDIT ACTIVITY (${lockReason})`);
             }
 
@@ -1362,16 +1369,36 @@
 
     $(document).ready(function() {
 
+        // Initialize Select2 with Tags for Objectives inside Bootstrap Modal
+        $('.select2-objective-tags').select2({
+            dropdownParent: $('#modalManualEncoding'),
+            tags: true,
+            placeholder: "-- Select or Type New Objective --",
+            allowClear: true,
+            width: '100%',
+            createTag: function (params) {
+                var term = $.trim(params.term);
+                if (term === '') {
+                    return null;
+                }
+                return {
+                    id: term,
+                    text: term + ' (Create New Objective)',
+                    newTag: true
+                };
+            }
+        });
+
         // --- ADD BUTTON LOGIC ---
         $('.btn-add-wfp').on('click', function(e) {
             e.preventDefault();
             $('#editWfpForm')[0].reset();
             $('#editWfpForm input, #editWfpForm select, #editWfpForm textarea').prop('disabled', false);
-            $('.q-input').prop('disabled', true); // Keep these locked initially
+            $('.q-input').prop('disabled', true);
             
             $('#edit_activity_id').val('');
             $('#method_field').html(''); 
-            $('.select2-modal').val(null).trigger('change');
+            $('.select2-modal, .select2-objective-tags').val(null).trigger('change');
             $('#modalManualEncodingLabel').html('<i class="fas fa-edit mr-2"></i> MANUAL WFP ENCODING');
 
             $('#edit_source_of_fund_id').empty()
@@ -1385,7 +1412,7 @@
         // --- SAFETY RESET ON CLOSE ---
         $('#modalManualEncoding').on('hidden.bs.modal', function () {
             $(this).find('input, select, textarea').prop('disabled', false);
-            $('.select2-modal').trigger('change');
+            $('.select2-modal, .select2-objective-tags').trigger('change');
         });
 
         // --- CHECKBOX TOGGLE LOGIC ---
@@ -1398,29 +1425,21 @@
             }
         });
 
-        // --- SUBMIT LOGIC (FIXED) ---
+        // --- SUBMIT LOGIC ---
         $('#editWfpForm').on('submit', function() {
-            // 1. Find the budget input
             let $budgetField = $('#edit_budget_amount');
-            
-            // 2. Remove commas: "1,250.50" -> "1250.50"
             let cleanValue = $budgetField.val().replace(/,/g, '');
-            
-            // 3. Set the value back to the clean version for the request
             $budgetField.val(cleanValue);
 
-            // 4. IMPORTANT: Also re-enable all disabled fields
-            // Otherwise, 'source_of_fund_id' and 'budget_line_item' won't be sent!
+            // Re-enable disabled fields prior to submission so their payload sends
             $(this).find(':disabled').prop('disabled', false);
         });
 
-        // 1. Format on Input
+        // --- FORMAT ON INPUT ---
         $(document).on('input', '.price-format', function() {
-            let value = $(this).val().replace(/,/g, ''); // Remove existing commas
+            let value = $(this).val().replace(/,/g, '');
             
-            // Ensure it's a valid number
             if (!isNaN(value) && value.length > 0) {
-                // Format with commas, allowing for decimals
                 let parts = value.split(".");
                 parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
                 $(this).val(parts.join("."));

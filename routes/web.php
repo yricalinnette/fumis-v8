@@ -86,6 +86,8 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
         // FIX: Place the export route right here!
         // Because it's inside this group, its full name automatically becomes 'reports.by_source.export'
         Route::get('/budget-by-source/export', 'exportBudgetBySource')->name('by_source.export');
+
+        Route::get('/by-line-item/export', [ReportController::class, 'exportBudgetByLineItem'])->name('by_line_item.export');
     });
 
     // Profile Controller Group

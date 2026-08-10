@@ -45,21 +45,26 @@
                     Financial Performance Analysis for Fiscal Year <strong>{{ request('year', date('Y')) }}</strong>
                     @if(request('month'))
                         | Month: <strong>{{ date('F', mktime(0, 0, 0, request('month'), 1)) }}</strong>
-                    @elseif(request('quarter'))
-                        | Quarter: <strong>Q{{ request('quarter') }}</strong>
+                    @elseif(!empty($quarters))
+                        | Quarters: <strong>Q{{ implode(', Q', (array)$quarters) }} (Cumulative)</strong>
                     @endif
                 </p>
                 <div class="mt-1 d-flex align-items-center text-xs text-muted">
                     <i class="fas fa-info-circle mr-1 text-info"></i>
-                    <span>Filtering based on <strong>Obligation Date</strong>. Pending transactions are consolidated for current FY.</span>
+                    <span>Obligations and Disbursements are strictly filtered based on transaction dates in the selected period.</span>
                 </div>
             </div>
+            
+            {{-- Toolbar Buttons --}}
             <div class="btn-group shadow-sm">
+                <a href="{{ route('reports.by_line_item.export', request()->all()) }}" class="btn btn-sm btn-success">
+                    <i class="fas fa-file-excel mr-1"></i> Export Excel
+                </a>
                 <button class="btn btn-sm btn-outline-secondary" data-toggle="collapse" data-target="#filterCard">
                     <i class="fas fa-filter mr-1"></i> Filter Options
                 </button>
                 <button class="btn btn-sm btn-outline-secondary" onclick="$('.card').CardWidget('expand')" title="Expand All Cards">
-                    <i class="fas fa-expand-alt"></i>
+                    <i class="fas fa-expand-alt"></i> Expand All
                 </button>
             </div>
         </div>
@@ -70,19 +75,27 @@
         <div class="card shadow-sm mb-4 border-navy">
             <div class="card-body py-3 bg-white">
                 <form action="{{ route('reports.by_line_item') }}" method="GET" class="row align-items-end">
-                    <div class="col-md-3">
-                        <label class="text-xs font-weight-bold text-muted text-uppercase">Financial Quarter</label>
-                        <select name="quarter" class="form-control form-control-sm border-navy">
-                            <option value="">Full Fiscal Year</option>
-                            <option value="1" {{ request('quarter') == '1' ? 'selected' : '' }}>Q1 (Jan - Mar)</option>
-                            <option value="2" {{ request('quarter') == '2' ? 'selected' : '' }}>Q2 (Apr - Jun)</option>
-                            <option value="3" {{ request('quarter') == '3' ? 'selected' : '' }}>Q3 (Jul - Sep)</option>
-                            <option value="4" {{ request('quarter') == '4' ? 'selected' : '' }}>Q4 (Oct - Dec)</option>
-                        </select>
+                    
+                    {{-- Cumulative Quarters Checkboxes --}}
+                    <div class="col-md-5">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase d-block mb-1">
+                            Cumulative Quarters <small class="text-primary font-weight-normal">(Select multiple for cumulative report)</small>
+                        </label>
+                        <div class="d-flex align-items-center bg-light p-1.5 rounded border border-navy">
+                            @foreach([1 => 'Q1', 2 => 'Q2', 3 => 'Q3', 4 => 'Q4'] as $qVal => $qLabel)
+                                <div class="custom-control custom-checkbox custom-control-inline mx-2">
+                                    <input type="checkbox" name="quarters[]" value="{{ $qVal }}" id="q_{{ $qVal }}" class="custom-control-input quarter-checkbox"
+                                        {{ in_array($qVal, (array) $quarters) ? 'checked' : '' }}>
+                                    <label class="custom-control-label text-sm font-weight-bold cursor-pointer" for="q_{{ $qVal }}">{{ $qLabel }}</label>
+                                </div>
+                            @endforeach
+                        </div>
                     </div>
+
+                    {{-- Specific Month --}}
                     <div class="col-md-3">
                         <label class="text-xs font-weight-bold text-muted text-uppercase">Specific Month</label>
-                        <select name="month" class="form-control form-control-sm border-navy">
+                        <select name="month" id="monthSelect" class="form-control form-control-sm border-navy">
                             <option value="">All Months</option>
                             @foreach(range(1, 12) as $m)
                                 <option value="{{ $m }}" {{ request('month') == $m ? 'selected' : '' }}>
@@ -91,6 +104,8 @@
                             @endforeach
                         </select>
                     </div>
+
+                    {{-- Fiscal Year --}}
                     <div class="col-md-2">
                         <label class="text-xs font-weight-bold text-muted text-uppercase">Fiscal Year</label>
                         <select name="year" class="form-control form-control-sm border-navy">
@@ -103,11 +118,13 @@
                             @endforeach
                         </select>
                     </div>
-                    <div class="col-md-4">
-                        <button type="submit" class="btn btn-sm btn-navy px-4 shadow-sm text-white" style="background-color: #001f3f;">
+
+                    {{-- Action Buttons --}}
+                    <div class="col-md-2 text-right">
+                        <button type="submit" class="btn btn-sm btn-navy px-3 shadow-sm text-white" style="background-color: #001f3f;">
                             <i class="fas fa-sync-alt mr-1"></i> Apply Filter
                         </button>
-                        <a href="{{ route('reports.by_line_item') }}" class="btn btn-sm btn-light border ml-2 text-muted">
+                        <a href="{{ route('reports.by_line_item') }}" class="btn btn-sm btn-light border ml-1 text-muted">
                             <i class="fas fa-undo mr-1"></i> Reset
                         </a>
                     </div>
@@ -129,8 +146,6 @@
         @foreach($sources as $source)
             <div class="card card-navy card-outline shadow-sm mb-4">
                 @php
-                    $currentYear = $year ?? date('Y'); 
-
                     $netSourceBudget = $source['total_activity_budget']; 
                     $totalObligated  = $source['total_obligated'] ?? 0;
                     $totalDisbursed  = $source['total_disbursed'] ?? 0;
@@ -156,7 +171,7 @@
                                 {{ $source['source_name'] }}
                             </h6>
                             <div class="d-flex align-items-center border-left pl-3" style="height: 16px; border-color: #dee2e6 !important;">
-                                <span class="text-uppercase text-muted mr-2" style="font-size: 0.65rem; font-weight: 700;">Total Allocation:</span>
+                                <span class="text-uppercase text-muted mr-2" style="font-size: 0.65rem; font-weight: 700;">Total Alloted Fund:</span>
                                 <span class="text-dark font-weight-bold financial-number" style="font-size: 0.95rem;">
                                     ₱{{ number_format($source['source_total'] ?? 0, 2) }}
                                 </span>
@@ -164,9 +179,9 @@
                         </div>
 
                         <div class="card-tools d-flex align-items-center">
-                            <button type="button" class="btn btn-xs btn-outline-primary mr-2 btn-copy-card">
+                            {{-- <button type="button" class="btn btn-xs btn-outline-primary mr-2 btn-copy-card">
                                 <i class="fas fa-camera mr-1"></i> Copy Summary
-                            </button>
+                            </button> --}}
                             <button type="button" class="btn btn-tool btn-xs" data-card-widget="collapse">
                                 <i class="fas fa-minus"></i>
                             </button>
@@ -179,9 +194,9 @@
                     <div class="py-3 px-4 bg-soft-light border-bottom">
                         <div class="row align-items-center no-gutters">
                             <div class="col-md-2 text-center border-right">
-                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold">Net Activity Budget</span>
+                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold">Alloted Budget</span>
                                 <h6 class="font-weight-bold mb-0 text-navy financial-number">₱{{ number_format($netSourceBudget, 2) }}</h6>
-                                <small class="text-muted" style="font-size: 0.6rem;">Budget Less Pooled</small>
+                                <small class="text-muted" style="font-size: 0.6rem;">Alloted budget Less Pooled</small>
                             </div>
 
                             <div class="col-md-2 text-center border-right">
@@ -199,7 +214,7 @@
                             <div class="col-md-2 text-center border-right">
                                 <span class="text-uppercase text-xs text-muted d-block font-weight-bold text-warning">Pending Transactions</span>
                                 <h6 class="font-weight-bold mb-0 text-warning financial-number">₱{{ number_format($totalPending, 2) }}</h6>
-                                <small class="text-muted" style="font-size: 0.6rem;">In-Process / Encumbered</small>
+                                <small class="text-muted" style="font-size: 0.6rem;">Routed from the Unit/Section</small>
                             </div>
 
                             <div class="col-md-2 text-center border-right">
@@ -355,26 +370,41 @@
     @endforeach
 </div>
 @endsection
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 
+@section('scripts')
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-
 <script>
     $(document).ready(function() {
-        $('.btn-copy-card').on('click', function() {
+        // Auto Reset: Clear month when quarter checkboxes are picked & vice versa
+        $('.quarter-checkbox').on('change', function() {
+            if ($(this).is(':checked')) {
+                $('#monthSelect').val('');
+            }
+        });
+
+        $('#monthSelect').on('change', function() {
+            if ($(this).val()) {
+                $('.quarter-checkbox').prop('checked', false);
+            }
+        });
+
+        // Fixed Copy Card Snapshot Feature
+        $('.btn-copy-card').on('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+
             const btn = $(this);
             const originalHtml = btn.html();
             
-            // Find the parent card relative to the clicked button
-            const element = btn.closest('.card')[0]; 
+            // Correctly locate card container
+            const element = btn.closest('.card-outline')[0] || btn.closest('.card')[0]; 
 
             if (!element) {
-                console.error("Could not find the card container to capture.");
+                alert("Could not find card container.");
                 return;
             }
 
-            // UI Feedback
-            btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Processing Full Report...');
+            btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin mr-1"></i> Copying Report...');
 
             html2canvas(element, {
                 scale: 2, 
@@ -382,12 +412,11 @@
                 logging: false,
                 backgroundColor: "#ffffff",
                 onclone: (clonedDoc) => {
-                    // 1. Hide ALL copy buttons in the captured image
-                    const clonedButtons = clonedDoc.querySelectorAll('.btn-copy-card');
-                    clonedButtons.forEach(b => b.style.visibility = 'hidden');
+                    // Hide action buttons in snapshot
+                    const clonedButtons = clonedDoc.querySelectorAll('.btn-copy-card, .btn-tool');
+                    clonedButtons.forEach(b => b.style.display = 'none');
 
-                    // 2. FORCE the table-responsive container to show all rows
-                    // This targets the div that usually has the scrollbar
+                    // Expand table container for full snapshot
                     const scrollContainer = clonedDoc.querySelector('.table-responsive');
                     if (scrollContainer) {
                         scrollContainer.style.maxHeight = 'none'; 
@@ -395,31 +424,55 @@
                         scrollContainer.style.height = 'auto';
                     }
 
-                    // 3. Ensure the table itself isn't constricted
-                    const table = clonedDoc.querySelector('table');
-                    if (table) {
-                        table.style.marginBottom = '0';
+                    // Force card body visible in clone if collapsed
+                    const cardBody = clonedDoc.querySelector('.card-body');
+                    if (cardBody) {
+                        cardBody.style.display = 'block';
                     }
                 }
             }).then(canvas => {
                 canvas.toBlob(blob => {
-                    try {
+                    if (!blob) {
+                        alert("Could not generate image blob.");
+                        btn.prop('disabled', false).html(originalHtml);
+                        return;
+                    }
+
+                    // Modern Clipboard API attempt
+                    if (navigator.clipboard && window.ClipboardItem) {
                         const item = new ClipboardItem({ "image/png": blob });
                         navigator.clipboard.write([item]).then(() => {
-                            // Success Feedback
-                            btn.removeClass('btn-outline-primary').addClass('btn-success').html('<i class="fas fa-check"></i> Full Report Copied!');
-                            
+                            btn.removeClass('btn-outline-primary').addClass('btn-success').html('<i class="fas fa-check mr-1"></i> Copied!');
                             setTimeout(() => {
                                 btn.prop('disabled', false).removeClass('btn-success').addClass('btn-outline-primary').html(originalHtml);
                             }, 2000);
+                        }).catch(err => {
+                            console.warn("Clipboard API rejected, falling back to download:", err);
+                            fallbackDownload(blob);
                         });
-                    } catch (err) {
-                        console.error("Clipboard API failed: ", err);
-                        alert("Browser error: Could not copy image to clipboard.");
-                        btn.prop('disabled', false).html(originalHtml);
+                    } else {
+                        fallbackDownload(blob);
+                    }
+
+                    function fallbackDownload(imageBlob) {
+                        const link = document.createElement('a');
+                        link.download = 'budget-report-summary.png';
+                        link.href = URL.createObjectURL(imageBlob);
+                        link.click();
+                        URL.revokeObjectURL(link.href);
+
+                        btn.removeClass('btn-outline-primary').addClass('btn-info').html('<i class="fas fa-download mr-1"></i> Downloaded!');
+                        setTimeout(() => {
+                            btn.prop('disabled', false).removeClass('btn-info').addClass('btn-outline-primary').html(originalHtml);
+                        }, 2000);
                     }
                 }, 'image/png');
+            }).catch(err => {
+                console.error("html2canvas error:", err);
+                alert("Error generating image snapshot.");
+                btn.prop('disabled', false).html(originalHtml);
             });
         });
     });
 </script>
+@endsection
