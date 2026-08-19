@@ -16,6 +16,7 @@
     }
 
     .border-left-info { border-left: 3px solid #17a2b8 !important; }
+    .border-left-danger { border-left: 3px solid #dc3545 !important; }
     .border-left-success { border-left: 3px solid #28a745 !important; }
     .border-left-warning { border-left: 3px solid #ffc107 !important; }
     .border-left-teal { border-left: 3px solid #20c997 !important; }
@@ -78,7 +79,7 @@
                         </select>
                     </div>
 
-                    {{-- Section Filter (Budget/Admin/Division) --}}
+                    {{-- Section Filter --}}
                     @if($canFilter ?? false)
                         <div class="col-md-3 col-6 mb-2 mb-md-0">
                             <label class="small font-weight-bold mb-1">Filter Section</label>
@@ -185,7 +186,7 @@
                         @foreach($source['activities'] as $act)
                             <div class="border-top p-3 {{ $act['is_pooled'] ? 'bg-light border-left-warning' : 'bg-white' }}">
                                 <div class="row align-items-center">
-                                    <div class="col-md-4">
+                                    <div class="col-md-3">
                                         <div class="d-flex align-items-center flex-wrap" style="gap: 6px;">
                                             <h6 class="font-weight-bold text-dark mb-0" style="font-size: 0.9rem;">
                                                 {{ $act['details']->name }}
@@ -209,7 +210,7 @@
                                         </div>
                                     </div>
 
-                                    <div class="col-md-8">
+                                    <div class="col-md-9">
                                         <div class="row text-center no-gutters bg-soft-light rounded border py-2">
                                             <div class="col border-right">
                                                 <small class="d-block text-muted text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Net Budget</small>
@@ -220,7 +221,7 @@
                                             @if($act['is_pooled'])
                                                 <div class="col border-right bg-warning-subtle">
                                                     <small class="d-block text-danger text-uppercase" style="font-size: 0.6rem; font-weight: 700;">
-                                                        <i class="fas fa-minus-circle mr-0.5"></i> Pooled Amount
+                                                        <i class="fas fa-minus-circle mr-0.5"></i> Pooled
                                                     </small>
                                                     <span class="font-weight-bold text-danger financial-number">
                                                         ₱{{ number_format($act['pooled_amount'], 2) }}
@@ -232,10 +233,30 @@
                                                 <small class="d-block text-warning text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Pending</small>
                                                 <span class="font-weight-bold text-warning financial-number">₱{{ number_format($act['pending'], 2) }}</span>
                                             </div>
+
+                                            {{-- OBLIGATED COLUMN --}}
                                             <div class="col border-right border-left-info">
-                                                <small class="d-block text-info text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Obligated</small>
+                                                <small class="d-block text-info text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Net Obligated</small>
                                                 <span class="font-weight-bold text-info financial-number">₱{{ number_format($act['obligated'], 2) }}</span>
+                                                @if(($act['norsa_amount'] ?? 0) > 0)
+                                                    <small class="d-block text-muted font-weight-normal" style="font-size: 0.58rem;">
+                                                        (Gross: ₱{{ number_format($act['gross_obligated'], 2) }})
+                                                    </small>
+                                                @endif
                                             </div>
+
+                                            {{-- NORSA SAVINGS COLUMN --}}
+                                            <div class="col border-right border-left-danger">
+                                                <small class="d-block text-danger text-uppercase" style="font-size: 0.6rem; font-weight: 700;">NORSA</small>
+                                                <span class="font-weight-bold text-danger financial-number">
+                                                    @if(($act['norsa_amount'] ?? 0) > 0)
+                                                        (₱{{ number_format($act['norsa_amount'], 2) }})
+                                                    @else
+                                                        <span class="text-muted font-weight-normal">-</span>
+                                                    @endif
+                                                </span>
+                                            </div>
+
                                             <div class="col border-right border-left-success">
                                                 <small class="d-block text-success text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Disbursed</small>
                                                 <span class="font-weight-bold text-success financial-number">₱{{ number_format($act['disbursed'], 2) }}</span>
@@ -285,13 +306,14 @@
                                                 <tr class="bg-navy-light text-uppercase text-xs" style="font-size: 0.68rem;">
                                                     <th class="pl-3 py-2 text-nowrap" style="width: 100px;">Oblig. Date</th>
                                                     <th class="py-2 text-nowrap" style="width: 100px;">Disb. Date</th>
-                                                    <th class="py-2 text-nowrap" style="width: 150px;">DTrack / OBRN</th>
-                                                    <th class="py-2" style="width: 160px;">Payee / Creditor</th>
+                                                    <th class="py-2 text-nowrap" style="width: 140px;">DTrack / OBRN</th>
+                                                    <th class="py-2" style="width: 150px;">Payee / Creditor</th>
                                                     <th class="py-2">Particulars</th>
                                                     <th class="text-right py-2">Amount</th>
-                                                    <th class="text-right py-2 border-left-info">Obligated</th>
+                                                    <th class="text-right py-2 border-left-info">Gross Obligated</th>
+                                                    <th class="text-right py-2 border-left-danger text-danger">NORSA</th>
                                                     <th class="text-right py-2 border-left-success">Disbursed</th>
-                                                    <th class="text-center py-2 border-left-primary" style="width: 220px;">Status & Remarks</th>
+                                                    <th class="text-center py-2 border-left-primary" style="width: 200px;">Status & Remarks</th>
                                                 </tr>
                                             </thead>
                                             <tbody class="text-xs">
@@ -366,16 +388,29 @@
                                                         {{-- Particulars --}}
                                                         <td class="align-middle text-wrap" style="line-height: 1.3;">{{ $tx->particulars }}</td>
 
-                                                        {{-- Amounts --}}
+                                                        {{-- Transaction Amount --}}
                                                         <td class="text-right align-middle financial-number">₱{{ number_format($tx->amount, 2) }}</td>
+                                                        
+                                                        {{-- Gross Obligated --}}
                                                         <td class="text-right align-middle font-weight-bold text-info border-left-info financial-number">
                                                             ₱{{ number_format($tx->obligation_amount, 2) }}
                                                         </td>
+
+                                                        {{-- NORSA SAVINGS COLUMN --}}
+                                                        <td class="text-right align-middle font-weight-bold text-danger border-left-danger financial-number">
+                                                            @if(($tx->norsa_amount ?? 0) > 0)
+                                                                (₱{{ number_format($tx->norsa_amount, 2) }})
+                                                            @else
+                                                                <span class="text-muted font-weight-normal">-</span>
+                                                            @endif
+                                                        </td>
+
+                                                        {{-- Disbursed --}}
                                                         <td class="text-right align-middle font-weight-bold text-success border-left-success financial-number">
                                                             ₱{{ number_format($tx->disbursement_amount, 2) }}
                                                         </td>
 
-                                                        {{-- Status & Coexisting Remarks --}}
+                                                        {{-- Status & Remarks --}}
                                                         <td class="text-center align-middle bg-soft-light py-2 border-left-primary">
                                                             <div class="d-inline-block text-center" style="max-width: 200px;">
                                                                 <div>
@@ -395,7 +430,7 @@
                                                                     </span>
                                                                 </div>
 
-                                                                {{-- 1. COS / DTRACK REMARK --}}
+                                                                {{-- COS / DTrack Remark --}}
                                                                 @if(!empty($tx->remarks))
                                                                     <div class="mt-1 text-left small border-left pl-2 {{ $isCosSalary ? 'border-warning text-dark' : 'border-secondary text-muted' }}" style="line-height: 1.25; font-style: italic; font-size: 0.68rem;">
                                                                         <i class="fas {{ $isCosSalary ? 'fa-id-badge text-warning' : 'fa-route text-secondary' }} mr-1"></i>
@@ -403,7 +438,7 @@
                                                                     </div>
                                                                 @endif
 
-                                                                {{-- 2. INTERNAL MANUAL REMARK --}}
+                                                                {{-- Internal Manual Remark --}}
                                                                 @if(!empty($tx->manual_remarks))
                                                                     <div class="mt-1 text-left small border-left border-primary pl-2 text-dark rounded bg-white py-1 shadow-sm" style="line-height: 1.25; font-size: 0.68rem;">
                                                                         <i class="fas fa-user-edit text-primary mr-1"></i>
@@ -415,7 +450,7 @@
                                                     </tr>
                                                 @empty
                                                     <tr>
-                                                        <td colspan="9" class="text-center py-3 text-muted">No transactions found for this activity.</td>
+                                                        <td colspan="10" class="text-center py-3 text-muted">No transactions found for this activity.</td>
                                                     </tr>
                                                 @endforelse
                                             </tbody>

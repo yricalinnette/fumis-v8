@@ -101,5 +101,21 @@ class Fund extends Model
     {
         return $this->hasMany(CosSalaryDisbursement::class, 'fund_id');
     }
+
+    /**
+     * Relationship: A Fund has many NORSA adjustments/savings.
+     */
+    public function norsaAdjustments()
+    {
+        return $this->hasMany(\App\Models\NorsaAdjustment::class, 'fund_id');
+    }
+
+    /**
+     * Accessor: Calculates total NORSA savings for this fund record.
+     */
+    public function getTotalNorsaAmountAttribute()
+    {
+        return (float) $this->norsaAdjustments()->sum('amount');
+    }
   
 }

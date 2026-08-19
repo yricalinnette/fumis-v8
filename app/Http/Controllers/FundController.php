@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Auth;
 use App\Models\SourceOfFund;
+use App\Models\NorsaAdjustment;
 use App\Models\Activity;
 use Google\Client;            
 use Google\Service\Sheets; 
@@ -70,7 +71,14 @@ class FundController extends Controller
             });
         }
 
-        $fundsCollection = $baseQuery->with(['fundSource', 'activity','cosContract', 'creditors.employeeDetail'])
+        // Eager-load norsaAdjustments along with other relations
+        $fundsCollection = $baseQuery->with([
+                'fundSource', 
+                'activity',
+                'cosContract', 
+                'creditors.employeeDetail',
+                'norsaAdjustments' // Eager loaded NORSA adjustments
+            ])
             ->whereNotNull('dtrack_no')
             ->where('dtrack_no', '!=', '')
             ->orderBy('created_at', 'desc')
@@ -147,13 +155,11 @@ class FundController extends Controller
             return $emp;
         })->keyBy('dbedid');
 
-        // --- 3. GROUP AND MAP (EXCEPT COS SALARIES) ---
+        // --- 3. GROUP AND MAP (WITH NORSA INTEGRATION) ---
         $funds = $fundsCollection->groupBy(function ($item) {
-            // If it's a COS salary transaction, group by its unique ID so it gets its own row in the UI
             if ($item->remarks_salary === 'Imported HR COS Salary/Wages') {
                 return 'COS_SALARY_' . $item->id;
             }
-            // Standard transactions continue grouping by dtrack_no
             return $item->dtrack_no;
         })->map(function ($group) use ($employees) {
             $first = $group->first();
@@ -179,6 +185,7 @@ class FundController extends Controller
                 });
             }
 
+            // Calculate total amount considering NORSA deductions
             $calculatedTotal = $group->sum(function($item) {
                 $isDisbursedType = in_array($item->status, [
                     'Disbursed', 
@@ -190,7 +197,12 @@ class FundController extends Controller
                 if ($isDisbursedType && $item->disbursement_amount > 0) {
                     return $item->disbursement_amount;
                 }
-                return ($item->obligation_amount > 0) ? $item->obligation_amount : $item->amount;
+
+                // Factor NORSA savings out of the obligated amount if present
+                $norsaAmount = $item->norsaAdjustments ? (float)$item->norsaAdjustments->sum('amount') : 0.00;
+                $netObligation = max(0.00, (float)$item->obligation_amount - $norsaAmount);
+
+                return ($netObligation > 0) ? $netObligation : $item->amount;
             });
 
             $disbursedItem = $group->first(function($item) {
@@ -210,6 +222,11 @@ class FundController extends Controller
             $uniqueTypeIds = $group->pluck('transaction_type_id')->filter()->unique();
             $groupTransactionTypeId = ($uniqueTypeIds->count() === 1) ? $uniqueTypeIds->first() : null;
 
+            // Group NORSA aggregations
+            $groupTotalNorsa = $group->sum(function($item) {
+                return $item->norsaAdjustments ? (float)$item->norsaAdjustments->sum('amount') : 0.00;
+            });
+
             return (object) [
                 'id'                  => $first->id,
                 'dtrack_no'           => $first->dtrack_no,
@@ -226,6 +243,8 @@ class FundController extends Controller
                 'contract'            => $first->cosContract,
                 'source_names'        => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
                 'activity_names'      => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
+                'total_norsa'         => $groupTotalNorsa,
+                'has_norsa'           => $groupTotalNorsa > 0,
                 'is_fully_synced'     => !$group->contains(function ($item) {
                         $isObligatedMissing = ($item->status === 'Obligated' && (empty($item->obligation_amount) || $item->obligation_amount <= 0));
                         $isDisbursedType = in_array($item->status, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']);
@@ -233,6 +252,9 @@ class FundController extends Controller
                         return $isObligatedMissing || $isDisbursedMissing;
                     }),
                 'breakdown'           => $group->map(function($item) {
+                    $norsaAmount = $item->norsaAdjustments ? (float)$item->norsaAdjustments->sum('amount') : 0.00;
+                    $netObligationAmount = max(0.00, (float)$item->obligation_amount - $norsaAmount);
+
                     return (object) [
                         'id'                  => $item->id,
                         'source_name'         => $item->fundSource->name ?? 'N/A', 
@@ -248,6 +270,9 @@ class FundController extends Controller
                         'transaction_type_id' => $item->transaction_type_id,
                         'obligation_serial'   => $item->obligation_serial,
                         'obligation_amount'   => $item->obligation_amount,
+                        'norsa_amount'        => $norsaAmount,
+                        'has_norsa'           => $norsaAmount > 0 || ($item->norsaAdjustments && $item->norsaAdjustments->isNotEmpty()),
+                        'net_obligation_amount' => $netObligationAmount,
                         'obligation_date'     => $item->obligation_date,
                         'disbursement_amount' => $item->disbursement_amount,
                         'disbursement_date'   => $item->disbursement_date,
@@ -271,7 +296,7 @@ class FundController extends Controller
                 ->value('secid');
         }
 
-        // Modal Transaction Sources (filtered by security/section)
+        // Modal Transaction Sources
         $sourcesQuery = \App\Models\SourceOfFund::where('fiscal_year', date('Y'))
             ->with(['activities', 'budgetLineItem'])
             ->orderBy('name');
@@ -286,7 +311,7 @@ class FundController extends Controller
 
         $sources = $sourcesQuery->get();
 
-        // --- 4. SECTION-SCOPED ACTIVITIES FOR MISSING ACTIVITY DROPDOWN ---
+        // Activities
         $activitiesQuery = \App\Models\Activity::with('source')
             ->orderBy('name', 'asc');
 
@@ -785,13 +810,14 @@ class FundController extends Controller
 
             if (!empty($rows)) {
                 $tracker = [
-                    'netOb' => 0.0, 
-                    'netDisb' => 0.0,
-                    'latestObDate' => null, 
+                    'netOb'          => 0.0, 
+                    'netDisb'        => 0.0,
+                    'latestObDate'   => null, 
                     'latestDisbDate' => null,
-                    'found_serial' => null, 
-                    'found' => false,
-                    'disbursements' => [] 
+                    'found_serial'   => null, 
+                    'found'          => false,
+                    'disbursements'  => [],
+                    'norsa_entries'  => []
                 ];
 
                 $creditorName = null;
@@ -837,11 +863,11 @@ class FundController extends Controller
                         $isCosSalary = true;
                     }
 
-                    // Process and append disbursements
-                    $this->processApiRowData($rowData, $tracker, $particularsRow);
+                    // Process disbursements and separate negative NORSA obligation entries
+                    $this->processApiRowData($rowData, $tracker, $particularsRow, $isCosSalary);
                 }
 
-                // 2. SAVE ACCUMULATED TOTALS & DISBURSEMENTS TO DATABASE
+                // 2. SAVE ACCUMULATED TOTALS, DISBURSEMENTS, & NORSA ADJUSTMENTS TO DATABASE
                 if ($tracker['found']) {
                     if ($tracker['netDisb'] > 0) {
                         if ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) {
@@ -872,8 +898,10 @@ class FundController extends Controller
                             ->first();
                     }
 
+                    $targetFund = null;
+
                     if (!$existingFund && $isCosSalary) {
-                        $newFund = Fund::create([
+                        $targetFund = Fund::create([
                             'dtrack_no'           => !empty($targetDtrack) ? $targetDtrack : $targetDtrack,
                             'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : null,
                             'creditor'            => $creditorName,
@@ -893,12 +921,10 @@ class FundController extends Controller
                             'secid'               => auth()->user()->secid ?? null,
                         ]);
 
-                        $this->syncDisbursementRecords($newFund, $tracker['disbursements'], $isCosSalary);
-
                         $syncedDetails[] = [
                             'name'   => $sourceConfig->name ?? 'HR COS', 
-                            'dtrack' => $newFund->dtrack_no,
-                            'serial' => $newFund->obligation_serial ?? 'N/A',
+                            'dtrack' => $targetFund->dtrack_no,
+                            'serial' => $targetFund->obligation_serial ?? 'N/A',
                             'amount' => number_format($displayAmount, 2),
                             'status' => $status
                         ];
@@ -914,7 +940,7 @@ class FundController extends Controller
                             'status_date'         => now()
                         ]);
 
-                        $this->syncDisbursementRecords($existingFund, $tracker['disbursements'], $isCosSalary);
+                        $targetFund = $existingFund;
 
                         $syncedDetails[] = [
                             'name'   => $sourceConfig->name ?? 'HIT', 
@@ -923,6 +949,12 @@ class FundController extends Controller
                             'amount' => number_format($displayAmount, 2),
                             'status' => $status
                         ];
+                    }
+
+                    // Sync Monthly Disbursements & NORSA Savings Entries into DB Tables
+                    if ($targetFund) {
+                        $this->syncDisbursementRecords($targetFund, $tracker['disbursements'], $isCosSalary);
+                        $this->syncNorsaAdjustments($targetFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
                     }
                 }
             }
@@ -1089,16 +1121,20 @@ class FundController extends Controller
 
                         // 1. INITIALIZE TRACKER FOR EACH ROW RECORD BEFORE EXCLUSION CHECK
                         $tracker = [
-                            'netOb' => 0.0, 'netDisb' => 0.0, 
-                            'latestObDate' => null, 'latestDisbDate' => null, 
-                            'found_serial' => $sheetSerial, 'found' => true,
-                            'disbursements' => []
+                            'netOb'          => 0.0, 
+                            'netDisb'        => 0.0, 
+                            'latestObDate'   => null, 
+                            'latestDisbDate' => null, 
+                            'found_serial'   => $sheetSerial, 
+                            'found'          => true,
+                            'disbursements'  => [],
+                            'norsa_entries'  => []
                         ];
 
                         // 2. PARSE SHEET DATA INTO $tracker FIRST
-                        $this->processApiRowData($rowData, $tracker, $particulars);
+                        $this->processApiRowData($rowData, $tracker, $particulars, $isCosSalary);
 
-                        // 3. IF EXISTING FUND IS ALREADY COMPLETED/DISBURSED, SYNC DISBURSEMENTS AND SKIP OTHER UPDATES
+                        // 3. IF EXISTING FUND IS ALREADY COMPLETED/DISBURSED, SYNC DISBURSEMENTS & NORSA, THEN SKIP OTHER UPDATES
                         if ($existingFund) {
                             $isCompletedStatus = in_array($existingFund->status, [
                                 'Disbursed', 'Disbursed (with savings)', 'Completed', 'Cancelled'
@@ -1109,8 +1145,9 @@ class FundController extends Controller
                                     $existingFund->update(['secid' => $secid]);
                                 }
 
-                                // POPULATE DISBURSEMENTS TABLE EVEN IF PARENT RECORD IS COMPLETED/DISBURSED
+                                // SYNC BOTH TABLES EVEN IF PARENT RECORD IS COMPLETED/DISBURSED
                                 $this->syncDisbursementRecords($existingFund, $tracker['disbursements'], $isCosSalary);
+                                $this->syncNorsaAdjustments($existingFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
 
                                 continue;
                             }
@@ -1166,8 +1203,10 @@ class FundController extends Controller
                             }
                         }
 
+                        $targetFund = null;
+
                         if (!$existingFund && $isCosSalary && !$isCapitalOutlay) {
-                            $newFund = Fund::create([
+                            $targetFund = Fund::create([
                                 'dtrack_no'           => !empty($sheetDtrack) ? $sheetDtrack : 'HR-COS-SALARY',
                                 'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : null,
                                 'creditor'            => $creditorName,
@@ -1189,13 +1228,11 @@ class FundController extends Controller
                                 'secid'               => $secid, 
                             ]);
 
-                            $this->syncDisbursementRecords($newFund, $tracker['disbursements'], $isCosSalary);
-
                             $importedItems[] = [
-                                'id'     => $newFund->id,
-                                'serial' => !empty($newFund->obligation_serial) ? $newFund->obligation_serial : $newFund->dtrack_no,
-                                'status' => $status,
-                                'amount' => number_format($displayAmount, 2),
+                                'id'         => $targetFund->id,
+                                'serial'     => !empty($targetFund->obligation_serial) ? $targetFund->obligation_serial : $targetFund->dtrack_no,
+                                'status'     => $status,
+                                'amount'     => number_format($displayAmount, 2),
                                 'duplicates' => []
                             ];
                         } 
@@ -1219,8 +1256,13 @@ class FundController extends Controller
                             }
 
                             $existingFund->update($updateData);
+                            $targetFund = $existingFund;
+                        }
 
-                            $this->syncDisbursementRecords($existingFund, $tracker['disbursements'], $isCosSalary);
+                        // PERSIST DISBURSEMENTS & NORSA SAVINGS ADJUSTMENTS
+                        if ($targetFund) {
+                            $this->syncDisbursementRecords($targetFund, $tracker['disbursements'], $isCosSalary);
+                            $this->syncNorsaAdjustments($targetFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
                         }
                     }
                 }
@@ -1228,7 +1270,7 @@ class FundController extends Controller
                 unset($rows);
 
             } catch (\Exception $e) {
-                \Log::error("Bulk Sync Error (Source {$sourceConfig->id}): " . $e->getMessage());
+                logger()->error("Bulk Sync Error (Source {$sourceConfig->id}): " . $e->getMessage());
             }
 
             $processedSources++;
@@ -1244,9 +1286,10 @@ class FundController extends Controller
     }
 
     /**
-     * Parses Google Sheet columns, accumulates totals, and extracts discrete disbursement records.
+     * Parses Google Sheet columns, accumulates positive obligations & disbursements, 
+     * and routes negative obligation values into norsa_entries.
      */
-    private function processApiRowData($rowData, &$tracker, $particulars = '') {
+    private function processApiRowData($rowData, &$tracker, $particulars = '', $isCosSalary = false) {
         $clean = function($val) {
             if (is_null($val) || $val === '') return 0.0;
             $raw = str_replace([',', '₱', ' '], '', trim((string)$val));
@@ -1254,13 +1297,30 @@ class FundController extends Controller
             return is_numeric($raw) ? (float)$raw : 0.0;
         };
 
+        if (!isset($tracker['norsa_entries'])) {
+            $tracker['norsa_entries'] = [];
+        }
+
         // Obligation Amount (Column J = Index 9)
         $obVal = isset($rowData[9]) ? $clean($rowData[9]) : 0.0;
-        $tracker['netOb'] += $obVal;
-        
-        // Obligation Date (Column C = Index 2)
-        if (isset($rowData[2]) && !empty($rowData[2])) {
-            $tracker['latestObDate'] = $this->parseApiDate($rowData[2]);
+        $entryDate = (isset($rowData[2]) && !empty($rowData[2])) ? $this->parseApiDate($rowData[2]) : null;
+
+        // --- SEPARATE NORSA SAVINGS (NEGATIVE OBLIGATIONS) FROM POSITIVE OBLIGATIONS ---
+        if ($obVal < 0) {
+            $tracker['norsa_entries'][] = [
+                'amount'            => abs($obVal), // Stored as positive savings magnitude
+                'raw_amount'        => $obVal,
+                'entry_date'        => $entryDate,
+                'dtrack_no'         => isset($rowData[0]) ? trim((string)$rowData[0]) : null,
+                'obligation_serial' => isset($rowData[3]) ? trim((string)$rowData[3]) : null,
+                'creditor'          => isset($rowData[10]) ? trim((string)$rowData[10]) : null,
+                'particulars'       => $particulars,
+            ];
+        } else {
+            $tracker['netOb'] += $obVal;
+            if ($entryDate) {
+                $tracker['latestObDate'] = $entryDate;
+            }
         }
 
         // EXACT DISBURSEMENT COLUMN PAIRINGS: [ Total Column Index => Date Column Index ]
@@ -1321,6 +1381,33 @@ class FundController extends Controller
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Persists NORSA / negative obligation adjustments into the norsa_adjustments table.
+     */
+    private function syncNorsaAdjustments(Fund $fund, array $norsaEntries, $sourceConfigId)
+    {
+        if (empty($norsaEntries)) {
+            return;
+        }
+
+        foreach ($norsaEntries as $norsa) {
+            \App\Models\NorsaAdjustment::updateOrCreate(
+                [
+                    'fund_id'           => $fund->id,
+                    'obligation_serial' => $norsa['obligation_serial'],
+                    'entry_date'        => $norsa['entry_date'],
+                    'amount'            => $norsa['amount'],
+                ],
+                [
+                    'dtrack_no'         => $norsa['dtrack_no'],
+                    'creditor'          => $norsa['creditor'],
+                    'particulars'       => $norsa['particulars'],
+                    'source_of_fund_id' => $sourceConfigId,
+                ]
+            );
         }
     }
 

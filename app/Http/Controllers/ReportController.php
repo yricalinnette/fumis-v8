@@ -77,7 +77,7 @@ class ReportController extends Controller
                 $selectedMonths = array_merge($selectedMonths, $quarterMonthsMap[$q]);
             }
         }
-        $selectedMonths = array_unique($selectedMonths);
+        $selectedMonths = array_values(array_unique($selectedMonths));
 
         $sectionNames = \DB::connection('db_common')->table('tbl_section')->pluck('secname', 'secid');
         $query = SourceOfFund::where('fiscal_year', $year);
@@ -103,7 +103,7 @@ class ReportController extends Controller
             }
         }
 
-        // Eager load funds along with cosContract & cosSalaryDisbursements
+        // Eager load funds along with cosContract, cosSalaryDisbursements, and norsaAdjustments
         $sources = $query->with(['activities', 'funds' => function ($query) use ($year, $month, $selectedMonths) {
             $query->where(function($q) use ($year, $month, $selectedMonths) {
                 
@@ -152,7 +152,7 @@ class ReportController extends Controller
 
             })->whereNotIn('status', ['Cancelled', 'Rejected']);
 
-        }, 'funds.cosContract', 'funds.cosSalaryDisbursements'])->get();
+        }, 'funds.cosContract', 'funds.cosSalaryDisbursements', 'funds.norsaAdjustments'])->get();
 
         $reportData = $sources->map(function ($source) use ($sectionNames, $year, $month, $selectedMonths) {
             
@@ -168,7 +168,25 @@ class ReportController extends Controller
             $grossAllotted = (float) $source->total_amount;
             $adjustedAllotment = $grossAllotted - $totalPooled; // Adjusted Allotment = Gross - Pooled
             
-            $obligated = (float) $source->funds->sum('obligation_amount');
+            // GROSS OBLIGATION
+            $grossObligated = (float) $source->funds->sum('obligation_amount');
+
+            // CALCULATE NORSA ADJUSTMENTS
+            $norsaAmount = (float) $source->funds->sum(function($f) use ($year, $month, $selectedMonths) {
+                if (!$f->norsaAdjustments || $f->norsaAdjustments->count() === 0) return 0.00;
+
+                return (float) $f->norsaAdjustments->filter(function($adj) use ($year, $month, $selectedMonths) {
+                    if (empty($adj->entry_date)) return true;
+                    $eDate = \Carbon\Carbon::parse($adj->entry_date);
+                    if ($eDate->year != $year) return false;
+                    if ($month && $eDate->month != $month) return false;
+                    if (!empty($selectedMonths) && !in_array($eDate->month, $selectedMonths)) return false;
+                    return true;
+                })->sum('amount');
+            });
+
+            // NET OBLIGATION (Gross Obligated - NORSA)
+            $netObligated = max(0.00, $grossObligated - $norsaAmount);
 
             // CALCULATE DISBURSEMENTS
             $disbursed = (float) $source->funds->sum(function($f) use ($year, $month, $selectedMonths) {
@@ -229,26 +247,29 @@ class ReportController extends Controller
                 return 0.00;
             });
 
-            $unobligated = $adjustedAllotment - ($obligated + $pending);
+            // Net Unobligated Balance
+            $unobligated = $adjustedAllotment - ($netObligated + $pending);
 
             return [
                 'section_id'                 => $source->section_id,
                 'section_name'               => $sectionNames[$source->section_id] ?? 'General/Unassigned',
                 'source_name'                => $source->name,
-                'source_total'               => $grossAllotted, // Total Gross Fund Source
+                'source_total'               => $grossAllotted,
                 'total_pooled'               => $totalPooled,
                 'pooled_reasons'             => $pooledReasonsFormatted,
                 'has_pooled'                 => $totalPooled > 0,
-                'adjusted_allotment'         => $adjustedAllotment, // Net Allotment (Gross - Pooled)
-                'total_obligated'            => $obligated, 
+                'adjusted_allotment'         => $adjustedAllotment,
+                'gross_obligated'            => $grossObligated,
+                'total_norsa'                => $norsaAmount,
+                'total_obligated'            => $netObligated, // Net Obligation
                 'total_disbursed'            => $disbursed,
                 'total_pending'              => $pending, 
                 'total_savings'              => $savings,
                 'procurable_budget_total'    => $procurableBudget,
                 'non_procurable_budget_total'=> $nonProcurableBudget,
                 'total_unobligated'          => $unobligated > 0 ? $unobligated : 0,
-                'overall_oblig_rate'         => $adjustedAllotment > 0 ? ($obligated / $adjustedAllotment) * 100 : 0,
-                'overall_disb_rate'          => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
+                'overall_oblig_rate'         => $adjustedAllotment > 0 ? ($netObligated / $adjustedAllotment) * 100 : 0,
+                'overall_disb_rate'          => $netObligated > 0 ? ($disbursed / $netObligated) * 100 : 0,
             ];
         });
 
@@ -321,7 +342,7 @@ class ReportController extends Controller
 
         $sectionNames = \DB::connection('db_common')->table('tbl_section')->pluck('secname', 'secid');
 
-        // Eager load funds along with its COS salary disbursements & contract
+        // Eager load funds along with its COS salary disbursements, contract, and NORSA adjustments
         $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
             ->with(['activities', 'funds' => function ($q) use ($year, $month, $selectedMonths) {
                 
@@ -372,7 +393,7 @@ class ReportController extends Controller
 
                 })->whereNotIn('status', ['Cancelled', 'Rejected']);
 
-            }, 'funds.cosContract', 'funds.cosSalaryDisbursements']);
+            }, 'funds.cosContract', 'funds.cosSalaryDisbursements', 'funds.norsaAdjustments']); // Added norsaAdjustments
 
         if (!$isAdminOrBudget) {
             if ($isDivision) {
@@ -408,13 +429,29 @@ class ReportController extends Controller
                     if (!empty($selectedMonths) && !in_array($oDate->month, $selectedMonths)) return false;
                     return true;
                 });
-                $obligated = (float) $obligatedFunds->sum('obligation_amount');
+                $grossObligated = (float) $obligatedFunds->sum('obligation_amount');
+
+                // --- CALCULATE NORSA / SAVINGS ADJUSTMENTS ---
+                $norsaAmount = (float) $activityFunds->sum(function($f) use ($year, $month, $selectedMonths) {
+                    if (!$f->norsaAdjustments || $f->norsaAdjustments->count() === 0) return 0.00;
+                    
+                    return (float) $f->norsaAdjustments->filter(function($adj) use ($year, $month, $selectedMonths) {
+                        if (empty($adj->entry_date)) return true; // Include if date isn't set
+                        $eDate = \Carbon\Carbon::parse($adj->entry_date);
+                        if ($eDate->year != $year) return false;
+                        if ($month && $eDate->month != $month) return false;
+                        if (!empty($selectedMonths) && !in_array($eDate->month, $selectedMonths)) return false;
+                        return true;
+                    })->sum('amount');
+                });
+
+                // Net Obligation = Gross Obligated - NORSA Savings
+                $netObligated = max(0.00, $grossObligated - $norsaAmount);
 
                 // CALCULATE DISBURSEMENTS (COS Salary Breakdown vs. Regular Funds)
                 $disbursed = (float) $activityFunds->sum(function($f) use ($year, $month, $selectedMonths) {
                     $isCosSalary = ($f->remarks_salary === 'Imported HR COS Salary/Wages' || $f->cos_contract_id !== null);
 
-                    // Scenario A: COS Salary — Sum discrete items from cos_salary_disbursements table
                     if ($isCosSalary && $f->cosSalaryDisbursements && $f->cosSalaryDisbursements->count() > 0) {
                         return (float) $f->cosSalaryDisbursements->filter(function($cosDisb) use ($year, $month, $selectedMonths) {
                             if (empty($cosDisb->disbursement_date)) return false;
@@ -426,7 +463,6 @@ class ReportController extends Controller
                         })->sum('amount');
                     }
 
-                    // Scenario B: Non-COS Fund — Check parent fund disbursement date
                     if (empty($f->disbursement_date)) return 0.00;
                     $dDate = \Carbon\Carbon::parse($f->disbursement_date);
                     if ($dDate->year != $year) return 0.00;
@@ -436,7 +472,7 @@ class ReportController extends Controller
                     return (float) $f->disbursement_amount;
                 });
 
-                $unpaid = $obligated - $disbursed;
+                $unpaid = max(0.00, $netObligated - $disbursed);
 
                 $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
                 $pooled = (float) ($activity->pooled_amount ?? 0);
@@ -444,9 +480,9 @@ class ReportController extends Controller
 
                 $pending = (float) $activityFunds->filter(fn($f) => empty($f->obligation_date) && empty($f->disbursement_date) && $f->status !== 'Cancelled')->sum('amount');
 
-                $untouched = $activityBudgetNet - ($obligated + $pending);
+                $untouched = $activityBudgetNet - ($netObligated + $pending);
 
-                // --- STRICT COS SALARY SAVINGS ---
+                // COS Contract Completed Savings
                 $cosSalaryFunds = $activityFunds->filter(function ($fund) {
                     return $fund->remarks_salary === 'Imported HR COS Salary/Wages' || 
                         $fund->status === 'Disbursed (with savings)';
@@ -480,18 +516,20 @@ class ReportController extends Controller
                 }
 
                 return [
-                    'name'              => $activity->name,
-                    'has_cos_salary'    => $hasCosSalaryFunds,
-                    'net_budget'        => $activityBudgetNet,
-                    'pooled_amount'     => $pooled,
-                    'obligated_amount'  => $obligated,
-                    'disbursed_amount'  => $disbursed,
-                    'unpaid_amount'     => $unpaid,
-                    'savings_amount'    => $savings,
-                    'pending_amount'    => $pending,
-                    'untouched_amount'  => $untouched > 0 ? $untouched : 0,
-                    'obligation_rate'   => $activityBudgetNet > 0 ? ($obligated / $activityBudgetNet) * 100 : 0,
-                    'disbursement_rate' => $obligated > 0 ? ($disbursed / $obligated) * 100 : 0,
+                    'name'                 => $activity->name,
+                    'has_cos_salary'       => $hasCosSalaryFunds,
+                    'net_budget'           => $activityBudgetNet,
+                    'pooled_amount'        => $pooled,
+                    'gross_obligated'      => $grossObligated,
+                    'norsa_amount'         => $norsaAmount,
+                    'obligated_amount'     => $netObligated, // Net obligation after subtracting NORSA
+                    'disbursed_amount'     => $disbursed,
+                    'unpaid_amount'        => $unpaid,
+                    'savings_amount'       => $savings,
+                    'pending_amount'       => $pending,
+                    'untouched_amount'     => $untouched > 0 ? $untouched : 0,
+                    'obligation_rate'      => $activityBudgetNet > 0 ? ($netObligated / $activityBudgetNet) * 100 : 0,
+                    'disbursement_rate'    => $netObligated > 0 ? ($disbursed / $netObligated) * 100 : 0,
                 ];
             });
 
@@ -504,8 +542,10 @@ class ReportController extends Controller
                 'total_pending'         => $lineItems->sum('pending_amount'),
                 'total_unpaid'          => $lineItems->sum('unpaid_amount'), 
                 'total_savings'         => $lineItems->sum('savings_amount'),
+                'total_norsa'           => $lineItems->sum('norsa_amount'),
                 'total_untouched'       => $lineItems->sum('untouched_amount'),
                 'total_activity_budget' => $lineItems->sum('net_budget'),
+                'total_gross_obligated' => $lineItems->sum('gross_obligated'),
                 'total_obligated'       => $lineItems->sum('obligated_amount'),
                 'total_disbursed'       => $lineItems->sum('disbursed_amount'),
                 'overall_disb_rate'     => $lineItems->sum('obligated_amount') > 0 ? ($lineItems->sum('disbursed_amount') / $lineItems->sum('obligated_amount')) * 100 : 0,
@@ -596,7 +636,7 @@ class ReportController extends Controller
             ->table('tbl_section')
             ->pluck('secname', 'secid');
 
-        // 4. Build Source of Fund Query (Exact same filtering as getBudgetByLineItemData)
+        // 4. Build Source of Fund Query (Eager load norsaAdjustments)
         $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
             ->with(['activities', 'funds' => function ($query) use ($year, $month, $selectedMonths, $search) {
                 
@@ -658,7 +698,7 @@ class ReportController extends Controller
                         ->orWhere('manual_remarks', 'LIKE', "%{$search}%");
                     });
                 }
-            }, 'funds.cosContract', 'funds.creditors', 'funds.cosSalaryDisbursements']);
+            }, 'funds.cosContract', 'funds.creditors', 'funds.cosSalaryDisbursements', 'funds.norsaAdjustments']);
 
         // 5. TRANSACTION SCOPING & SECTION FILTER LOGIC
         if ($isAdminOrBudget || $isDivision) {
@@ -693,8 +733,27 @@ class ReportController extends Controller
                 $activities = $source->activities->map(function ($activity) use ($fundsByActivity, $year, $month, $selectedMonths) {
                     $activityFunds = $fundsByActivity->get($activity->id, collect());
 
-                    // Filter Obligations strictly matching date scope
-                    $obligatedFunds = $activityFunds->filter(function($f) use ($year, $month, $selectedMonths) {
+                    // Map individual transaction attributes including per-transaction NORSA amount
+                    $mappedTransactions = $activityFunds->map(function($f) use ($year, $month, $selectedMonths) {
+                        $txNorsa = 0.00;
+                        if ($f->norsaAdjustments && $f->norsaAdjustments->count() > 0) {
+                            $txNorsa = (float) $f->norsaAdjustments->filter(function($adj) use ($year, $month, $selectedMonths) {
+                                if (empty($adj->entry_date)) return true;
+                                $eDate = \Carbon\Carbon::parse($adj->entry_date);
+                                if ($eDate->year != $year) return false;
+                                if ($month && $eDate->month != $month) return false;
+                                if (!empty($selectedMonths) && !in_array($eDate->month, $selectedMonths)) return false;
+                                return true;
+                            })->sum('amount');
+                        }
+
+                        $f->norsa_amount = $txNorsa;
+                        $f->net_obligation_amount = max(0.00, (float) $f->obligation_amount - $txNorsa);
+                        return $f;
+                    });
+
+                    // Obligations
+                    $obligatedFunds = $mappedTransactions->filter(function($f) use ($year, $month, $selectedMonths) {
                         if (empty($f->obligation_date)) return false;
                         $oDate = \Carbon\Carbon::parse($f->obligation_date);
                         if ($oDate->year != $year) return false;
@@ -702,10 +761,12 @@ class ReportController extends Controller
                         if (!empty($selectedMonths) && !in_array($oDate->month, $selectedMonths)) return false;
                         return true;
                     });
-                    $obligated = (float) $obligatedFunds->sum('obligation_amount');
+                    $grossObligated = (float) $obligatedFunds->sum('obligation_amount');
+                    $norsaAmount    = (float) $mappedTransactions->sum('norsa_amount');
+                    $netObligated   = max(0.00, $grossObligated - $norsaAmount);
 
-                    // CALCULATE DISBURSEMENTS (COS Salary Breakdown vs. Regular Funds)
-                    $disbursed = (float) $activityFunds->sum(function($f) use ($year, $month, $selectedMonths) {
+                    // Disbursements
+                    $disbursed = (float) $mappedTransactions->sum(function($f) use ($year, $month, $selectedMonths) {
                         $isCosSalary = ($f->remarks_salary === 'Imported HR COS Salary/Wages' || $f->cos_contract_id !== null);
 
                         if ($isCosSalary && $f->cosSalaryDisbursements && $f->cosSalaryDisbursements->count() > 0) {
@@ -728,10 +789,10 @@ class ReportController extends Controller
                         return (float) $f->disbursement_amount;
                     });
 
-                    $pending = (float) $activityFunds->filter(fn($f) => empty($f->obligation_date) && empty($f->disbursement_date) && $f->status !== 'Cancelled')->sum('amount');
+                    $pending = (float) $mappedTransactions->filter(fn($f) => empty($f->obligation_date) && empty($f->disbursement_date) && $f->status !== 'Cancelled')->sum('amount');
 
-                    // --- STRICT COS SALARY SAVINGS ---
-                    $cosSalaryFunds = $activityFunds->filter(function ($fund) {
+                    // COS Savings
+                    $cosSalaryFunds = $mappedTransactions->filter(function ($fund) {
                         return $fund->remarks_salary === 'Imported HR COS Salary/Wages' || 
                             $fund->status === 'Disbursed (with savings)';
                     });
@@ -764,9 +825,9 @@ class ReportController extends Controller
                     }
 
                     $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
-                    $pooled = (float) ($activity->pooled_amount ?? 0);
-                    $activityBudgetNet = $activityBudgetGross - $pooled;
-                    $untouched = $activityBudgetNet - ($obligated + $pending);
+                    $pooled              = (float) ($activity->pooled_amount ?? 0);
+                    $activityBudgetNet   = $activityBudgetGross - $pooled;
+                    $untouched           = $activityBudgetNet - ($netObligated + $pending);
 
                     return [
                         'details'          => $activity,
@@ -775,17 +836,18 @@ class ReportController extends Controller
                         'pooled_amount'    => $pooled,
                         'is_pooled'        => $pooled > 0 || !empty($activity->is_pooled),
                         'pooled_remarks'   => $activity->pooled_remarks ?? $activity->pooled_reason ?? $activity->remarks ?? 'Budget pooled by management',
-                        'obligated'        => $obligated,
+                        'gross_obligated'  => $grossObligated,
+                        'norsa_amount'     => $norsaAmount,
+                        'obligated'        => $netObligated,
                         'disbursed'        => $disbursed,
                         'pending'          => $pending,
                         'savings'          => $savings,
                         'has_cos_salary'   => $hasCosSalaryFunds,
                         'untouched'        => $untouched > 0 ? $untouched : 0,
-                        'transactions'     => $activityFunds->values() 
+                        'transactions'     => $mappedTransactions->values() 
                     ];
                 });
 
-                // Filter out activities if search is active and no transactions matched
                 if (!empty($search)) {
                     $activities = $activities->filter(function($act) use ($search) {
                         return $act['transactions']->isNotEmpty() || 
@@ -806,7 +868,6 @@ class ReportController extends Controller
             ];
         })->filter(fn($section) => $section['sources']->isNotEmpty());
 
-        // 7. Handle Excel Export Request Trigger
         if ($request->has('export') && $request->export === 'excel') {
             $fileName = 'WFP_ByTransaction_Report_' . $year . '_' . now()->format('Ymd_His') . '.xlsx';
             return Excel::download(new ActivityTransactionReportExport($groupedReport), $fileName);

@@ -22,6 +22,7 @@
     
     /* Column Grouping Visual Dividers */
     .border-left-info { border-left: 3px solid #17a2b8 !important; }
+    .border-left-danger { border-left: 3px solid #dc3545 !important; }
     .border-left-success { border-left: 3px solid #28a745 !important; }
     .border-left-warning { border-left: 3px solid #ffc107 !important; }
     .border-left-teal { border-left: 3px solid #20c997 !important; }
@@ -146,17 +147,18 @@
         @foreach($sources as $source)
             <div class="card card-navy card-outline shadow-sm mb-4">
                 @php
-                    $netSourceBudget = $source['total_activity_budget']; 
-                    $totalObligated  = $source['total_obligated'] ?? 0;
-                    $totalDisbursed  = $source['total_disbursed'] ?? 0;
-                    $totalPending    = $source['total_pending'] ?? 0; 
-                    $totalSavings    = $source['total_savings'] ?? 0; 
+                    $netSourceBudget     = $source['total_activity_budget']; 
+                    $totalGrossObligated = $source['total_gross_obligated'] ?? 0;
+                    $totalNorsa          = $source['total_norsa'] ?? 0;
+                    $totalObligated      = $source['total_obligated'] ?? 0; // Net Obligation
+                    $totalDisbursed      = $source['total_disbursed'] ?? 0;
+                    $totalPending        = $source['total_pending'] ?? 0; 
+                    $totalSavings        = $source['total_savings'] ?? 0; 
                     
-                    $totalUnpaidObligations = $totalObligated - $totalDisbursed; 
+                    $totalUnpaidObligations = max(0, $totalObligated - $totalDisbursed); 
 
                     $totalUntouched    = $source['total_untouched'] ?? 0;
                     $unassignedBalance = $source['unassigned_balance'] ?? 0;
-                    $totalUnobligated  = $totalUntouched + $unassignedBalance;
 
                     $overallObligRate = $netSourceBudget > 0 ? ($totalObligated / $netSourceBudget) * 100 : 0;
                     $overallDisbRate  = $totalObligated > 0 ? ($totalDisbursed / $totalObligated) * 100 : 0;
@@ -179,9 +181,6 @@
                         </div>
 
                         <div class="card-tools d-flex align-items-center">
-                            {{-- <button type="button" class="btn btn-xs btn-outline-primary mr-2 btn-copy-card">
-                                <i class="fas fa-camera mr-1"></i> Copy Summary
-                            </button> --}}
                             <button type="button" class="btn btn-tool btn-xs" data-card-widget="collapse">
                                 <i class="fas fa-minus"></i>
                             </button>
@@ -200,27 +199,27 @@
                             </div>
 
                             <div class="col-md-2 text-center border-right">
-                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold">Obligation Rate</span>
-                                <h6 class="font-weight-bold mb-0 text-navy">{{ number_format($overallObligRate, 1) }}%</h6>
-                                <small class="text-muted" style="font-size: 0.6rem;">Obligations / Net Budget</small>
+                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold text-info">Net Obligations</span>
+                                <h6 class="font-weight-bold mb-0 text-info financial-number">₱{{ number_format($totalObligated, 2) }}</h6>
+                                <small class="text-muted" style="font-size: 0.6rem;">Gross (₱{{ number_format($totalGrossObligated, 2) }}) - NORSA</small>
                             </div>
 
                             <div class="col-md-2 text-center border-right">
-                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold">Disbursement Rate</span>
-                                <h6 class="font-weight-bold mb-0 text-navy">{{ number_format($overallDisbRate, 1) }}%</h6>
-                                <small class="text-muted" style="font-size: 0.6rem;">Disbursements / Obligations</small>
+                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold text-danger">NORSA</span>
+                                <h6 class="font-weight-bold mb-0 text-danger financial-number">₱{{ number_format($totalNorsa, 2) }}</h6>
+                                <small class="text-muted" style="font-size: 0.6rem;">Obligation Reductions</small>
+                            </div>
+
+                            <div class="col-md-2 text-center border-right">
+                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold text-success">Disbursements</span>
+                                <h6 class="font-weight-bold mb-0 text-success financial-number">₱{{ number_format($totalDisbursed, 2) }}</h6>
+                                <small class="text-muted" style="font-size: 0.6rem;">Disb. Rate: {{ number_format($overallDisbRate, 1) }}%</small>
                             </div>
 
                             <div class="col-md-2 text-center border-right">
                                 <span class="text-uppercase text-xs text-muted d-block font-weight-bold text-warning">Pending Transactions</span>
                                 <h6 class="font-weight-bold mb-0 text-warning financial-number">₱{{ number_format($totalPending, 2) }}</h6>
-                                <small class="text-muted" style="font-size: 0.6rem;">Routed from the Unit/Section</small>
-                            </div>
-
-                            <div class="col-md-2 text-center border-right">
-                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold text-success">Unpaid Obligations</span>
-                                <h6 class="font-weight-bold mb-0 text-success financial-number">₱{{ number_format($totalUnpaidObligations, 2) }}</h6>
-                                <small class="text-muted" style="font-size: 0.6rem;">Obligations - Disbursements</small>
+                                <small class="text-muted" style="font-size: 0.6rem;">Routed from Unit/Section</small>
                             </div>
 
                             <div class="col-md-2 text-center">
@@ -236,13 +235,15 @@
                         <table class="table table-sm table-hover table-sticky mb-0 border-0">
                             <thead>
                                 <tr class="text-muted text-uppercase">
-                                    <th class="pl-4 py-2" style="width: 22%;">Activity Details</th>
+                                    <th class="pl-4 py-2" style="width: 20%;">Activity Details</th>
                                     <th class="text-right py-2">Allotted Budget</th>
-                                    <th class="text-right py-2 bg-light border-left-info">Obligated</th>
+                                    <th class="text-right py-2 bg-light border-left-info">Gross Obligated</th>
+                                    <th class="text-right py-2 text-danger border-left-danger">NORSA</th>
+                                    <th class="text-right py-2 bg-light border-left-info text-info">Net Obligated</th>
                                     <th class="text-center py-2 bg-light">Oblig. %</th>
                                     <th class="text-right py-2 border-left-success">Disbursed</th>
                                     <th class="text-center py-2">Disb. %</th>
-                                    <th class="text-right py-2 border-left-success text-success">Unpaid Obligations</th>
+                                    <th class="text-right py-2 border-left-success text-success">Unpaid Oblig.</th>
                                     <th class="text-right py-2 border-left-teal text-teal">Savings (COS)</th>
                                     <th class="text-right py-2 border-left-warning bg-light text-warning">Pending Trans.</th>
                                     <th class="text-right py-2 border-left-primary bg-light text-primary">Unobligated</th>
@@ -250,6 +251,10 @@
                             </thead>
                             <tbody>
                                 @php
+                                    $footerGrossOb   = 0;
+                                    $footerNorsa     = 0;
+                                    $footerNetOb     = 0;
+                                    $footerDisbursed = 0;
                                     $footerPending   = 0;
                                     $footerUnpaid    = 0;
                                     $footerSavings   = 0;
@@ -258,18 +263,24 @@
 
                                 @forelse($source['line_items'] as $item)
                                     @php
-                                        $netBudget = $item['net_budget'];
-                                        $obligated = $item['obligated_amount'];
-                                        $disbursed = $item['disbursed_amount'];
-                                        $pending   = $item['pending_amount']; 
-                                        $savings   = $item['savings_amount'] ?? 0;
+                                        $netBudget   = $item['net_budget'];
+                                        $grossOb     = $item['gross_obligated'] ?? $item['obligated_amount'];
+                                        $norsa       = $item['norsa_amount'] ?? 0;
+                                        $netOb       = $item['obligated_amount'];
+                                        $disbursed   = $item['disbursed_amount'];
+                                        $pending     = $item['pending_amount']; 
+                                        $savings     = $item['savings_amount'] ?? 0;
                                         
-                                        $rowUnpaid = $obligated - $disbursed;
-                                        $pooled    = $item['pooled_amount'] ?? 0; 
+                                        $rowUnpaid   = max(0, $netOb - $disbursed);
+                                        $pooled      = $item['pooled_amount'] ?? 0; 
                                         
-                                        $untouched = $item['untouched_amount'] ?? ($netBudget - ($obligated + $pending));
-                                        $untouched = $untouched > 0 ? $untouched : 0;
+                                        $untouched   = $item['untouched_amount'] ?? ($netBudget - ($netOb + $pending));
+                                        $untouched   = $untouched > 0 ? $untouched : 0;
 
+                                        $footerGrossOb   += $grossOb;
+                                        $footerNorsa     += $norsa;
+                                        $footerNetOb     += $netOb;
+                                        $footerDisbursed += $disbursed;
                                         $footerPending   += $pending;
                                         $footerUnpaid    += $rowUnpaid;
                                         $footerSavings   += $savings;
@@ -292,8 +303,23 @@
                                             @endif
                                         </td>
 
+                                        {{-- GROSS OBLIGATED --}}
+                                        <td class="text-right align-middle font-weight-bold border-left-info financial-number bg-soft-light">
+                                            ₱{{ number_format($grossOb, 2) }}
+                                        </td>
+
+                                        {{-- NORSA SAVINGS --}}
+                                        <td class="text-right align-middle text-danger font-weight-bold border-left-danger financial-number">
+                                            @if($norsa > 0)
+                                                (₱{{ number_format($norsa, 2) }})
+                                            @else
+                                                <span class="text-muted font-weight-normal">-</span>
+                                            @endif
+                                        </td>
+
+                                        {{-- NET OBLIGATED --}}
                                         <td class="text-right align-middle text-info font-weight-bold border-left-info financial-number bg-soft-light">
-                                            ₱{{ number_format($obligated, 2) }}
+                                            ₱{{ number_format($netOb, 2) }}
                                         </td>
 
                                         <td class="text-center align-middle bg-soft-light">
@@ -335,7 +361,7 @@
                                     </tr>
                                 @empty
                                     <tr>
-                                        <td colspan="10" class="text-center py-4 text-muted">
+                                        <td colspan="12" class="text-center py-4 text-muted">
                                             <i class="fas fa-folder-open mr-1"></i> No Line Item Activities Available
                                         </td>
                                     </tr>
@@ -347,11 +373,15 @@
                                     <tr>
                                         <td class="text-center text-navy py-3">SUMMARY TOTALS</td>
                                         <td class="text-right financial-number">₱{{ number_format($netSourceBudget, 2) }}</td>
-                                        <td class="text-right text-info border-left-info financial-number">₱{{ number_format($totalObligated, 2) }}</td>
+                                        <td class="text-right border-left-info financial-number">₱{{ number_format($footerGrossOb, 2) }}</td>
+                                        <td class="text-right text-danger border-left-danger financial-number">
+                                            {{ $footerNorsa > 0 ? '(₱' . number_format($footerNorsa, 2) . ')' : '-' }}
+                                        </td>
+                                        <td class="text-right text-info border-left-info financial-number">₱{{ number_format($footerNetOb, 2) }}</td>
                                         <td class="text-center">
                                             <span class="badge badge-success">{{ number_format($overallObligRate, 1) }}%</span>
                                         </td>
-                                        <td class="text-right text-success border-left-success financial-number">₱{{ number_format($totalDisbursed, 2) }}</td>
+                                        <td class="text-right text-success border-left-success financial-number">₱{{ number_format($footerDisbursed, 2) }}</td>
                                         <td class="text-center">
                                             <span class="badge badge-success">{{ number_format($overallDisbRate, 1) }}%</span>
                                         </td>

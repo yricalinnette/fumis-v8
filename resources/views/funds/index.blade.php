@@ -562,6 +562,15 @@
                                     {{ $firstStatus }}
                                 </span>
 
+                                {{-- NORSA Savings Badge (Merged View) --}}
+                                @if(isset($fund->has_norsa) && $fund->has_norsa)
+                                    <div class="mt-1">
+                                        <span class="badge badge-danger shadow-sm" title="This transaction has NORSA adjustments">
+                                            <i class="fas fa-file-invoice-dollar mr-1"></i> NORSA Savings (₱{{ number_format($fund->total_norsa, 2) }})
+                                        </span>
+                                    </div>
+                                @endif
+
                                 {{-- COS Contract Duration Badge --}}
                                 @if(isset($fund->remarks_salary) && $fund->remarks_salary === 'Imported HR COS Salary/Wages' && isset($fund->contract))
                                     <div class="mt-1">
@@ -626,6 +635,13 @@
                                         {{ $item->status }}
                                     </span>
 
+                                    {{-- NORSA SAVINGS BADGE TAG --}}
+                                    @if(isset($item->has_norsa) && $item->has_norsa)
+                                        <span class="badge badge-danger shadow-sm ml-1" title="NORSA savings adjustment recorded">
+                                            <i class="fas fa-file-invoice-dollar mr-1"></i> NORSA: (₱{{ number_format($item->norsa_amount, 2) }})
+                                        </span>
+                                    @endif
+
                                     {{-- COS Contract Duration Badge --}}
                                     @if(isset($item->remarks_salary) && $item->remarks_salary === 'Imported HR COS Salary/Wages' && isset($item->contract))
                                         <div class="mt-1">
@@ -650,8 +666,18 @@
                                                 </div>
                                             @else
                                                 @if($item->obligation_date)
-                                                    <div class="text-primary">
+                                                    <div class="text-primary font-weight-bold">
                                                         <i class="far fa-calendar-check mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($item->obligation_date)->format('M d, Y') }}
+                                                    </div>
+                                                @endif
+
+                                                {{-- NET vs GROSS OBLIGATION BREAKDOWN (WHEN NORSA APPLIES) --}}
+                                                @if($item->has_norsa)
+                                                    <div class="text-info font-weight-bold mt-0.5" style="font-size: 0.72rem;">
+                                                        Net Obligation: ₱{{ number_format($item->net_obligation_amount, 2) }}
+                                                    </div>
+                                                    <div class="text-muted" style="font-size: 0.65rem;">
+                                                        (Gross: ₱{{ number_format($item->obligation_amount, 2) }})
                                                     </div>
                                                 @endif
                                             @endif
@@ -726,7 +752,7 @@
                                     </div>
                                 </div>
                             @endforeach
-                        @endif
+                        @endif 
                     </td>
 
                     <td class="text-center">

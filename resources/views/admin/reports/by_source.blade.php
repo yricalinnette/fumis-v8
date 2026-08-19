@@ -9,6 +9,7 @@
     
     /* Column Accent Borders */
     .border-left-info { border-left: 3px solid #17a2b8 !important; }
+    .border-left-danger { border-left: 3px solid #dc3545 !important; }
     .border-left-success { border-left: 3px solid #28a745 !important; }
     .border-left-warning { border-left: 3px solid #ffc107 !important; }
     .border-left-teal { border-left: 3px solid #20c997 !important; }
@@ -161,12 +162,13 @@
                 <table class="table table-sm table-hover table-sticky mb-0 border-0">
                     <thead>
                         <tr class="text-muted text-uppercase">
-                            <th class="pl-4 py-2" style="width: 18%;">Fund Source</th>
+                            <th class="pl-4 py-2" style="width: 16%;">Fund Source</th>
                             <th class="text-right py-2">Total Fund Source</th>
                             <th class="text-center py-2">Procurable</th>
                             <th class="text-center py-2">Non-Procurable</th>
                             <th class="text-right py-2">Adjusted Allotment</th>
-                            <th class="text-right py-2 bg-light border-left-info">Obligated</th>
+                            <th class="text-right py-2 bg-light border-left-info">Net Obligated</th>
+                            <th class="text-right py-2 border-left-danger text-danger">NORSA</th>
                             <th class="text-center py-2 bg-light">Oblig. %</th>
                             <th class="text-right py-2 border-left-success">Disbursed</th>
                             <th class="text-center py-2">Disb. %</th>
@@ -179,21 +181,25 @@
                     <tbody>
                         @php
                             $grandTotals = [
-                                'gross_allotted' => 0, 'pooled' => 0, 'adjusted_allotment' => 0, 'obligated' => 0, 
-                                'disbursed' => 0, 'pending' => 0, 'savings' => 0, 'procurable' => 0, 'non_procurable' => 0
+                                'gross_allotted' => 0, 'pooled' => 0, 'adjusted_allotment' => 0, 
+                                'gross_obligated' => 0, 'norsa' => 0, 'obligated' => 0, 
+                                'disbursed' => 0, 'pending' => 0, 'savings' => 0, 
+                                'procurable' => 0, 'non_procurable' => 0
                             ];
                         @endphp
 
                         @forelse($groupedReport as $sectionName => $sources)
                             @php
                                 $sectionTotals = [
-                                    'gross_allotted' => 0, 'pooled' => 0, 'adjusted_allotment' => 0, 'obligated' => 0, 
-                                    'disbursed' => 0, 'pending' => 0, 'savings' => 0, 'procurable' => 0, 'non_procurable' => 0
+                                    'gross_allotted' => 0, 'pooled' => 0, 'adjusted_allotment' => 0, 
+                                    'gross_obligated' => 0, 'norsa' => 0, 'obligated' => 0, 
+                                    'disbursed' => 0, 'pending' => 0, 'savings' => 0, 
+                                    'procurable' => 0, 'non_procurable' => 0
                                 ];
                             @endphp
 
                             <tr class="section-header-row">
-                                <td colspan="13" class="pl-4 py-2">
+                                <td colspan="14" class="pl-4 py-2">
                                     <i class="fas fa-building mr-2 text-secondary"></i>
                                     <span>{{ $sectionName }}</span>
                                 </td>
@@ -201,15 +207,17 @@
 
                             @foreach($sources as $data)
                                 @php
-                                    $currentGross     = $data['source_total'];
-                                    $currentPooled    = $data['total_pooled'] ?? 0;
-                                    $currentAdjusted  = $data['adjusted_allotment'];
-                                    $currentObligated = $data['total_obligated'];
-                                    $currentDisbursed = $data['total_disbursed'];
-                                    $currentPending   = $data['total_pending'];
-                                    $currentSavings   = $data['total_savings'] ?? 0;
-                                    $budgetP          = $data['procurable_budget_total']; 
-                                    $budgetNP         = $data['non_procurable_budget_total'];
+                                    $currentGross      = $data['source_total'];
+                                    $currentPooled     = $data['total_pooled'] ?? 0;
+                                    $currentAdjusted   = $data['adjusted_allotment'];
+                                    $currentGrossOblig = $data['gross_obligated'] ?? $data['total_obligated'];
+                                    $currentNorsa      = $data['total_norsa'] ?? 0;
+                                    $currentObligated  = $data['total_obligated'];
+                                    $currentDisbursed  = $data['total_disbursed'];
+                                    $currentPending    = $data['total_pending'];
+                                    $currentSavings    = $data['total_savings'] ?? 0;
+                                    $budgetP           = $data['procurable_budget_total']; 
+                                    $budgetNP          = $data['non_procurable_budget_total'];
                                     
                                     $percP  = $currentAdjusted > 0 ? ($budgetP / $currentAdjusted) * 100 : 0;
                                     $percNP = $currentAdjusted > 0 ? ($budgetNP / $currentAdjusted) * 100 : 0;
@@ -218,26 +226,30 @@
                                     $unobligated = $data['total_unobligated'];
 
                                     // Update Section Totals
-                                    $sectionTotals['gross_allotted']    += $currentGross;
-                                    $sectionTotals['pooled']            += $currentPooled;
-                                    $sectionTotals['adjusted_allotment']+= $currentAdjusted;
-                                    $sectionTotals['obligated']         += $currentObligated;
-                                    $sectionTotals['disbursed']         += $currentDisbursed;
-                                    $sectionTotals['pending']           += $currentPending;
-                                    $sectionTotals['savings']           += $currentSavings;
-                                    $sectionTotals['procurable']        += $budgetP;
-                                    $sectionTotals['non_procurable']    += $budgetNP;
+                                    $sectionTotals['gross_allotted']     += $currentGross;
+                                    $sectionTotals['pooled']             += $currentPooled;
+                                    $sectionTotals['adjusted_allotment'] += $currentAdjusted;
+                                    $sectionTotals['gross_obligated']    += $currentGrossOblig;
+                                    $sectionTotals['norsa']              += $currentNorsa;
+                                    $sectionTotals['obligated']          += $currentObligated;
+                                    $sectionTotals['disbursed']          += $currentDisbursed;
+                                    $sectionTotals['pending']            += $currentPending;
+                                    $sectionTotals['savings']            += $currentSavings;
+                                    $sectionTotals['procurable']         += $budgetP;
+                                    $sectionTotals['non_procurable']     += $budgetNP;
 
                                     // Update Grand Totals
-                                    $grandTotals['gross_allotted']    += $currentGross;
-                                    $grandTotals['pooled']            += $currentPooled;
-                                    $grandTotals['adjusted_allotment']+= $currentAdjusted;
-                                    $grandTotals['obligated']         += $currentObligated;
-                                    $grandTotals['disbursed']         += $currentDisbursed;
-                                    $grandTotals['pending']           += $currentPending;
-                                    $grandTotals['savings']           += $currentSavings;
-                                    $grandTotals['procurable']        += $budgetP;
-                                    $grandTotals['non_procurable']    += $budgetNP;
+                                    $grandTotals['gross_allotted']     += $currentGross;
+                                    $grandTotals['pooled']             += $currentPooled;
+                                    $grandTotals['adjusted_allotment'] += $currentAdjusted;
+                                    $grandTotals['gross_obligated']    += $currentGrossOblig;
+                                    $grandTotals['norsa']              += $currentNorsa;
+                                    $grandTotals['obligated']          += $currentObligated;
+                                    $grandTotals['disbursed']          += $currentDisbursed;
+                                    $grandTotals['pending']            += $currentPending;
+                                    $grandTotals['savings']            += $currentSavings;
+                                    $grandTotals['procurable']         += $budgetP;
+                                    $grandTotals['non_procurable']     += $budgetNP;
 
                                     $obligClass = $data['overall_oblig_rate'] >= 90 ? 'badge-success' : ($data['overall_oblig_rate'] >= 50 ? 'badge-info' : 'badge-warning');
                                 @endphp
@@ -264,7 +276,7 @@
                                         <small class="d-block text-muted financial-number" style="font-size: 0.65rem;">₱{{ number_format($budgetNP, 2) }}</small>
                                     </td>
 
-                                    {{-- Adjusted Allotment (Gross - Pooled) with Hover Tooltip for Reasons --}}
+                                    {{-- Adjusted Allotment --}}
                                     <td class="text-right align-middle financial-number">
                                         <div class="font-weight-bold">₱{{ number_format($currentAdjusted, 2) }}</div>
                                         
@@ -281,9 +293,23 @@
                                         @endif
                                     </td>
                                     
-                                    {{-- Obligated --}}
+                                    {{-- Net Obligated --}}
                                     <td class="text-right align-middle financial-number text-info font-weight-bold border-left-info bg-soft-light">
-                                        ₱{{ number_format($currentObligated, 2) }}
+                                        <div>₱{{ number_format($currentObligated, 2) }}</div>
+                                        @if($currentNorsa > 0)
+                                            <small class="d-block text-muted font-weight-normal" style="font-size: 0.6rem;">
+                                                (Original: ₱{{ number_format($currentGrossOblig, 2) }})
+                                            </small>
+                                        @endif
+                                    </td>
+
+                                    {{-- NORSA Savings --}}
+                                    <td class="text-right align-middle financial-number text-danger border-left-danger">
+                                        @if($currentNorsa > 0)
+                                            (₱{{ number_format($currentNorsa, 2) }})
+                                        @else
+                                            <span class="text-muted font-weight-normal">-</span>
+                                        @endif
                                     </td>
 
                                     {{-- Obligated % --}}
@@ -301,7 +327,7 @@
                                         <span class="badge badge-light border">{{ number_format($data['overall_disb_rate'], 1) }}%</span>
                                     </td>
 
-                                    {{-- Savings --}}
+                                    {{-- Savings (COS) --}}
                                     <td class="text-right align-middle border-left-teal financial-number {{ $currentSavings > 0 ? 'text-teal font-weight-bold' : 'text-muted' }}">
                                         @if($currentSavings > 0)
                                             ₱{{ number_format($currentSavings, 2) }}
@@ -344,6 +370,13 @@
                                     @endif
                                 </td>
                                 <td class="text-right align-middle financial-number border-left-info text-info">₱{{ number_format($sectionTotals['obligated'], 2) }}</td>
+                                <td class="text-right align-middle financial-number border-left-danger text-danger">
+                                    @if($sectionTotals['norsa'] > 0)
+                                        (₱{{ number_format($sectionTotals['norsa'], 2) }})
+                                    @else
+                                        <span class="text-muted font-weight-normal">-</span>
+                                    @endif
+                                </td>
                                 <td class="text-center align-middle"><span class="badge badge-info">{{ number_format($secObligRate, 1) }}%</span></td>
                                 <td class="text-right align-middle financial-number border-left-success text-success">₱{{ number_format($sectionTotals['disbursed'], 2) }}</td>
                                 <td class="text-center align-middle"><span class="badge badge-light border">{{ number_format($secDisbRate, 1) }}%</span></td>
@@ -354,7 +387,7 @@
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="13" class="text-center py-5 text-muted">
+                                <td colspan="14" class="text-center py-5 text-muted">
                                     <i class="fas fa-folder-open fa-2x mb-2 d-block"></i>
                                     No records found matching the active filter configuration.
                                 </td>
@@ -380,6 +413,13 @@
                                     @endif
                                 </td>
                                 <td class="text-right text-info align-middle financial-number border-left-info">₱{{ number_format($grandTotals['obligated'], 2) }}</td>
+                                <td class="text-right text-danger align-middle financial-number border-left-danger">
+                                    @if($grandTotals['norsa'] > 0)
+                                        (₱{{ number_format($grandTotals['norsa'], 2) }})
+                                    @else
+                                        <span class="text-muted font-weight-normal">-</span>
+                                    @endif
+                                </td>
                                 <td class="text-center align-middle bg-light"><span class="badge badge-success">{{ number_format($gtObligRate, 1) }}%</span></td>
                                 <td class="text-right text-success align-middle financial-number border-left-success">₱{{ number_format($grandTotals['disbursed'], 2) }}</td>
                                 <td class="text-center align-middle"><span class="badge badge-success">{{ number_format($gtDisbRate, 1) }}%</span></td>
