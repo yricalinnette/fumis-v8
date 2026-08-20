@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
     <style>
         body { font-family: Arial, sans-serif; font-size: 10px; margin: 0; padding: 0; }
         .header-table, .main-table { width: 100%; border-collapse: collapse; }
@@ -199,7 +200,6 @@
                             <td class="text-left" style="vertical-align: top;">{{ $activity->budgetLineItem->budget_line_item_name ?? 'N/A' }}</td>
                             <td class="text-left" style="vertical-align: top;">{{ $activity->objective }}</td>
                             
-                            {{-- FIXED: Added style="white-space: pre-wrap; vertical-align: top;" to preserve Excel spaces, indents, and newlines --}}
                             <td class="text-left" style="white-space: pre-wrap; vertical-align: top;">{{ $activity->name }}</td>
                             
                             <td class="text-center" style="vertical-align: top;">{{ \Carbon\Carbon::parse($activity->start_date)->format('j M Y') }}</td>
@@ -229,14 +229,14 @@
 
                 <tr class="subtotal-row">
                     <td colspan="9" class="text-right">Sub-total {{ str_replace(['A. ', 'B. ', 'C. '], '', $label) }}</td>
-                    <td class="text-right">₱{{ number_format($subTotal, 2) }}</td>
+                    <td class="text-right">{{ number_format($subTotal, 2) }}</td>
                     <td colspan="2"></td>
                 </tr>
             @endforeach
 
             <tr class="grandtotal-row">
                 <td colspan="9" class="text-right">Total Cost (Strategic + Core + Support) Functions</td>
-                <td class="text-right">₱{{ number_format($grandTotal, 2) }}</td>
+                <td class="text-right">{{ number_format($grandTotal, 2) }}</td>
                 <td colspan="2"></td>
             </tr>
         </tbody>

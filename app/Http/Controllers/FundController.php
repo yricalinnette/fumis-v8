@@ -73,16 +73,17 @@ class FundController extends Controller
 
         // Eager-load norsaAdjustments along with other relations
         $fundsCollection = $baseQuery->with([
-                'fundSource', 
-                'activity',
-                'cosContract', 
-                'creditors.employeeDetail',
-                'norsaAdjustments' // Eager loaded NORSA adjustments
-            ])
-            ->whereNotNull('dtrack_no')
-            ->where('dtrack_no', '!=', '')
-            ->orderBy('created_at', 'desc')
-            ->get();
+            'fundSource', 
+            'activity',
+            'cosContract', 
+            'creditors.employeeDetail',
+            'norsaAdjustments',
+            'cosSalaryDisbursements' // <--- ADD THIS LINE
+        ])
+        ->whereNotNull('dtrack_no')
+        ->where('dtrack_no', '!=', '')
+        ->orderBy('created_at', 'desc')
+        ->get();
 
         // --- 2. EMPLOYEE LOGIC ---
         $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
@@ -241,6 +242,7 @@ class FundController extends Controller
                 'remarks_salary'      => $first->remarks_salary,
                 'disbursed_months'    => $first->disbursed_months,
                 'contract'            => $first->cosContract,
+                'cos_disbursements'   => $first->cosSalaryDisbursements,
                 'source_names'        => $group->pluck('fundSource.name')->filter()->unique()->implode('<br>'),
                 'activity_names'      => $group->pluck('activity.name')->filter()->unique()->implode('<br>'),
                 'total_norsa'         => $groupTotalNorsa,
@@ -266,6 +268,7 @@ class FundController extends Controller
                         'remarks_salary'      => $item->remarks_salary,
                         'disbursed_months'    => $item->disbursed_months,
                         'contract'            => $item->cosContract,
+                        'cos_disbursements'   => $item->cosSalaryDisbursements,
                         'creditor'            => $item->creditor,
                         'transaction_type_id' => $item->transaction_type_id,
                         'obligation_serial'   => $item->obligation_serial,
@@ -863,17 +866,56 @@ class FundController extends Controller
                         $isCosSalary = true;
                     }
 
-                    // Process disbursements and separate negative NORSA obligation entries
                     $this->processApiRowData($rowData, $tracker, $particularsRow, $isCosSalary);
                 }
 
-                // 2. SAVE ACCUMULATED TOTALS, DISBURSEMENTS, & NORSA ADJUSTMENTS TO DATABASE
+                // 2. SAVE ACCUMULATED TOTALS & DETERMINE STATUS
                 if ($tracker['found']) {
+                    
+                    $disbursedMonthCount = count($tracker['disbursements'] ?? []);
+                    $contractId = null;
+                    $contractDetails = [];
+
+                    // Ensure Contract is Generated to determine total months needed
+                    if ($isCosSalary) {
+                        $contractDetails = $this->parseCosParticulars($particulars, $creditorName);
+                        if (!empty($contractDetails['start_date']) && !empty($contractDetails['end_date'])) {
+                            $contractStatus = ($disbursedMonthCount >= $contractDetails['total_months'] && $contractDetails['total_months'] > 0) 
+                                ? 'Completed' 
+                                : 'Active';
+
+                            $contract = \App\Models\CosContract::firstOrCreate(
+                                [
+                                    'creditor_name' => $creditorName,
+                                    'start_date'    => $contractDetails['start_date'],
+                                    'end_date'      => $contractDetails['end_date'],
+                                ],
+                                [
+                                    'total_months'          => $contractDetails['total_months'],
+                                    'monthly_remuneration'  => $contractDetails['monthly_remuneration'],
+                                    'premium_amount'        => $contractDetails['premium_amount'],
+                                    'total_contract_amount' => $contractDetails['total_contract_amount'],
+                                    'status'                => $contractStatus,
+                                ]
+                            );
+                            $contractId = $contract->id;
+                        }
+                    }
+
                     if ($tracker['netDisb'] > 0) {
-                        if ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) {
-                            $status = 'Disbursed (with savings)';
+                        if ($isCosSalary && !empty($contractDetails['total_months'])) {
+                            // Verify Partial vs Completed COS Disbursement
+                            if ($disbursedMonthCount < $contractDetails['total_months']) {
+                                $status = 'Disbursed (Partially)';
+                            } else {
+                                $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) 
+                                    ? 'Disbursed (with savings)' 
+                                    : 'Completed';
+                            }
                         } else {
-                            $status = 'Disbursed';
+                            $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) 
+                                ? 'Disbursed (with savings)' 
+                                : 'Disbursed';
                         }
                         $displayAmount = $tracker['netDisb'];
                     } else {
@@ -918,6 +960,8 @@ class FundController extends Controller
                             'status_date'         => now(),
                             'remarks'             => 'Imported HR COS Salary/Wages',
                             'remarks_salary'      => 'Imported HR COS Salary/Wages',
+                            'cos_contract_id'     => $contractId,
+                            'disbursed_months'    => $disbursedMonthCount,
                             'secid'               => auth()->user()->secid ?? null,
                         ]);
 
@@ -929,7 +973,7 @@ class FundController extends Controller
                             'status' => $status
                         ];
                     } elseif ($existingFund) {
-                        $existingFund->update([
+                        $updateData = [
                             'creditor'            => $creditorName ?: $existingFund->creditor,
                             'obligation_serial'   => (!empty($sheetSerial)) ? $sheetSerial : $existingFund->obligation_serial,
                             'obligation_amount'   => $tracker['netOb'],
@@ -938,8 +982,16 @@ class FundController extends Controller
                             'disbursement_date'   => $tracker['latestDisbDate'] ?: $existingFund->disbursement_date,
                             'status'              => $status,
                             'status_date'         => now()
-                        ]);
+                        ];
 
+                        // FIX: Ensure contract ID and disbursed months are updated for COS salaries on single row sync
+                        if ($isCosSalary) {
+                            $updateData['cos_contract_id']  = $contractId;
+                            $updateData['disbursed_months'] = $disbursedMonthCount;
+                            $updateData['remarks_salary']   = 'Imported HR COS Salary/Wages';
+                        }
+
+                        $existingFund->update($updateData);
                         $targetFund = $existingFund;
 
                         $syncedDetails[] = [
@@ -951,7 +1003,6 @@ class FundController extends Controller
                         ];
                     }
 
-                    // Sync Monthly Disbursements & NORSA Savings Entries into DB Tables
                     if ($targetFund) {
                         $this->syncDisbursementRecords($targetFund, $tracker['disbursements'], $isCosSalary);
                         $this->syncNorsaAdjustments($targetFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
@@ -1076,28 +1127,125 @@ class FundController extends Controller
                 $rows = $response->getValues();
 
                 if (!empty($rows)) {
+                    // Group rows by DTrack or Serial to aggregate multi-row disbursements properly
+                    $groupedRows = [];
                     foreach ($rows as $rowIndex => $rowData) {
                         $sheetDtrack  = isset($rowData[0])  ? trim((string)$rowData[0])  : '';
                         $sheetSerial  = isset($rowData[3])  ? trim((string)$rowData[3])  : '';
-                        $allotment    = isset($rowData[5])  ? trim((string)$rowData[5])  : '';
-                        $creditorName = isset($rowData[10]) ? trim((string)$rowData[10]) : null;
-                        $particulars  = isset($rowData[11]) ? trim((string)$rowData[11]) : '';
+                        if (empty($sheetDtrack) && empty($sheetSerial)) continue;
+                        
+                        $groupKey = !empty($sheetSerial) ? $sheetSerial : $sheetDtrack;
+                        $groupedRows[$groupKey][] = $rowData;
+                    }
 
-                        if (empty($sheetDtrack) && empty($sheetSerial) && empty($particulars)) continue;
+                    foreach ($groupedRows as $groupKey => $groupRows) {
+                        $tracker = [
+                            'netOb'          => 0.0, 
+                            'netDisb'        => 0.0, 
+                            'latestObDate'   => null, 
+                            'latestDisbDate' => null, 
+                            'found_serial'   => null, 
+                            'found'          => true,
+                            'disbursements'  => [],
+                            'norsa_entries'  => []
+                        ];
 
-                        $cleanAllotment   = strtolower(preg_replace('/\s+/', ' ', $allotment));
-                        $cleanParticulars = strtolower(preg_replace('/\s+/', ' ', $particulars));
+                        $creditorName = null;
+                        $particulars  = '';
+                        $sheetSerial  = null;
+                        $sheetDtrack  = '';
+                        $isCosSalary  = false;
+                        $isCapitalOutlay = false;
 
-                        $isOtherProfServ = (stripos($cleanAllotment, 'other professional services') !== false);
-                        $isWages         = (stripos($cleanParticulars, 'wages') !== false);
-                        $isCosSalary     = $isOtherProfServ && $isWages;
+                        foreach ($groupRows as $rowData) {
+                            $sheetDtrack  = isset($rowData[0])  ? trim((string)$rowData[0])  : $sheetDtrack;
+                            $sheetSerial  = isset($rowData[3])  ? trim((string)$rowData[3])  : $sheetSerial;
+                            $allotment    = isset($rowData[5])  ? trim((string)$rowData[5])  : '';
+                            $creditorRow  = isset($rowData[10]) ? trim((string)$rowData[10]) : null;
+                            $particularsRow = isset($rowData[11]) ? trim((string)$rowData[11]) : '';
+
+                            if (!empty($sheetSerial)) $sheetSerial = $sheetSerial;
+                            if (!empty($creditorRow)) $creditorName = $creditorRow;
+                            if (!empty($particularsRow)) $particulars = $particularsRow;
+
+                            $cleanAllotment   = strtolower(preg_replace('/\s+/', ' ', $allotment));
+                            $cleanParticulars = strtolower(preg_replace('/\s+/', ' ', $particularsRow));
+
+                            $isOtherProfServ = (stripos($cleanAllotment, 'other professional services') !== false);
+                            $isWages         = (stripos($cleanParticulars, 'wages') !== false);
+                            if ($isOtherProfServ && $isWages) {
+                                $isCosSalary = true;
+                            }
+
+                            if ($isCosSalary) {
+                                $allClass = strtoupper(trim((string)($sourceConfig->allotment_class ?? '')));
+                                $sourceName = $sourceConfig->name ?? '';
+                                $sourceCode = $sourceConfig->code ?? '';
+                                $isCapitalOutlay = ($allClass === 'CO') ||
+                                    (stripos($sourceName, 'Capital Outlay') !== false) || 
+                                    (stripos($sourceName, ' CO') !== false) ||
+                                    (stripos($sourceCode, 'CO') !== false);
+                            }
+
+                            $this->processApiRowData($rowData, $tracker, $particularsRow, $isCosSalary);
+                        }
 
                         if ($isCosSalary && $isCapitalOutlay) {
                             continue; 
                         }
 
-                        $existingFund = null;
+                        $disbursedMonthCount = count($tracker['disbursements'] ?? []);
+                        $contractId = null;
+                        $contractDetails = [];
 
+                        if ($isCosSalary && !empty($particulars)) {
+                            $contractDetails = $this->parseCosParticulars($particulars, $creditorName);
+                            if (!empty($contractDetails['start_date']) && !empty($contractDetails['end_date'])) {
+                                $totalMonths = $contractDetails['total_months'] ?? 0;
+                                $contractStatus = ($disbursedMonthCount >= $totalMonths && $totalMonths > 0) 
+                                    ? 'Completed' 
+                                    : 'Active';
+
+                                $contract = \App\Models\CosContract::firstOrCreate(
+                                    [
+                                        'creditor_name' => $creditorName,
+                                        'start_date'    => $contractDetails['start_date'],
+                                        'end_date'      => $contractDetails['end_date'],
+                                    ],
+                                    [
+                                        'total_months'          => $totalMonths,
+                                        'monthly_remuneration'  => $contractDetails['monthly_remuneration'],
+                                        'premium_amount'        => $contractDetails['premium_amount'],
+                                        'total_contract_amount' => $contractDetails['total_contract_amount'],
+                                        'status'                => $contractStatus,
+                                    ]
+                                );
+                                $contractId = $contract->id;
+                            }
+                        }
+
+                        // Determine accurate status using accumulated group data
+                        if ($tracker['netDisb'] > 0) {
+                            if ($isCosSalary && !empty($contractDetails['total_months'])) {
+                                if ($disbursedMonthCount < $contractDetails['total_months']) {
+                                    $status = 'Disbursed (Partially)';
+                                } else {
+                                    $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) 
+                                        ? 'Disbursed (with savings)' 
+                                        : 'Completed';
+                                }
+                            } else {
+                                $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) 
+                                    ? 'Disbursed (with savings)' 
+                                    : 'Disbursed';
+                            }
+                            $displayAmount = $tracker['netDisb'];
+                        } else {
+                            $status = 'Obligated';
+                            $displayAmount = $tracker['netOb'];
+                        }
+
+                        $existingFund = null;
                         if (!empty($sheetSerial)) {
                             $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
                                 ->where('obligation_serial', $sheetSerial)
@@ -1119,93 +1267,25 @@ class FundController extends Controller
                                 ->first();
                         }
 
-                        // 1. INITIALIZE TRACKER FOR EACH ROW RECORD BEFORE EXCLUSION CHECK
-                        $tracker = [
-                            'netOb'          => 0.0, 
-                            'netDisb'        => 0.0, 
-                            'latestObDate'   => null, 
-                            'latestDisbDate' => null, 
-                            'found_serial'   => $sheetSerial, 
-                            'found'          => true,
-                            'disbursements'  => [],
-                            'norsa_entries'  => []
-                        ];
-
-                        // 2. PARSE SHEET DATA INTO $tracker FIRST
-                        $this->processApiRowData($rowData, $tracker, $particulars, $isCosSalary);
-
-                        // 3. IF EXISTING FUND IS ALREADY COMPLETED/DISBURSED, SYNC DISBURSEMENTS & NORSA, THEN SKIP OTHER UPDATES
+                        // Protect completed/finished statuses from being overwritten by blank/zero passes
                         if ($existingFund) {
-                            $isCompletedStatus = in_array($existingFund->status, [
-                                'Disbursed', 'Disbursed (with savings)', 'Completed', 'Cancelled'
+                            $isFinishedStatus = in_array($existingFund->status, [
+                                'Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed'
                             ]);
-                            
-                            if ($isCompletedStatus) {
+
+                            if ($isFinishedStatus && $tracker['netDisb'] == 0) {
                                 if (is_null($existingFund->secid) && !is_null($secid)) {
                                     $existingFund->update(['secid' => $secid]);
                                 }
-
-                                // SYNC BOTH TABLES EVEN IF PARENT RECORD IS COMPLETED/DISBURSED
                                 $this->syncDisbursementRecords($existingFund, $tracker['disbursements'], $isCosSalary);
                                 $this->syncNorsaAdjustments($existingFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
-
                                 continue;
-                            }
-                        }
-
-                        if ($tracker['netDisb'] > 0) {
-                            $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) 
-                                ? 'Disbursed (with savings)' 
-                                : 'Disbursed';
-                            $displayAmount = $tracker['netDisb'];
-                        } else {
-                            $status = 'Obligated';
-                            $displayAmount = $tracker['netOb'];
-                        }
-
-                        $cleanHelper = function($val) {
-                            $raw = str_replace([',', '₱', ' '], '', trim((string)$val));
-                            if (str_starts_with($raw, '(')) $raw = '-' . trim($raw, '()');
-                            return is_numeric($raw) ? (float)$raw : 0.0;
-                        };
-
-                        $disbursedMonthCount = 0;
-                        $totalIndexes = [17, 24, 31, 38, 45, 52, 59, 66, 73, 80, 87, 94];
-                        foreach ($totalIndexes as $tIdx) {
-                            if (isset($rowData[$tIdx]) && $cleanHelper($rowData[$tIdx]) != 0) {
-                                $disbursedMonthCount++;
-                            }
-                        }
-
-                        $contractId = null;
-                        if ($isCosSalary) {
-                            $contractDetails = $this->parseCosParticulars($particulars, $creditorName);
-                            if (!empty($contractDetails['start_date']) && !empty($contractDetails['end_date'])) {
-                                $contractStatus = ($disbursedMonthCount >= $contractDetails['total_months'] && $contractDetails['total_months'] > 0) 
-                                    ? 'Completed' 
-                                    : 'Active';
-
-                                $contract = \App\Models\CosContract::firstOrCreate(
-                                    [
-                                        'creditor_name' => $creditorName,
-                                        'start_date'    => $contractDetails['start_date'],
-                                        'end_date'      => $contractDetails['end_date'],
-                                    ],
-                                    [
-                                        'total_months'          => $contractDetails['total_months'],
-                                        'monthly_remuneration'  => $contractDetails['monthly_remuneration'],
-                                        'premium_amount'        => $contractDetails['premium_amount'],
-                                        'total_contract_amount' => $contractDetails['total_contract_amount'],
-                                        'status'                => $contractStatus,
-                                    ]
-                                );
-                                $contractId = $contract->id;
                             }
                         }
 
                         $targetFund = null;
 
-                        if (!$existingFund && $isCosSalary && !$isCapitalOutlay) {
+                        if (!$existingFund && $isCosSalary) {
                             $targetFund = Fund::create([
                                 'dtrack_no'           => !empty($sheetDtrack) ? $sheetDtrack : 'HR-COS-SALARY',
                                 'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : null,
@@ -1241,25 +1321,24 @@ class FundController extends Controller
                                 'creditor'            => $creditorName ?: $existingFund->creditor,
                                 'obligation_serial'   => (!empty($sheetSerial)) ? $sheetSerial : $existingFund->obligation_serial,
                                 'obligation_amount'   => $tracker['netOb'],
-                                'obligation_date'     => $tracker['latestObDate'],
+                                'obligation_date'     => $tracker['latestObDate'] ?: $existingFund->obligation_date,
                                 'disbursement_amount' => $tracker['netDisb'],
-                                'disbursement_date'   => $tracker['latestDisbDate'],
+                                'disbursement_date'   => $tracker['latestDisbDate'] ?: $existingFund->disbursement_date,
                                 'disbursed_months'    => $disbursedMonthCount,
                                 'status'              => $status,
                                 'status_date'         => now(),
                                 'secid'               => $existingFund->secid ?? $secid 
                             ];
 
-                            if ($isCosSalary && $contractId) {
-                                $updateData['cos_contract_id'] = $contractId;
-                                $updateData['remarks_salary']  = 'Imported HR COS Salary/Wages';
+                            if ($isCosSalary) {
+                                if ($contractId) $updateData['cos_contract_id'] = $contractId;
+                                $updateData['remarks_salary'] = 'Imported HR COS Salary/Wages';
                             }
 
                             $existingFund->update($updateData);
                             $targetFund = $existingFund;
                         }
 
-                        // PERSIST DISBURSEMENTS & NORSA SAVINGS ADJUSTMENTS
                         if ($targetFund) {
                             $this->syncDisbursementRecords($targetFund, $tracker['disbursements'], $isCosSalary);
                             $this->syncNorsaAdjustments($targetFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
@@ -1352,7 +1431,15 @@ class FundController extends Controller
                     
                     $columnSpecificDate = null;
                     if (isset($rowData[$dIdx]) && !empty($rowData[$dIdx])) {
-                        $columnSpecificDate = $this->parseApiDate($rowData[$dIdx]);
+                        $rawDateVal = trim((string)$rowData[$dIdx]);
+                        
+                        // FIX: Handle combined/multi-date cells (e.g., "3/12/2026 & 3/17/2026")
+                        if (preg_match('/[&,]|and/i', $rawDateVal)) {
+                            $parts = preg_split('/[&,]|\sand\s/i', $rawDateVal);
+                            $rawDateVal = trim($parts[0]); // Take the primary/first date reference
+                        }
+
+                        $columnSpecificDate = $this->parseApiDate($rawDateVal);
                     }
 
                     $existingIndex = null;

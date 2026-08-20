@@ -526,7 +526,7 @@
                         @php
                             // 1. Determine Merged vs. Detailed View Mode
                             $hasSignificantStatus = $fund->breakdown->contains(function($item) {
-                                return in_array($item->status, ['Obligated', 'Disbursed', 'Disbursed (with savings)', 'Completed', 'Cancelled']);
+                                return in_array($item->status, ['Obligated', 'Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed', 'Cancelled']);
                             });
                             $firstStatus = $fund->breakdown->first()->status ?? 'N/A';
                             $allSameStatus = $fund->breakdown->every('status', $firstStatus);
@@ -617,6 +617,23 @@
                             @foreach($fund->breakdown as $item)
                                 @php
                                     $itemRemarkInfo = $classifyRemark($item);
+                                    
+                                    // Robust Fallbacks for COS Detection
+                                    $isCosItem = (isset($item->remarks_salary) && $item->remarks_salary === 'Imported HR COS Salary/Wages') 
+                                        || \Illuminate\Support\Str::contains(strtolower($item->remarks ?? ''), ['cos', 'salary', 'wages', 'payroll'])
+                                        || (isset($fund->remarks_salary) && $fund->remarks_salary === 'Imported HR COS Salary/Wages');
+
+                                    $itemContract = $item->cosContract ?? $item->contract ?? $item->cos_contract ?? 
+                                                    $fund->cosContract ?? $fund->contract ?? $fund->cos_contract ?? null;
+
+                                    $itemDisbursements = collect($item->cosSalaryDisbursements ?? $item->cos_salary_disbursements ?? $item->cos_disbursements ?? 
+                                                                 $fund->cosSalaryDisbursements ?? $fund->cos_salary_disbursements ?? $fund->cos_disbursements ?? []);
+
+                                    $disbursedMonths = $item->disbursed_months ?? $fund->disbursed_months ?? 0;
+                                    $obDate = $item->obligation_date ?? $fund->obligation_date ?? null;
+                                    $disbDate = $item->disbursement_date ?? $fund->disbursement_date ?? null;
+                                    $obAmount = $item->obligation_amount ?? $fund->obligation_amount ?? 0;
+                                    $disbAmount = $item->disbursement_amount ?? $fund->disbursement_amount ?? 0;
                                 @endphp
                                 <div class="allocation-row {{ !$loop->last ? 'mb-3 border-bottom pb-2' : '' }}">
                                     <div class="small font-weight-bold text-dark mb-1">
@@ -627,10 +644,11 @@
                                     <span class="badge {{ 
                                         in_array($item->status, ['Disbursed', 'Completed']) ? 'badge-success' : 
                                         ($item->status == 'Disbursed (with savings)' ? 'badge-info' : 
+                                        ($item->status == 'Disbursed (Partially)' ? 'badge-warning' :
                                         ($item->status == 'Cancelled' ? 'badge-danger' : 
                                         ($item->status == 'Routed' ? 'badge-primary' : 
                                         ($item->status == 'For CAF/Obligation' ? 'badge-warning' : 
-                                        ($item->status == 'Obligated' ? 'bg-orange text-white' : 'badge-info')))))
+                                        ($item->status == 'Obligated' ? 'bg-orange text-white' : 'badge-info'))))))
                                     }}">
                                         {{ $item->status }}
                                     </span>
@@ -643,15 +661,15 @@
                                     @endif
 
                                     {{-- COS Contract Duration Badge --}}
-                                    @if(isset($item->remarks_salary) && $item->remarks_salary === 'Imported HR COS Salary/Wages' && isset($item->contract))
+                                    @if($isCosItem && $itemContract)
                                         <div class="mt-1">
-                                            @if($item->disbursed_months >= $item->contract->total_months)
-                                                <span class="badge badge-success" title="Period: {{ $item->contract->start_date }} to {{ $item->contract->end_date }}">
-                                                    <i class="fas fa-check-circle mr-1"></i> Contract Fully Disbursed ({{ $item->disbursed_months }}/{{ $item->contract->total_months }} mos)
+                                            @if($disbursedMonths >= $itemContract->total_months)
+                                                <span class="badge badge-success" title="Period: {{ $itemContract->start_date }} to {{ $itemContract->end_date }}">
+                                                    <i class="fas fa-check-circle mr-1"></i> Contract Fully Disbursed ({{ $disbursedMonths }}/{{ $itemContract->total_months }} mos)
                                                 </span>
                                             @else
-                                                <span class="badge badge-info" title="Period: {{ $item->contract->start_date }} to {{ $item->contract->end_date }}">
-                                                    <i class="fas fa-hourglass-half mr-1"></i> Paid {{ $item->disbursed_months }} of {{ $item->contract->total_months }} Months
+                                                <span class="badge badge-info" title="Period: {{ $itemContract->start_date }} to {{ $itemContract->end_date }}">
+                                                    <i class="fas fa-hourglass-half mr-1"></i> Paid {{ $disbursedMonths }} of {{ $itemContract->total_months }} Months
                                                 </span>
                                             @endif
                                         </div>
@@ -660,60 +678,199 @@
                                     <div class="small mt-1">
                                         {{-- OBLIGATED STATE --}}
                                         @if($item->status == 'Obligated')
-                                            @if(empty($item->obligation_amount) || $item->obligation_amount == 0)
+                                            @if(empty($obAmount) || $obAmount == 0)
                                                 <div class="text-danger font-italic">
                                                     <i class="fas fa-sync fa-spin mr-1" style="font-size: 0.7rem;"></i> Awaiting sync to RAODS
                                                 </div>
                                             @else
-                                                @if($item->obligation_date)
+                                                @if($obDate)
                                                     <div class="text-primary font-weight-bold">
-                                                        <i class="far fa-calendar-check mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($item->obligation_date)->format('M d, Y') }}
+                                                        <i class="far fa-calendar-check mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($obDate)->format('M d, Y') }}
                                                     </div>
                                                 @endif
 
-                                                {{-- NET vs GROSS OBLIGATION BREAKDOWN (WHEN NORSA APPLIES) --}}
-                                                @if($item->has_norsa)
+                                                @if(isset($item->has_norsa) && $item->has_norsa)
                                                     <div class="text-info font-weight-bold mt-0.5" style="font-size: 0.72rem;">
                                                         Net Obligation: ₱{{ number_format($item->net_obligation_amount, 2) }}
                                                     </div>
                                                     <div class="text-muted" style="font-size: 0.65rem;">
-                                                        (Gross: ₱{{ number_format($item->obligation_amount, 2) }})
+                                                        (Gross: ₱{{ number_format($obAmount, 2) }})
                                                     </div>
                                                 @endif
                                             @endif
 
-                                        {{-- DISBURSED / DISBURSED (WITH SAVINGS) / COMPLETED STATES --}}
-                                        @elseif(in_array($item->status, ['Disbursed', 'Disbursed (with savings)', 'Completed']))
-                                            @if($item->obligation_date)
-                                                <div class="text-muted" style="font-size: 0.7rem;">
-                                                    <i class="far fa-calendar-alt mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($item->obligation_date)->format('M d, Y') }}
+                                        {{-- DISBURSED / DISBURSED (WITH SAVINGS) / DISBURSED (PARTIALLY) / COMPLETED STATES --}}
+                                        @elseif(in_array($item->status, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']))
+                                            @if($obDate)
+                                                <div class="text-primary font-weight-bold" style="font-size: 0.72rem;">
+                                                    <i class="far fa-calendar-alt mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($obDate)->format('M d, Y') }}
                                                 </div>
                                             @endif
 
-                                            @if($item->disbursement_date)
-                                                <div class="text-success font-weight-bold">
-                                                    <i class="fas fa-check-circle mr-1"></i> Disb: {{ \Carbon\Carbon::parse($item->disbursement_date)->format('M d, Y') }}
+                                            {{-- Explicitly Display Obligation Amount for Tracking --}}
+                                            @if($obAmount > 0)
+                                                <div class="text-dark font-weight-bold mt-0.5" style="font-size: 0.72rem;">
+                                                    Obligation Amount: ₱{{ number_format($obAmount, 2) }}
                                                 </div>
-
-                                                @php
-                                                    $ob = \Carbon\Carbon::parse($item->obligation_date);
-                                                    $disb = \Carbon\Carbon::parse($item->disbursement_date);
-                                                    $days = $ob->diffInDays($disb);
-                                                @endphp
-                                                <div class="text-info font-italic" style="font-size: 0.65rem;">
-                                                    <i class="fas fa-hourglass-half mr-1"></i> Lead Time: {{ $days }} {{ Str::plural('day', $days) }}
-                                                </div>
-                                            @endif
-
-                                            @if($item->status == 'Disbursed (with savings)' || ($item->obligation_amount > $item->disbursement_amount && $item->disbursement_amount > 0))
-                                                @php
-                                                    $savings = max(0, $item->obligation_amount - $item->disbursement_amount);
-                                                @endphp
-                                                @if($savings > 0)
-                                                    <div class="text-success font-weight-bold mt-1" style="font-size: 0.75rem;">
-                                                        <i class="fas fa-piggy-bank mr-1"></i> Savings: ₱{{ number_format($savings, 2) }}
+                                                @if(isset($item->has_norsa) && $item->has_norsa)
+                                                    <div class="text-muted" style="font-size: 0.65rem;">
+                                                        (Total Disbursed: ₱{{ number_format($item->net_obligation_amount ?? 0, 2) }})
                                                     </div>
                                                 @endif
+                                            @endif
+
+                                            @if($disbDate)
+                                                <div class="text-success font-weight-bold mt-1">
+                                                    <i class="fas fa-check-circle mr-1"></i> Disb: {{ \Carbon\Carbon::parse($disbDate)->format('M d, Y') }}
+                                                </div>
+
+                                                @if($obDate)
+                                                    @php
+                                                        $ob = \Carbon\Carbon::parse($obDate);
+                                                        $disb = \Carbon\Carbon::parse($disbDate);
+                                                        $days = $ob->diffInDays($disb);
+                                                    @endphp
+                                                    <div class="text-info font-italic" style="font-size: 0.65rem;">
+                                                        <i class="fas fa-hourglass-half mr-1"></i> Lead Time: {{ $days }} {{ Str::plural('day', $days) }}
+                                                    </div>
+                                                @endif
+                                            @endif
+
+                                            {{-- DYNAMIC SAVINGS CALCULATION --}}
+                                            @php
+                                                $savings = 0;
+                                                if ($isCosItem && $itemContract) {
+                                                    if ($disbursedMonths >= $itemContract->total_months || in_array($item->status, ['Completed', 'Disbursed (with savings)'])) {
+                                                        $savings = max(0, $obAmount - $disbAmount);
+                                                    } else {
+                                                        $expectedDisbursement = ($itemContract->monthly_remuneration + $itemContract->premium_amount) * $disbursedMonths;
+                                                        $savings = max(0, $expectedDisbursement - $disbAmount);
+                                                    }
+                                                } else {
+                                                    $savings = max(0, $obAmount - $disbAmount);
+                                                }
+                                            @endphp
+
+                                            @if($savings > 0 && in_array($item->status, ['Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']))
+                                                <div class="text-success font-weight-bold mt-1" style="font-size: 0.75rem;">
+                                                    <i class="fas fa-piggy-bank mr-1"></i> Savings: ₱{{ number_format($savings, 2) }}
+                                                </div>
+                                            @endif
+
+                                            {{-- ================= MONTHLY SALARY BREAKDOWN UI ================= --}}
+                                            @if($isCosItem && $itemContract)
+                                                @php
+                                                    $expectedPerMonth = ($itemContract->monthly_remuneration ?? 0) + ($itemContract->premium_amount ?? 0);
+                                                @endphp
+
+                                                <div class="mt-2 p-2 bg-light border border-secondary rounded shadow-sm" style="max-width: 380px;">
+                                                    <div class="text-xs font-weight-bold text-navy mb-1 border-bottom pb-1">
+                                                        <i class="fas fa-list-ul mr-1"></i> Salary Disbursement Tracking (Per Contract Month)
+                                                    </div>
+                                                    
+                                                    <div class="d-flex justify-content-between text-xs mb-1">
+                                                        <span class="text-muted">Expected per Month:</span>
+                                                        <span class="font-weight-bold text-primary">₱{{ number_format($expectedPerMonth, 2) }}</span>
+                                                    </div>
+                                                    
+                                                    @if($itemDisbursements->count() > 0)
+                                                        <div class="mt-2 text-xs">
+                                                            <strong class="text-muted d-block mb-1">Contract Months Paid:</strong>
+                                                            <ul class="list-unstyled mb-0 pl-2 border-left border-success">
+                                                                @php
+                                                                    $contractStart = $itemContract->start_date ? \Carbon\Carbon::parse($itemContract->start_date) : null;
+                                                                    $totalMonths = (int)$itemContract->total_months;
+                                                                    $disbList = $itemDisbursements->values();
+                                                                    
+                                                                    $coveredIndices = [];
+                                                                    $mappedDisbursements = [];
+
+                                                                    foreach ($disbList as $cd) {
+                                                                        $amt = $cd->amount ?? 0;
+                                                                        $disbDate = $cd->disbursement_date ? \Carbon\Carbon::parse($cd->disbursement_date) : null;
+                                                                        
+                                                                        // Automatically calculate how many months this disbursement amount covers
+                                                                        $monthsSpan = ($expectedPerMonth > 0) ? max(1, round($amt / $expectedPerMonth)) : 1;
+                                                                        
+                                                                        // Find the next unassigned contract month index
+                                                                        $startMonthIdx = 0;
+                                                                        while (in_array($startMonthIdx, $coveredIndices) && $startMonthIdx < $totalMonths) {
+                                                                            $startMonthIdx++;
+                                                                        }
+
+                                                                        $spanMonths = [];
+                                                                        for ($s = 0; $s < $monthsSpan && ($startMonthIdx + $s) < $totalMonths; $s++) {
+                                                                            $targetIdx = $startMonthIdx + $s;
+                                                                            $coveredIndices[] = $targetIdx;
+                                                                            $spanMonths[] = $targetIdx;
+                                                                        }
+
+                                                                        if (!empty($spanMonths)) {
+                                                                            $mappedDisbursements[] = [
+                                                                                'amount' => $amt,
+                                                                                'date' => $disbDate,
+                                                                                'month_indices' => $spanMonths
+                                                                            ];
+                                                                        }
+                                                                    }
+                                                                @endphp
+                                                                
+                                                                @for($i = 0; $i < $totalMonths; $i++)
+                                                                    @php
+                                                                        $serviceMonthLabel = $contractStart 
+                                                                            ? $contractStart->copy()->addMonths($i)->format('F Y') 
+                                                                            : 'Month ' . ($i + 1);
+
+                                                                        $matchingDisb = null;
+                                                                        $isFirstInSpan = false;
+                                                                        
+                                                                        foreach ($mappedDisbursements as $md) {
+                                                                            if (in_array($i, $md['month_indices'])) {
+                                                                                $matchingDisb = $md;
+                                                                                $isFirstInSpan = ($i === $md['month_indices'][0]);
+                                                                                break;
+                                                                            }
+                                                                        }
+
+                                                                        $formattedDisbDate = ($matchingDisb && $matchingDisb['date']) 
+                                                                            ? $matchingDisb['date']->format('M d, Y') 
+                                                                            : null;
+
+                                                                        $displayAmount = $matchingDisb ? ($isFirstInSpan ? $matchingDisb['amount'] : '') : 0;
+                                                                        $isPaid = ($matchingDisb !== null);
+                                                                    @endphp
+                                                                    <li class="mb-1.5 pb-1 border-bottom border-light d-flex justify-content-between align-items-center">
+                                                                        <div>
+                                                                            <span class="font-weight-bold {{ $isPaid ? 'text-dark' : 'text-muted' }}">
+                                                                                <i class="fas {{ $isPaid ? 'fa-check text-success' : 'fa-clock text-secondary' }} mr-1" style="font-size: 0.6rem;"></i>
+                                                                                {{ $serviceMonthLabel }}
+                                                                                @if($matchingDisb && count($matchingDisb['month_indices']) > 1 && $isFirstInSpan)
+                                                                                    <span class="badge badge-info ml-1" style="font-size: 0.55rem;">Consolidated ({{ count($matchingDisb['month_indices']) }} Mos)</span>
+                                                                                @endif
+                                                                            </span>
+                                                                            @if($formattedDisbDate && $isFirstInSpan)
+                                                                                <div class="text-muted pl-3" style="font-size: 0.62rem;">
+                                                                                    <i class="far fa-calendar-alt text-success mr-0.5"></i> Disb: {{ $formattedDisbDate }}
+                                                                                </div>
+                                                                            @endif
+                                                                        </div>
+                                                                        <span class="font-weight-bold {{ $isPaid ? 'text-success' : 'text-muted' }}">
+                                                                            @if($displayAmount !== '')
+                                                                                ₱{{ number_format($displayAmount, 2) }}
+                                                                            @else
+                                                                                <span class="text-muted font-italic" style="font-size: 0.65rem;">(Included above)</span>
+                                                                            @endif
+                                                                        </span>
+                                                                    </li>
+                                                                @endfor
+                                                            </ul>
+                                                        </div>
+                                                    @else
+                                                        <div class="text-muted font-italic mt-1" style="font-size: 0.65rem;">
+                                                            Awaiting sequential monthly disbursement records...
+                                                        </div>
+                                                    @endif
+                                                </div>
                                             @endif
                                         @endif
 

@@ -220,9 +220,12 @@
                                                         ->whereYear('obligation_date', $currentYear) 
                                                         ->sum('obligation_amount');
 
-                                                    $sumDistributedRaw = $activities->sum('budget_adjusted');
-                                                    $netDistributedTotal = $sumDistributedRaw - $totalPooled;
-                                                    $pooledAdjusted = $sumDistributedRaw - $totalPooled;
+                                                    // DISTRIBUTED: Sum of all activities (budget_adjusted minus pooled_amount)
+                                                    $netDistributedTotal = $activities->sum('budget_adjusted') - $totalPooled; 
+
+                                                    // ADJUSTED: Total allocated amount of the whole source of funds minus pooled amounts
+                                                    $totalFundSourceAmount = $source->total_amount ?? 0;
+                                                    $adjustedAmount = $totalFundSourceAmount - $totalPooled;
                                                 @endphp
 
                                                 <div class="mx-3 mt-4 mb-3">
@@ -249,9 +252,9 @@
                                                                     <div class="px-3 border-right border-secondary">
                                                                         <small class="text-gray d-block text-uppercase font-weight-bold" style="font-size: 0.65rem;">Distributed / Adjusted</small>
                                                                         <span class="text-white font-weight-bold">
-                                                                            <span class="text-warning">₱{{ number_format($netDistributedTotal, 2) }}</span>
+                                                                            <span class="text-warning" title="Total of all activities">₱{{ number_format($netDistributedTotal, 2) }}</span>
                                                                             <small class="mx-1">/</small>
-                                                                            ₱{{ number_format($pooledAdjusted, 2) }}
+                                                                            <span title="Total fund source minus pooled">₱{{ number_format($adjustedAmount, 2) }}</span>
                                                                         </span>
                                                                     </div>
                                                                     
@@ -266,8 +269,8 @@
                                                                     </div>
                                                                 </div>
                                                             </div>
-                                                            </div>
                                                         </div>
+                                                    </div>
                                                         
                                                         <table class="table table-bordered table-sm m-0 mb-4 shadow-sm">
                                                             <thead>
@@ -299,7 +302,6 @@
                                                                                 </td>
                                                                             @endif
 
-                                                                            {{-- FIXED: Added style="white-space: pre-wrap;" to preserve text formatting, indents, and carriage returns --}}
                                                                             <td class="p-2" style="white-space: pre-wrap; vertical-align: top;">{{ $activity->name }}@if($activity->pooled_amount > 0)<div class="small text-danger font-italic">(₱{{ number_format($activity->pooled_amount, 2) }} pooled)</div>
                                                                                 @endif
                                                                             </td>

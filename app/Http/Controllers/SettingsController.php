@@ -888,8 +888,12 @@ class SettingsController extends Controller
     // print wfp
     public function printWfp(Request $request, $id = null)
     {
+        // Increase memory limit and execution time for PDF generation
+        ini_set('memory_limit', '512M');
+        set_time_limit(300);
+        
         $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
-        $calendarYear = date('Y'); // Ensure this is defined
+        $calendarYear = date('Y');
 
         $sourceId = $id ?: $request->input('source_of_fund_id');
         if (!$sourceId) return "Please select a specific fund source to print.";
@@ -915,9 +919,34 @@ class SettingsController extends Controller
 
         $currentWfpType = ($isSAA || $isConsolidated) ? 'saa' : 'program';
 
-        // Fetch Signatories
+        // --- 1. GET LOGGED IN USER'S SECTION ID ---
+        $currentUser = auth()->user();
+        
+        $userSecId = null;
+        $localDetail = \DB::table('employee_details')
+            ->where('user_id', $currentUser->id)
+            ->first();
+
+        if ($localDetail && $localDetail->dbedid) {
+            $userSecId = \DB::connection('db_common')
+                ->table('tbl_emp_details')
+                ->where('dbedid', $localDetail->dbedid)
+                ->value('secid');
+        }
+
+        $targetSectionId = $userSecId; 
+
+        // UNCOMMENT THE LINE BELOW IF YOU WANT TO TEST WHAT SECTION ID IS CURRENTLY DETECTED:
+        // dd(['user_id' => $currentUser->id, 'localDetail' => $localDetail, 'userSecId' => $userSecId]);
+
+        if (!$targetSectionId) {
+            return "Unable to determine your section ID. Please ensure your employee profile is properly linked.";
+        }
+
+        // --- 2. FETCH SIGNATORIES STRICTLY BY USER SECTION & WFP TYPE ---
         $signatories = DB::table('wfp_signatories')
             ->where('wfp_type', $currentWfpType)
+            ->where('section_id', $targetSectionId)
             ->leftJoin('db_common.tbl_emp_details', 'wfp_signatories.employee_id', '=', 'tbl_emp_details.dbedid')
             ->leftJoin('db_common.tbl_employee', 'tbl_emp_details.empid', '=', 'tbl_employee.empid')
             ->leftJoin('db_common.tbl_position', 'tbl_emp_details.dbpid', '=', 'tbl_position.dbpid')
@@ -936,11 +965,10 @@ class SettingsController extends Controller
                 $sfx = $emp->suffix ? ' ' . $emp->suffix : '';
                 $emp->employee_name = $emp->lname ? "{$emp->fname}{$mi}{$sfx} {$emp->lname}, {$emp->extname}" : "NOT FOUND";
                 
-                // NORMALIZE LABEL: Remove colons and trim spaces for easier matching in Blade
                 $emp->clean_label = strtolower(trim(str_replace(':', '', $emp->label)));
                 return $emp;
             })
-            ->keyBy('clean_label'); // Key will be 'prepared by', 'reviewed by', etc.
+            ->keyBy('clean_label');
 
         // Section/Division Mapping
         $divisionName = 'OFFICE OF THE DIRECTOR';
