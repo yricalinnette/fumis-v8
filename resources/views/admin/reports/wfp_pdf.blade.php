@@ -67,6 +67,9 @@
                 Republic of the Philippines<br>
                 <strong>Department of Health</strong><br><br>
                 <strong>WFP Form 1. Work and Financial Plan</strong>
+                @if(!empty($planModifier))
+                    <br><span style="font-size: 12px; font-weight: bold; color: #333;">({{ strtoupper($planModifier) }})</span>
+                @endif
             </td>
             <td width="20%" align="right">Document Code: [_______]</td>
         </tr>
@@ -94,17 +97,12 @@
     </table>
 
     @php
-        // Determine layout width: 50% for 2 signatories, 33.3% for 3
         $isThreeColumn = ($currentWfpType == 'saa');
         $columnWidth = $isThreeColumn ? '33.3%' : '50%';
-        
-        // Define the middle key if it exists
-        $midKey = $isThreeColumn ? 'recommending approval by' : null;
     @endphp
 
     <table style="width: 100%; border-collapse: collapse; margin-top: 30px; font-size: 11px; table-layout: fixed;">
         <tr>
-            {{-- 1. Prepared By - Always Shows --}}
             <td style="width: {{ $columnWidth }}; border: 1px solid black; padding: 10px; text-align: center; vertical-align: top;">
                 <div style="text-align: left;">Prepared by:</div>
                 <br><br>
@@ -114,7 +112,6 @@
                 <div>{{ $signatories['prepared by']->designation ?? 'Designation' }}</div>
             </td>
 
-            {{-- 2. Recommending Approval - ONLY shows if SAA --}}
             @if($isThreeColumn)
             <td style="width: {{ $columnWidth }}; border: 1px solid black; padding: 10px; text-align: center; vertical-align: top;">
                 <div style="text-align: left;">Recommending Approval by:</div>
@@ -126,23 +123,16 @@
             </td>
             @endif
 
-            {{-- 3. Approved By / Reviewed By --}}
             <td style="width: {{ $columnWidth }}; border: 1px solid black; padding: 10px; text-align: center; vertical-align: top;">
-                <div style="text-align: left;">
-                    {{ $isThreeColumn ? 'Approved by:' : 'Approved by:' }}
-                </div>
+                <div style="text-align: left;">Approved by:</div>
                 <br><br>
                 <div style="font-weight: bold; text-decoration: underline; text-transform: uppercase;">
-                    @php 
-                        $finalKey = $isThreeColumn ? 'approved by' : 'approved by'; 
-                    @endphp
-                    {{ $signatories[$finalKey]->employee_name ?? '__________________________' }}
+                    {{ $signatories['approved by']->employee_name ?? '__________________________' }}
                 </div>
-                <div>{{ $signatories[$finalKey]->designation ?? ($isThreeColumn ? 'Director IV' : 'Designation') }}</div>
+                <div>{{ $signatories['approved by']->designation ?? ($isThreeColumn ? 'Director IV' : 'Designation') }}</div>
             </td>
         </tr>
         
-        {{-- Dynamic Date Row --}}
         <tr>
             <td style="border: 1px solid black; padding: 5px;">Date:</td>
             @if($isThreeColumn)
@@ -199,9 +189,7 @@
                         <tr>
                             <td class="text-left" style="vertical-align: top;">{{ $activity->budgetLineItem->budget_line_item_name ?? 'N/A' }}</td>
                             <td class="text-left" style="vertical-align: top;">{{ $activity->objective }}</td>
-                            
                             <td class="text-left" style="white-space: pre-wrap; vertical-align: top;">{{ $activity->name }}</td>
-                            
                             <td class="text-center" style="vertical-align: top;">{{ \Carbon\Carbon::parse($activity->start_date)->format('j M Y') }}</td>
                             <td class="text-center" style="vertical-align: top;">{{ \Carbon\Carbon::parse($activity->end_date)->format('j M Y') }}</td>
                             

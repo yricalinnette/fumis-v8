@@ -240,13 +240,14 @@
                                                                 </div>
                                                                 <div class="col-md-8 text-right">
                                                                 <div class="d-flex justify-content-end align-items-center">
-                                                                    {{-- NEW: Print Per Fund Source Button --}}
+                                                                    {{-- NEW: Print Per Fund Source Button triggering a Modal --}}
                                                                     <div class="px-3 border-right border-secondary">
-                                                                        <a href="{{ route('settings.print', ['source_of_fund_id' => $source->id]) }}"
-                                                                        target="_blank" 
-                                                                        class="btn btn-xs btn-danger shadow-sm font-weight-bold">
+                                                                        <button type="button" 
+                                                                                class="btn btn-xs btn-danger shadow-sm font-weight-bold open-wfp-modal" 
+                                                                                data-source-id="{{ $source->id }}"
+                                                                                data-source-name="{{ $source->name }}">
                                                                             <i class="fas fa-file-pdf mr-1"></i> PRINT WFP
-                                                                        </a>
+                                                                        </button>
                                                                     </div>
 
                                                                     <div class="px-3 border-right border-secondary">
@@ -975,6 +976,111 @@
 </div>
 
 
+<!-- WFP Print Options Modal -->
+<div class="modal fade" id="wfpPrintModal" tabindex="-1" role="dialog" aria-labelledby="wfpPrintModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg" role="document">
+        <form id="wfpPrintForm" action="" method="GET" target="_blank">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title" id="wfpPrintModalLabel">Print Work and Financial Plan (WFP)</h5>
+                    <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" name="source_of_fund_id" id="modalSourceId">
+                    
+                    <div class="form-group">
+                        <label class="font-weight-bold">Fund Source:</label>
+                        <span id="modalSourceName" class="text-muted font-italic"></span>
+                    </div>
+
+                    <!-- Plan Modifier Option -->
+                    <div class="form-group">
+                        <label for="planModifierSelect">Plan Type / Title Modifier:</label>
+                        <select name="plan_modifier" id="planModifierSelect" class="form-control">
+                            <option value="">-- Initial Plan (Default Title) --</option>
+                            <option value="Catch-up Plan">Catch-up Plan</option>
+                            <option value="Supplemental Plan">Supplemental Plan</option>
+                        </select>
+                        <small class="form-text text-muted">Select if this is a Catch-up Plan or Supplemental Plan realignment report.</small>
+                    </div>
+
+                    <hr>
+
+                    <!-- Select All Toggle -->
+                    <div class="form-group form-check">
+                        <input type="checkbox" class="form-check-input" id="selectAllActivities" name="select_all" value="1" checked>
+                        <label class="form-check-label font-weight-bold" for="selectAllActivities">Select All Activities (Print whole WFP)</label>
+                    </div>
+
+                    <!-- Specific Activities Multi-select Container -->
+                    <div class="form-group" id="activitySelectionContainer" style="display: none;">
+                        <label for="activitySelect">Select Specific Activities (For Realignment / Replan):</label>
+                        <select name="activity_ids[]" id="activitySelect" class="form-control select2" multiple="multiple" style="width: 100%;" data-placeholder="Choose activities to include...">
+                            <!-- Dynamically loaded via AJAX -->
+                        </select>
+                        <small class="form-text text-danger" id="activityRequiredMsg" style="display: none;">Please select at least one activity when not using "Select All".</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-danger" id="generatePdfBtn"><i class="fas fa-print mr-1"></i> Generate PDF</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Budget Exceeded Error Modal Popup -->
+@if(session('budget_exceeded_error'))
+<div class="modal fade" id="budgetExceededModal" tabindex="-1" role="dialog" aria-labelledby="budgetExceededModalLabel" aria-hidden="true" data-backdrop="static" data-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content shadow-lg border-danger">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title font-weight-bold" id="budgetExceededModalLabel">
+                    <i class="fas fa-exclamation-triangle mr-2"></i> Budget Limit Exceeded
+                </h5>
+            </div>
+            <div class="modal-body">
+                <p class="text-dark font-weight-bold" style="font-size: 1.05rem; line-height: 1.5;">
+                    {{ session('budget_exceeded_error') }}
+                </p>
+            </div>
+            <div class="modal-footer bg-light">
+                <button type="button" class="btn btn-danger font-weight-bold px-4" data-dismiss="modal" onclick="closeAndCleanupModal()">
+                    <i class="fas fa-check mr-1"></i> OK
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Self-executing script that runs immediately when rendered, bypassing stack issues
+    document.addEventListener("DOMContentLoaded", function() {
+        if (typeof $ !== 'undefined') {
+            $('#budgetExceededModal').modal({
+                backdrop: 'static',
+                keyboard: false,
+                show: true
+            });
+        }
+    });
+
+    function closeAndCleanupModal() {
+        if (typeof $ !== 'undefined') {
+            $('#budgetExceededModal').modal('hide');
+        }
+        document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+        const modalEl = document.getElementById('budgetExceededModal');
+        if (modalEl) modalEl.remove();
+        document.body.classList.remove('modal-open');
+        document.body.style.paddingRight = '';
+    }
+</script>
+@endif
+
 
 @endsection
 
@@ -1624,6 +1730,76 @@
                     Swal.fire({ icon: 'error', title: 'Oops...', text: errorMsg });
                 }
             });
+        });
+    });
+
+    $(document).ready(function() {
+        // Initialize Select2 if available
+        if ($.fn.select2) {
+            $('#activitySelect').select2({
+                dropdownParent: $('#wfpPrintModal')
+            });
+        }
+
+        // Trigger modal open
+        $('.open-wfp-modal').click(function() {
+            var sourceId = $(this).data('source-id');
+            var sourceName = $(this).data('source-name');
+
+            $('#modalSourceId').val(sourceId);
+            $('#modalSourceName').text(sourceName);
+            $('#wfpPrintForm').attr('action', '{{ route("settings.print") }}');
+
+            // Reset fields
+            $('#selectAllActivities').prop('checked', true).trigger('change');
+            $('#planModifierSelect').val('');
+            $('#activitySelect').empty().trigger('change');
+
+            // Fetch activities via AJAX for this fund source
+            $.ajax({
+                url: '{{ route("settings.get-activities", "") }}/' + sourceId,
+                type: 'GET',
+                success: function(response) {
+                    var options = '';
+                    if(response.activities && response.activities.length > 0) {
+                        $.each(response.activities, function(index, act) {
+                            options += '<option value="' + act.id + '">' + act.name + ' (Cost: ₱' + Number(act.budget_adjusted).toLocaleString(undefined, {minimumFractionDigits: 2}) + ')</option>';
+                        });
+                    }
+                    $('#activitySelect').html(options).trigger('change');
+                }
+            });
+
+            $('#wfpPrintModal').modal('show');
+        });
+
+        // Toggle Select All behavior
+        $('#selectAllActivities').change(function() {
+            if ($(this).is(':checked')) {
+                $('#activitySelectionContainer').hide();
+                $('#activitySelect').prop('required', false);
+                $('#activityRequiredMsg').hide();
+            } else {
+                $('#activitySelectionContainer').show();
+                $('#activitySelect').prop('required', true);
+            }
+        });
+
+        // Form validation on submit
+        $('#wfpPrintForm').submit(function(e) {
+            var selectAll = $('#selectAllActivities').is(':checked');
+            var selectedActs = $('#activitySelect').val();
+
+            if (!selectAll && (!selectedActs || selectedActs.length === 0)) {
+                e.preventDefault();
+                $('#activityRequiredMsg').show();
+                return false;
+            }
+            
+            // Close modal shortly after opening the new tab stream
+            setTimeout(function() {
+                $('#wfpPrintModal').modal('hide');
+            }, 500);
         });
     });
 

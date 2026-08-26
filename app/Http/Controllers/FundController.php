@@ -825,10 +825,10 @@ class FundController extends Controller
 
                 $creditorName = null;
                 $particulars  = '';
-                $sheetSerial   = null;
-                $isCosSalary   = false;
+                $sheetSerial  = null;
+                $isCosSalary  = false;
+                $matchedRows  = []; // Keep track of matched rows for DTrack logs
 
-                // 1. ITERATE AND ACCUMULATE ALL MATCHING ENTRY ROWS
                 foreach ($rows as $rowIndex => $rowData) {
                     $sheetDtrack     = isset($rowData[0])  ? trim((string)$rowData[0])  : '';
                     $sheetSerialRow  = isset($rowData[3])  ? trim((string)$rowData[3])  : '';
@@ -852,6 +852,7 @@ class FundController extends Controller
                     }
 
                     $tracker['found'] = true;
+                    $matchedRows[] = $rowData; // Collect matched row
 
                     if (!empty($sheetSerialRow)) $sheetSerial = $sheetSerialRow;
                     if (!empty($creditorRow))    $creditorName = $creditorRow;
@@ -869,14 +870,11 @@ class FundController extends Controller
                     $this->processApiRowData($rowData, $tracker, $particularsRow, $isCosSalary);
                 }
 
-                // 2. SAVE ACCUMULATED TOTALS & DETERMINE STATUS
                 if ($tracker['found']) {
-                    
                     $disbursedMonthCount = count($tracker['disbursements'] ?? []);
                     $contractId = null;
                     $contractDetails = [];
 
-                    // Ensure Contract is Generated to determine total months needed
                     if ($isCosSalary) {
                         $contractDetails = $this->parseCosParticulars($particulars, $creditorName);
                         if (!empty($contractDetails['start_date']) && !empty($contractDetails['end_date'])) {
@@ -904,7 +902,6 @@ class FundController extends Controller
 
                     if ($tracker['netDisb'] > 0) {
                         if ($isCosSalary && !empty($contractDetails['total_months'])) {
-                            // Verify Partial vs Completed COS Disbursement
                             if ($disbursedMonthCount < $contractDetails['total_months']) {
                                 $status = 'Disbursed (Partially)';
                             } else {
@@ -944,7 +941,7 @@ class FundController extends Controller
 
                     if (!$existingFund && $isCosSalary) {
                         $targetFund = Fund::create([
-                            'dtrack_no'           => !empty($targetDtrack) ? $targetDtrack : $targetDtrack,
+                            'dtrack_no'           => $targetDtrack,
                             'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : null,
                             'creditor'            => $creditorName,
                             'particulars'         => !empty($particulars) ? $particulars : 'Imported HR COS Salary/Wages',
@@ -984,7 +981,6 @@ class FundController extends Controller
                             'status_date'         => now()
                         ];
 
-                        // FIX: Ensure contract ID and disbursed months are updated for COS salaries on single row sync
                         if ($isCosSalary) {
                             $updateData['cos_contract_id']  = $contractId;
                             $updateData['disbursed_months'] = $disbursedMonthCount;
@@ -1006,6 +1002,21 @@ class FundController extends Controller
                     if ($targetFund) {
                         $this->syncDisbursementRecords($targetFund, $tracker['disbursements'], $isCosSalary);
                         $this->syncNorsaAdjustments($targetFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
+
+                        // Capture matching rows into fund_dtrack_logs on the first pass regardless of status
+                        $matchingBulkRows = [];
+                        foreach ($rows as $rData) {
+                            $rDtrack = isset($rData[0]) ? trim((string)$rData[0]) : '';
+                            $rSerial = isset($rData[3]) ? trim((string)$rData[3]) : '';
+                            
+                            if (($rDtrack === $sheetDtrack && !empty($sheetDtrack)) || (!empty($sheetSerial) && $rSerial === $sheetSerial)) {
+                                $matchingBulkRows[] = $rData;
+                            }
+                        }
+
+                        if (!empty($matchingBulkRows)) {
+                            $this->syncFundDtrackLogs($targetFund, $matchingBulkRows, $rows);
+                        }
                     }
                 }
             }
@@ -1033,7 +1044,7 @@ class FundController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => "API Error: " . $e->getMessage()], 500);
+            return response()->json(['success' => false, 'message' => "API Error: " . $e->getMessage() . " at line " . $e->getLine()], 500);
         }
     }
 
@@ -1267,18 +1278,17 @@ class FundController extends Controller
                                 ->first();
                         }
 
-                        // Protect completed/finished statuses from being overwritten by blank/zero passes
+                        // --- ONE-TIME SYNC LOCK FOR ALREADY DISBURSED/COMPLETED ITEMS ---
                         if ($existingFund) {
                             $isFinishedStatus = in_array($existingFund->status, [
                                 'Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed'
                             ]);
 
-                            if ($isFinishedStatus && $tracker['netDisb'] == 0) {
-                                if (is_null($existingFund->secid) && !is_null($secid)) {
-                                    $existingFund->update(['secid' => $secid]);
-                                }
-                                $this->syncDisbursementRecords($existingFund, $tracker['disbursements'], $isCosSalary);
-                                $this->syncNorsaAdjustments($existingFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
+                            // Check if logs already exist for this fund
+                            $hasExistingLogs = \App\Models\FundDtrackLog::where('fund_id', $existingFund->id)->exists();
+
+                            // Only skip if it's finished AND its logs have already been captured previously
+                            if ($isFinishedStatus && $hasExistingLogs) {
                                 continue;
                             }
                         }
@@ -1339,9 +1349,25 @@ class FundController extends Controller
                             $targetFund = $existingFund;
                         }
 
+                        // Save un-consolidated per-row logs ONLY if multiple distinct DTracks are detected
                         if ($targetFund) {
                             $this->syncDisbursementRecords($targetFund, $tracker['disbursements'], $isCosSalary);
                             $this->syncNorsaAdjustments($targetFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
+
+                            // Capture matching rows into fund_dtrack_logs on the first pass regardless of status
+                            $matchingBulkRows = [];
+                            foreach ($rows as $rData) {
+                                $rDtrack = isset($rData[0]) ? trim((string)$rData[0]) : '';
+                                $rSerial = isset($rData[3]) ? trim((string)$rData[3]) : '';
+                                
+                                if (($rDtrack === $sheetDtrack && !empty($sheetDtrack)) || (!empty($sheetSerial) && $rSerial === $sheetSerial)) {
+                                    $matchingBulkRows[] = $rData;
+                                }
+                            }
+
+                            if (!empty($matchingBulkRows)) {
+                                $this->syncFundDtrackLogs($targetFund, $matchingBulkRows, $rows);
+                            }
                         }
                     }
                 }
@@ -1470,6 +1496,97 @@ class FundController extends Controller
             }
         }
     }
+
+    private function syncFundDtrackLogs(Fund $fund, array $matchedRows, array $allSheetRows = [])
+{
+    $processedIds = [];
+
+    // Count occurrences of each dtrack_no across the sheet if provided
+    $dtrackCounts = [];
+    if (!empty($allSheetRows)) {
+        foreach ($allSheetRows as $r) {
+            $dt = isset($r[0]) ? trim((string)$r[0]) : '';
+            if (!empty($dt)) {
+                $dtrackCounts[$dt] = ($dtrackCounts[$dt] ?? 0) + 1;
+            }
+        }
+    }
+
+    foreach ($matchedRows as $rowData) {
+        $dtrackNo = isset($rowData[0]) ? trim((string)$rowData[0]) : '';
+        if (empty($dtrackNo)) continue;
+
+        // RULE: Only save to fund_dtrack_logs if this dtrack_no is duplicated (appears > 1 time) in the sheet
+        $isDuplicated = isset($dtrackCounts[$dtrackNo]) && $dtrackCounts[$dtrackNo] > 1;
+
+        if (!$isDuplicated) {
+            // Skip logging if it's not a duplicate DTrack
+            continue;
+        }
+
+        $clean = function($val) {
+            if (is_null($val) || $val === '') return 0.0;
+            $raw = str_replace([',', '₱', ' '], '', trim((string)$val));
+            if (str_starts_with($raw, '(')) $raw = '-' . trim($raw, '()');
+            return is_numeric($raw) ? (float)$raw : 0.0;
+        };
+
+        $rowObAmount = isset($rowData[9]) ? $clean($rowData[9]) : 0.0;
+        $rowObDate = isset($rowData[2]) && !empty($rowData[2]) ? $this->parseApiDate($rowData[2]) : null;
+        $serial = isset($rowData[3]) ? trim((string)$rowData[3]) : null;
+
+        $rowDisbAmount = 0.0;
+        $rowDisbDate = null;
+        $disbursementMap = [17=>13, 24=>20, 31=>27, 38=>34, 45=>41, 52=>48, 59=>55, 66=>62, 73=>69, 80=>76, 87=>83, 94=>90];
+        
+        foreach ($disbursementMap as $tIdx => $dIdx) {
+            if (isset($rowData[$tIdx])) {
+                $dVal = $clean($rowData[$tIdx]);
+                if ($dVal != 0) {
+                    $rowDisbAmount += $dVal;
+                    if (isset($rowData[$dIdx]) && !empty($rowData[$dIdx])) {
+                        $rowDisbDate = $this->parseApiDate(trim((string)$rowData[$dIdx]));
+                    }
+                }
+            }
+        }
+
+        $log = \App\Models\FundDtrackLog::where('fund_id', $fund->id)
+            ->where('dtrack_no', $dtrackNo)
+            ->where('obligation_serial', $serial)
+            ->where('obligation_amount', $rowObAmount)
+            ->where('obligation_date', $rowObDate)
+            ->where('disbursement_amount', $rowDisbAmount)
+            ->where('disbursement_date', $rowDisbDate)
+            ->first();
+
+        if ($log) {
+            $processedIds[] = $log->id;
+        } else {
+            $newLog = \App\Models\FundDtrackLog::create([
+                'fund_id'             => $fund->id,
+                'dtrack_no'           => $dtrackNo,
+                'obligation_serial'   => $serial,
+                'obligation_amount'   => $rowObAmount,
+                'obligation_date'     => $rowObDate,
+                'disbursement_amount' => $rowDisbAmount,
+                'disbursement_date'   => $rowDisbDate,
+            ]);
+
+            $processedIds[] = $newLog->id;
+        }
+    }
+
+    // Clean up logs that are no longer present or no longer duplicated
+    if (!empty($processedIds)) {
+        \App\Models\FundDtrackLog::where('fund_id', $fund->id)
+            ->whereNotIn('id', $processedIds)
+            ->delete();
+    } else {
+        // If none of the matched rows for this fund are duplicates, clear out old logs for this fund
+        \App\Models\FundDtrackLog::where('fund_id', $fund->id)->delete();
+    }
+}
 
     /**
      * Persists NORSA / negative obligation adjustments into the norsa_adjustments table.

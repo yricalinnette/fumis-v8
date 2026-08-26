@@ -69,6 +69,21 @@
                             <p>Transactions</p>
                         </a>
                     </li>
+                    
+                    @can('budget-section')
+                        <li class="nav-item">
+                            <a href="{{ route('budget.procurable.index') }}" class="nav-link {{ request()->is('budget/procurable*') ? 'active' : '' }}">
+                                <i class="nav-icon fas fa-shopping-cart"></i>
+                                <p>Procurable Transactions</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="{{ route('budget.caf.tracking') }}" class="nav-link {{ request()->is('budget/caf*') ? 'active' : '' }}">
+                                <i class="nav-icon fas fa-file-invoice-dollar"></i>
+                                <p>CAF Tracking</p>
+                            </a>
+                        </li>
+                    @endcan
 
                     <li class="nav-header">REPORTS & ANALYTICS</li>
 

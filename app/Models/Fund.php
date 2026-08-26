@@ -117,5 +117,24 @@ class Fund extends Model
     {
         return (float) $this->norsaAdjustments()->sum('amount');
     }
+
+    public function procurementTransactions()
+    {
+        return $this->hasMany(\App\Models\ProcurementTransaction::class, 'source_of_fund_id'); 
+        // Note: Adjust the foreign key column name if it links via activity_id or fund id instead
+    }
+
+    /**
+     * Relationship: Procurement Transactions linked directly to this Fund record
+     */
+    public function prTransactions()
+    {
+        return $this->hasMany(\App\Models\ProcurementTransaction::class, 'fund_transaction_id');
+    }
+
+    public function dtrackLogs()
+    {
+        return $this->hasMany(FundDtrackLog::class, 'fund_id');
+    }
   
 }

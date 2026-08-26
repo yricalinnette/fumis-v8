@@ -807,12 +807,14 @@ class SettingsController extends Controller
                     ->where('id', '!=', $activity->id)
                     ->sum('budget_adjusted');
 
-                $remainingBalance = $fundSource->total_amount - $totalSpentByOthers;
+                $pooledFunds = method_exists($fundSource, 'pooledFunds') ? $fundSource->pooledFunds()->sum('amount') : ($fundSource->pooled_amount ?? 0);
+                $adjustedAllottedBudget = $fundSource->total_amount - $pooledFunds;
+                $remainingBalance = $adjustedAllottedBudget - $totalSpentByOthers;
 
                 if ($newAmount > $remainingBalance) {
-                    return back()->withInput()->withErrors([
-                        'budget_amount' => "Insufficient funds in {$fundSource->name}. Available: ₱" . number_format($remainingBalance, 2)
-                    ]);
+                    $errorMessage = "You have exceeded the adjusted allotted budget for {$fundSource->name}. Available Balance: ₱" . number_format($remainingBalance, 2) . ". To realign or replan activities, please set the amount to zero \"0\" first on the new activity to be added, then go to the Budget Realignment tab to adjust the amount for realignment.";
+
+                    return back()->withInput()->with('budget_exceeded_error', $errorMessage);
                 }
             }
 
@@ -849,6 +851,22 @@ class SettingsController extends Controller
                 $msg = 'Activity updated successfully!';
             }
         } else {
+            // BUDGET VALIDATION FOR NEW ACTIVITY CREATION
+            $fundSource = SourceOfFund::findOrFail($request->source_of_fund_id);
+            $newAmount = (float) $request->budget_amount;
+
+            $totalExistingBudget = Activity::where('source_of_fund_id', $fundSource->id)->sum('budget_adjusted');
+            
+            $pooledFunds = method_exists($fundSource, 'pooledFunds') ? $fundSource->pooledFunds()->sum('amount') : ($fundSource->pooled_amount ?? 0);
+            $adjustedAllottedBudget = $fundSource->total_amount - $pooledFunds;
+            $remainingBalance = $adjustedAllottedBudget - $totalExistingBudget;
+
+            if ($newAmount > $remainingBalance) {
+                $errorMessage = "You have exceeded the adjusted allotted budget for {$fundSource->name} (Available Adjusted Balance: ₱" . number_format($remainingBalance, 2) . "). To realign or replan activities, please set the amount to zero \"0\" first on the new activity, then go to the Budget Realignment tab to adjust the amount for realignment.";
+
+                return back()->withInput()->with('budget_exceeded_error', $errorMessage);
+            }
+
             // Create New Activity
             $uacsRecord = \App\Models\UacsCode::findOrFail($request->uacs_code_id);
 
@@ -889,8 +907,8 @@ class SettingsController extends Controller
     public function printWfp(Request $request, $id = null)
     {
         // Increase memory limit and execution time for PDF generation
-        ini_set('memory_limit', '512M');
         set_time_limit(300);
+        ini_set('memory_limit', '512M');
         
         $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
         $calendarYear = date('Y');
@@ -901,9 +919,22 @@ class SettingsController extends Controller
         $fundSource = \App\Models\SourceOfFund::find($sourceId);
         if (!$fundSource) return "Fund Source not found.";
 
-        $activities = Activity::with(['uacsCode', 'budgetLineItem'])
-            ->where('source_of_fund_id', $fundSource->id)
-            ->get();
+        // Get selected activity IDs or "all" check from request
+        $selectedActivityIds = $request->input('activity_ids', []);
+        $isSelectAll = $request->input('select_all', false);
+
+        $query = Activity::with(['uacsCode', 'budgetLineItem'])
+            ->where('source_of_fund_id', $fundSource->id);
+
+        // If not selecting all and specific IDs are provided, filter the activities (replan selection)
+        if (!$isSelectAll && !empty($selectedActivityIds)) {
+            $query->whereIn('id', $selectedActivityIds);
+        }
+
+        $activities = $query->get();
+
+        // Plan Title Modifier (e.g., Catch-up Plan, Supplemental Plan)
+        $planModifier = $request->input('plan_modifier', ''); // values: 'Catch-up Plan', 'Supplemental Plan', or empty
 
         // Logic for SAA or Consolidated
         $fundName = $fundSource->name ?? '';
@@ -935,9 +966,6 @@ class SettingsController extends Controller
         }
 
         $targetSectionId = $userSecId; 
-
-        // UNCOMMENT THE LINE BELOW IF YOU WANT TO TEST WHAT SECTION ID IS CURRENTLY DETECTED:
-        // dd(['user_id' => $currentUser->id, 'localDetail' => $localDetail, 'userSecId' => $userSecId]);
 
         if (!$targetSectionId) {
             return "Unable to determine your section ID. Please ensure your employee profile is properly linked.";
@@ -1002,8 +1030,21 @@ class SettingsController extends Controller
             'groupedActivities',
             'divisionName',
             'fundName',
-            'currentWfpType'
+            'currentWfpType',
+            'planModifier'
         ))->setPaper('a4', 'landscape')->stream("WFP_{$fundName}.pdf");
+    }
+
+    public function getActivitiesByFund($id)
+    {
+        $activities = \App\Models\Activity::where('source_of_fund_id', $id)
+            ->select('id', 'name', 'budget_adjusted')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'activities' => $activities
+        ]);
     }
 
     public function searchEmployees(Request $request)

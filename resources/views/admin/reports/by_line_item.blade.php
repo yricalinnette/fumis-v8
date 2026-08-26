@@ -223,9 +223,9 @@
                             </div>
 
                             <div class="col-md-2 text-center">
-                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold text-teal">Realized Savings (COS)</span>
+                                <span class="text-uppercase text-xs text-muted d-block font-weight-bold text-teal">Realized Savings</span>
                                 <h6 class="font-weight-bold mb-0 text-teal financial-number">₱{{ number_format($totalSavings, 2) }}</h6>
-                                <small class="text-muted" style="font-size: 0.6rem;">Completed COS Contracts</small>
+                                {{-- <small class="text-muted" style="font-size: 0.6rem;">Completed COS Contracts</small> --}}
                             </div>
                         </div> 
                     </div>
@@ -244,7 +244,7 @@
                                     <th class="text-right py-2 border-left-success">Disbursed</th>
                                     <th class="text-center py-2">Disb. %</th>
                                     <th class="text-right py-2 border-left-success text-success">Unpaid Oblig.</th>
-                                    <th class="text-right py-2 border-left-teal text-teal">Savings (COS)</th>
+                                    <th class="text-right py-2 border-left-teal text-teal">Savings</th>
                                     <th class="text-right py-2 border-left-warning bg-light text-warning">Pending Trans.</th>
                                     <th class="text-right py-2 border-left-primary bg-light text-primary">Unobligated</th>
                                 </tr>
@@ -344,7 +344,7 @@
 
                                         {{-- SAVINGS COLUMN --}}
                                         <td class="text-right align-middle border-left-teal financial-number {{ $savings > 0 ? 'text-teal font-weight-bold' : 'text-muted' }}">
-                                            @if($item['has_cos_salary'] && $savings > 0)
+                                            @if($savings > 0)
                                                 ₱{{ number_format($savings, 2) }}
                                             @else
                                                 <span class="text-muted font-weight-normal">-</span>

@@ -8,18 +8,20 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('cos_contracts', function (Blueprint $table) {
-            $table->id();
-            $table->string('creditor_name')->nullable();
-            $table->date('start_date')->nullable();
-            $table->date('end_date')->nullable();
-            $table->integer('total_months')->default(0);
-            $table->decimal('monthly_remuneration', 12, 2)->default(0.00);
-            $table->decimal('premium_amount', 12, 2)->default(0.00);
-            $table->decimal('total_contract_amount', 12, 2)->default(0.00);
-            $table->string('status', 50)->default('Active'); // Active, Completed, Terminated
-            $table->timestamps();
-        });
+        if (!Schema::hasTable('cos_contracts')) {
+            Schema::create('cos_contracts', function (Blueprint $table) {
+                $table->id();
+                $table->string('creditor_name')->nullable();
+                $table->date('start_date')->nullable();
+                $table->date('end_date')->nullable();
+                $table->integer('total_months')->default(0);
+                $table->decimal('monthly_remuneration', 12, 2)->default(0);
+                $table->decimal('premium_amount', 12, 2)->default(0);
+                $table->decimal('total_contract_amount', 12, 2)->default(0);
+                $table->string('status', 50)->default('Active');
+                $table->timestamps();
+            });
+        }
     }
 
     public function down(): void

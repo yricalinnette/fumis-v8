@@ -8,15 +8,19 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('funds', function (Blueprint $table) {
-            $table->text('manual_remarks')->nullable()->after('remarks');
-        });
+        if (!Schema::hasColumn('funds', 'manual_remarks')) {
+            Schema::table('funds', function (Blueprint $table) {
+                $table->text('manual_remarks')->nullable()->after('remarks');
+            });
+        }
     }
 
     public function down(): void
     {
-        Schema::table('funds', function (Blueprint $table) {
-            $table->dropColumn('manual_remarks');
-        });
+        if (Schema::hasColumn('funds', 'manual_remarks')) {
+            Schema::table('funds', function (Blueprint $table) {
+                $table->dropColumn('manual_remarks');
+            });
+        }
     }
 };

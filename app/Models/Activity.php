@@ -65,4 +65,9 @@ class Activity extends Model {
         // instead of the ISO-8601 (T...Z) format when returning JSON.
         return $date->format('Y-m-d H:i:s');
     }
+
+    public function procurementTransactions()
+    {
+        return $this->hasMany(ProcurementTransaction::class, 'activity_id');
+    }
 }

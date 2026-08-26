@@ -11,11 +11,13 @@ return new class extends Migration
      *
      * @return void
      */
-    public function up()
+    public function up(): void
     {
-        Schema::table('funds', function (Blueprint $table) {
-            $table->string('dtrack_no_new')->nullable()->after('dtrack_no');
-        });
+        if (!Schema::hasColumn('funds', 'dtrack_no_new')) {
+            Schema::table('funds', function (Blueprint $table) {
+                $table->string('dtrack_no_new')->nullable()->after('dtrack_no');
+            });
+        }
     }
 
     /**

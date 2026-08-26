@@ -8,6 +8,7 @@ use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\ActivityController;
+use App\Http\Controllers\BudgetProcurementController;
 
 /*
 |--------------------------------------------------------------------------
@@ -103,6 +104,8 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
         Route::post('/settings/activities', 'storeWfp')->name('settings.activity.storeWfp');
         Route::get('/settings/print/{id?}', 'printWfp')->name('settings.print');
 
+        Route::get('/settings/get-activities/{id}', [SettingsController::class, 'getActivitiesByFund'])->name('settings.get-activities');
+
         Route::prefix('settings')->name('settings.')->group(function () {
             // Signatories
             Route::get('/employees/search', 'searchEmployees')->name('employees.search');
@@ -113,6 +116,7 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
             Route::post('/realign', 'updateAllocation')->name('realign');
             Route::post('/activities/pool', 'poolFunds')->name('activity.pool');
             Route::get('/activity/{id}/edit', 'editWfp')->name('activity.edit');
+            Route::delete('/activity/{id}', 'destroyActivity')->name('activity.destroy');
 
             // ==========================================================
             // NEW ADDITION: Self-Service Password Routes (All Users)
@@ -156,12 +160,22 @@ Route::middleware(['auth', 'can:budget-section', 'throttle:30,1'])->group(functi
         Route::post('/employee', 'storeEmployee')->name('employee.store');
         Route::post('/activity', 'storeActivity')->name('activity.store');
         Route::match(['get', 'post', 'put'], '/template/{id}', 'updateTemplate')->name('template.update');
-        Route::delete('/activity/{id}', 'destroyActivity')->name('activity.destroy');
         
     });
 
     Route::post('settings/import', [ActivityController::class, 'importWFP'])->name('settings.activity.import');
     Route::get('settings/download-template', [ActivityController::class, 'downloadTemplate'])->name('settings.template.download');
+
+    // ==========================================================
+    // PROCUREMENT & CAF TRACKING (BUDGET UNIT)
+    // ==========================================================
+    Route::controller(BudgetProcurementController::class)->prefix('budget')->name('budget.')->group(function () {
+        Route::get('/procurable-activities', 'index')->name('procurable.index');
+        Route::post('/activities/{activity}/store-transaction', 'storeTransaction')->name('transaction.store');
+        Route::get('/caf-transactions', 'cafTrackingIndex')->name('caf.tracking');
+        Route::put('/budget/procurement/transaction/{id}/update-po', [BudgetProcurementController::class, 'updatePoDetails'])->name('transaction.updatePo');
+        Route::put('/budget/procurement/transaction/{id}', [BudgetProcurementController::class, 'updateTransaction'])->name('transaction.update');
+    });
 });
 
 // ==========================================================
