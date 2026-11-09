@@ -54,6 +54,9 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
         })->name('funds.sync-count');
 
         Route::get('/funds/check-balance', 'checkBalance')->name('funds.check_balance');
+
+        Route::post('/funds/save-manual-activity-obligation', [FundController::class, 'saveManualActivityObligation'])
+            ->name('funds.saveManualActivityObligation');
         
         // Critical Operations - INCREASED THROTTLING to handle polling and bulk processing
         // We increase this from 10 to 1000 to prevent the "Too Many Attempts" error
@@ -103,8 +106,17 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
         Route::get('/settings/wfp', 'index')->name('settings.index');
         Route::post('/settings/activities', 'storeWfp')->name('settings.activity.storeWfp');
         Route::get('/settings/print/{id?}', 'printWfp')->name('settings.print');
+        Route::get('/settings/activity/print-wfp', [SettingsController::class, 'printWfp'])
+            ->name('settings.activity.printWfp');
+
+        Route::get('/settings/activities/{id}/edit', [SettingsController::class, 'editActivity'])->name('settings.activity.edit');
 
         Route::get('/settings/get-activities/{id}', [SettingsController::class, 'getActivitiesByFund'])->name('settings.get-activities');
+
+        Route::post('/settings/indicative-activity/{id}/convert', [SettingsController::class, 'convertIndicativeToWfp'])
+        ->name('settings.indicative.convert');
+        Route::post('/settings/indicative-activities/bulk-convert', [SettingsController::class, 'convertMultipleIndicativeToWfp'])
+        ->name('settings.indicative.bulk-convert');
 
         Route::prefix('settings')->name('settings.')->group(function () {
             // Signatories
@@ -165,6 +177,12 @@ Route::middleware(['auth', 'can:budget-section', 'throttle:30,1'])->group(functi
 
     Route::post('settings/import', [ActivityController::class, 'importWFP'])->name('settings.activity.import');
     Route::get('settings/download-template', [ActivityController::class, 'downloadTemplate'])->name('settings.template.download');
+
+    Route::post('settings/fund_sources/{id}/convert', [SettingsController::class, 'convertToApproved'])
+    ->name('settings.fund_sources.convert');
+
+    Route::post('/settings/activity/verify-wfp', [SettingsController::class, 'verifyWfp'])
+            ->name('settings.activity.verifyWfp');
 
     // ==========================================================
     // PROCUREMENT & CAF TRACKING (BUDGET UNIT)

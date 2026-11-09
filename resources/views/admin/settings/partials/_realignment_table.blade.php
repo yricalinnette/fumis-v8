@@ -21,6 +21,7 @@
                             <th class="text-right">Current Allotted</th>
                             <th class="text-right text-orange">Pending Transactions (Routed)</th>
                             <th class="text-right text-danger">Obligated</th>
+                            <th class="text-right text-purple">NORSA</th>
                             <th class="text-right text-info">Pooled</th>
                             <th class="text-right">Available Fund for Realignment</th>
                             <th class="text-right" width="200">New Adjusted Budget</th>
@@ -28,85 +29,96 @@
                     </thead>
                     <tbody>
                         @foreach($source->activities as $activity)
-                        @php
-                            $currentYear = date('Y'); 
+                            @php
+                                $currentYear = date('Y'); 
 
-                            // 1. OBLIGATED: Official commitments made in the current year
-                            // Based strictly on the official accounting OBLIGATION DATE
-                            $obligatedSum = $activity->transactions()
-                                ->whereYear('funds.obligation_date', $currentYear)
-                                ->sum('obligation_amount') ?? 0;
-                            
-                            // 2. PENDING (Routed): Requests made THIS YEAR but not yet obligated
-                            // Filtered by created_at to ensure we only lock funds for the current fiscal cycle
-                            $pendingSum = $activity->transactions()
-                                ->whereYear('funds.created_at', $currentYear)
-                                ->where(function($q) {
-                                    $q->where(function($inner) {
-                                        $inner->whereNull('obligation_date')
-                                            ->orWhere('obligation_amount', 0);
+                                // 1. OBLIGATED: Official commitments made in the current year
+                                $obligatedSum = $activity->transactions()
+                                    ->whereYear('funds.obligation_date', $currentYear)
+                                    ->sum('obligation_amount') ?? 0;
+                                
+                                // 2. NORSA AMOUNT: Joined via norsa_adjustments.fund_id -> funds.id -> funds.transaction_type_id == activities.id
+                                $norsaSum = \DB::table('norsa_adjustments')
+                                    ->join('funds', 'norsa_adjustments.fund_id', '=', 'funds.id')
+                                    ->where('funds.transaction_type_id', $activity->id)
+                                    ->whereYear('norsa_adjustments.entry_date', $currentYear)
+                                    ->sum('norsa_adjustments.amount') ?? 0;
+
+                                // Net Obligated = Obligated amount minus NORSA amount
+                                $netObligated = max(0, $obligatedSum - $norsaSum);
+
+                                // 3. PENDING (Routed)
+                                $pendingSum = $activity->transactions()
+                                    ->whereYear('funds.created_at', $currentYear)
+                                    ->where(function($q) {
+                                        $q->where(function($inner) {
+                                            $inner->whereNull('obligation_date')
+                                                ->orWhere('obligation_amount', 0);
+                                        })
+                                        ->whereNotIn('status', ['Cancelled', 'Rejected']); 
                                     })
-                                    // Safety: Ensure we don't count transactions that were cancelled or failed
-                                    ->whereNotIn('status', ['Cancelled', 'Rejected']); 
-                                })
-                                ->sum('amount') ?? 0;
+                                    ->sum('amount') ?? 0;
 
-                            // 3. Savings/Pooled 
-                            $pooledAmount = $activity->pooled_amount ?? 0;
+                                // 4. Savings/Pooled 
+                                $pooledAmount = $activity->pooled_amount ?? 0;
 
-                            // 4. THE ABSOLUTE FLOOR: 
-                            // This represents the "Non-Touchables" for the current year
-                            $totalLocked = $obligatedSum + $pendingSum + $pooledAmount;
+                                // 5. ABSOLUTE FLOOR: Subtracting NORSA from Obligated releases those funds back for realignment
+                                $totalLocked = $netObligated + $pendingSum + $pooledAmount;
 
-                            // 5. CALCULATION
-                            $currentBudget = $activity->budget_adjusted ?? $activity->budget;
-                            $availableForRealignment = $currentBudget - $totalLocked;
-                        @endphp
-                        <tr>
-                            <td class="pl-4">
-                                <span class="font-weight-bold d-block">{{ $activity->name }}</span>
-                                <small class="text-muted">Original: ₱{{ number_format($activity->budget, 2) }}</small>
-                            </td>
-                            
-                            <td class="text-right text-muted">
-                                ₱{{ number_format($currentBudget, 2) }}
-                            </td>
+                                // 6. AVAILABLE FOR REALIGNMENT
+                                $currentBudget = $activity->budget_adjusted ?? $activity->budget;
+                                $availableForRealignment = $currentBudget - $totalLocked;
+                            @endphp
+                            <tr>
+                                <td class="pl-4">
+                                    <span class="font-weight-bold d-block">{{ $activity->name }}</span>
+                                    <small class="text-muted">Original: ₱{{ number_format($activity->budget, 2) }}</small>
+                                </td>
+                                
+                                <td class="text-right text-muted">
+                                    ₱{{ number_format($currentBudget, 2) }}
+                                </td>
 
-                            <td class="text-right text-orange">
-                                <span class="font-weight-bold">₱{{ number_format($pendingSum, 2) }}</span>
-                                <br><small class="text-xs">Unobligated</small>
-                            </td>
+                                <td class="text-right text-orange">
+                                    <span class="font-weight-bold">₱{{ number_format($pendingSum, 2) }}</span>
+                                    <br><small class="text-xs">Unobligated</small>
+                                </td>
 
-                            <td class="text-right text-danger">
-                                <span class="font-weight-bold">₱{{ number_format($obligatedSum, 2) }}</span>
-                            </td>
+                                <td class="text-right text-danger">
+                                    <span class="font-weight-bold">₱{{ number_format($obligatedSum, 2) }}</span>
+                                </td>
 
-                            <td class="text-right text-info">
-                                <span class="font-weight-bold">₱{{ number_format($pooledAmount, 2) }}</span>
-                            </td>
+                                <td class="text-right text-purple">
+                                    <span class="font-weight-bold">₱{{ number_format($norsaSum, 2) }}</span>
+                                    {{-- <br><small class="text-xs text-success">Realignable</small> --}}
+                                </td>
 
-                            <td class="text-right {{ $availableForRealignment > 0 ? 'text-success' : 'text-muted' }} font-weight-bold">
-                                ₱{{ number_format($availableForRealignment, 2) }}
-                            </td>
+                                <td class="text-right text-info">
+                                    <span class="font-weight-bold">₱{{ number_format($pooledAmount, 2) }}</span>
+                                </td>
 
-                            <td class="pr-4">
-                                <div class="input-group input-group-sm">
-                                    <div class="input-group-prepend">
-                                        <span class="input-group-text bg-white">₱</span>
+                                <td class="text-right {{ $availableForRealignment > 0 ? 'text-success' : 'text-muted' }} font-weight-bold">
+                                    ₱{{ number_format($availableForRealignment, 2) }}
+                                </td>
+
+                                <td class="pr-4">
+                                    <div class="input-group input-group-sm">
+                                        <div class="input-group-prepend">
+                                            <span class="input-group-text bg-white">₱</span>
+                                        </div>
+                                        <input type="text" 
+                                            name="adjustments[{{ $activity->id }}]" 
+                                            class="form-control text-right realign-input font-weight-bold {{ $availableForRealignment < 0 ? 'is-invalid' : '' }}" 
+                                            value="{{ number_format($currentBudget, 2, '.', ',') }}" 
+                                            data-min="{{ $totalLocked }}" 
+                                            placeholder="0.00">
                                     </div>
-                                    <input type="text" 
-                                        name="adjustments[{{ $activity->id }}]" 
-                                        class="form-control text-right realign-input font-weight-bold {{ $availableForRealignment < 0 ? 'is-invalid' : '' }}" 
-                                        value="{{ number_format($currentBudget, 2, '.', ',') }}" 
-                                        data-min="{{ $totalLocked }}" 
-                                        placeholder="0.00">
-                                </div>
-                                <small class="text-xs float-right text-muted mt-1">
-                                    Min. Limit: ₱{{ number_format($totalLocked, 2) }}
-                                </small>
-                            </td>
-                        </tr>
-                        @endforeach
+                                    <small class="text-xs float-right text-muted mt-1">
+                                        Min. Limit: ₱{{ number_format($totalLocked, 2) }}
+                                    </small>
+                                </td>
+                            </tr>
+                            @endforeach
                     </tbody>
                 </table>
             </div>

@@ -31,6 +31,7 @@ class Fund extends Model
         'cos_contract_id', 
         'disbursed_months', 
         'manual_remarks',
+        'is_multi_activity',
     ];
 
     protected $casts = [
@@ -135,6 +136,21 @@ class Fund extends Model
     public function dtrackLogs()
     {
         return $this->hasMany(FundDtrackLog::class, 'fund_id');
+    }
+
+    public function lineItems()
+    {
+        return $this->hasMany(FundMultiActivity::class, 'fund_id');
+    }
+
+    public function multiActivities()
+    {
+        return $this->hasMany(\App\Models\FundMultiActivity::class, 'fund_id', 'id');
+    }
+
+    public function procurementTransaction()
+    {
+        return $this->hasOne(ProcurementTransaction::class, 'fund_transaction_id', 'id');
     }
   
 }

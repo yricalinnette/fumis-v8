@@ -14,8 +14,8 @@
 
     /* Ensure the table cell expands to show the red text */
     #allocation-table td {
-        vertical-align: top !important;
-        padding-bottom: 10px;
+        white-space: normal !important;
+        word-break: break-word;
     }
     .is-invalid {
         border-color: #dc3545 !important;
@@ -207,6 +207,31 @@
     /* 4. Ensure the text after the select ('entries') has no weird top margin */
     .dataTables_wrapper .dataTables_length label span {
         margin-top: 0 !important;
+    }
+
+    /* Fix Activity column width and contain Select2 */
+    #allocation-table td:nth-child(2) {
+        width: 40% !important;
+        max-width: 40% !important;
+        white-space: normal !important;
+        word-break: break-word !important;
+    }
+
+    .select2-container {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+
+    .select2-container--bootstrap4 .select2-selection--single {
+        height: auto !important;
+        min-height: calc(2.25rem + 2px);
+        white-space: normal !important;
+    }
+
+    .select2-container--bootstrap4 .select2-selection--single .select2-selection__rendered {
+        white-space: normal !important;
+        word-break: break-word !important;
+        padding-right: 20px !important;
     }
 
 </style>
@@ -404,8 +429,65 @@
                         {!! $fund->source_names !!}
                     </td>
                     
-                    <td class="col-activity">
-                        @if(empty($fund->transaction_type_id))
+                    <td class="col-activity align-middle">
+                        @php
+                            $parsedActivityList = [];
+
+                            // 1. Check direct multi-activity relation (lineItems -> fund_multi_activities)
+                            if (isset($fund->lineItems) && $fund->lineItems->isNotEmpty()) {
+                                foreach ($fund->lineItems as $line) {
+                                    // Fetch actual activity name from relation or fallback
+                                    $actName = $line->activity->name ?? $line->activity_name ?? null;
+                                    if (!empty($actName)) {
+                                        $parsedActivityList[] = $actName;
+                                    }
+                                }
+                            }
+
+                            // 2. Check line_items inside breakdown items (if grouped)
+                            if (empty($parsedActivityList) && isset($fund->breakdown) && is_iterable($fund->breakdown)) {
+                                foreach ($fund->breakdown as $bItem) {
+                                    $lines = $bItem->line_items ?? $bItem->lineItems ?? null;
+                                    if ($lines && is_iterable($lines)) {
+                                        foreach ($lines as $line) {
+                                            $actName = is_array($line) 
+                                                ? ($line['activity']['name'] ?? $line['activity_name'] ?? null) 
+                                                : ($line->activity->name ?? $line->activity_name ?? null);
+                                            if (!empty($actName)) {
+                                                $parsedActivityList[] = $actName;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 3. Fallback to mapped grouped_activities
+                            if (empty($parsedActivityList) && isset($fund->grouped_activities) && is_iterable($fund->grouped_activities)) {
+                                foreach ($fund->grouped_activities as $actItem) {
+                                    $name = is_array($actItem) 
+                                        ? ($actItem['name'] ?? $actItem['activity_name'] ?? null) 
+                                        : ($actItem->name ?? $actItem->activity_name ?? null);
+                                    if (!empty($name)) {
+                                        $parsedActivityList[] = $name;
+                                    }
+                                }
+                            }
+
+                            // 4. Fallback to direct activity relationship or raw string parsing
+                            if (empty($parsedActivityList)) {
+                                $rawActivityNames = $fund->activity_names ?: ($fund->activity->name ?? '');
+                                if (!empty($rawActivityNames)) {
+                                    $splitItems = preg_split('/(?=Activity\s+\d+)/i', $rawActivityNames, -1, PREG_SPLIT_NO_EMPTY);
+                                    $parsedActivityList = array_map('trim', array_filter($splitItems));
+                                }
+                            }
+
+                            // De-duplicate activities while retaining order
+                            $parsedActivityList = array_values(array_unique($parsedActivityList));
+                            $hasActivity = !empty($fund->transaction_type_id) || count($parsedActivityList) > 0;
+                        @endphp
+
+                        @if(!$hasActivity)
                             {{-- UNASSIGNED STATE --}}
                             <div class="unassigned-container-{{ $fund->id }}">
                                 <span class="badge badge-warning text-dark mb-1">
@@ -419,7 +501,6 @@
                                         $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
                                         $isDivision       = \Illuminate\Support\Facades\Gate::allows('division-access');
 
-                                        // Extract user section ID once
                                         $userSecId = null;
                                         if (!$isAdminOrBudget && !$isDivision) {
                                             $localDetail = \DB::table('employee_details')->where('user_id', $user->id)->first();
@@ -433,10 +514,8 @@
                                         $divisionSecIds = $isDivision ? $user->getDivisionSectionIds() : [];
                                     @endphp
 
-                                    {{-- Group activities by Fund Source Name --}}
                                     @foreach($allActivitiesList->groupBy(function($act) { return $act->source->name ?? 'Other / General Fund'; }) as $sourceName => $activitiesGroup)
                                         @php
-                                            // Filter group items to matching section IDs
                                             $filteredGroup = $activitiesGroup->filter(function($act) use ($isAdminOrBudget, $isDivision, $divisionSecIds, $userSecId) {
                                                 if ($isAdminOrBudget) return true;
                                                 if ($isDivision) return in_array($act->section_id, $divisionSecIds);
@@ -452,12 +531,34 @@
                                             </optgroup>
                                         @endif
                                     @endforeach
-
                                 </select>
                             </div>
                         @else
-                            {{-- ASSIGNED STATE --}}
-                            <span class="font-weight-bold text-dark">{!! $fund->activity_names ?: 'N/A' !!}</span>
+                            {{-- ASSIGNED STATE (Itemized Multi-Activity Display) --}}
+                            <div class="d-flex flex-column gap-2">
+                                @if(count($parsedActivityList) > 1)
+                                    {{-- MULTIPLE ACTIVITIES ITEMIZATION --}}
+                                    @foreach($parsedActivityList as $index => $actName)
+                                        <div class="p-2 mb-1 bg-white border-left border-3 border-info rounded shadow-xs">
+                                            <div class="d-flex align-items-center mb-1">
+                                                <span class="badge badge-info font-weight-bold" style="font-size: 0.7rem;">
+                                                    <i class="fas fa-tasks mr-1"></i> Activity {{ $index + 1 }}
+                                                </span>
+                                            </div>
+                                            <div class="font-weight-bold text-dark text-sm" style="line-height: 1.35;">
+                                                {{ $actName }}
+                                            </div>
+                                        </div>
+                                    @endforeach
+                                @else
+                                    {{-- SINGLE ACTIVITY --}}
+                                    <div class="p-2 bg-white border-left border-3 border-info rounded shadow-xs">
+                                        <div class="font-weight-bold text-dark text-sm" style="line-height: 1.35;">
+                                            {{ $parsedActivityList[0] ?? ($rawActivityNames ?? 'N/A') }}
+                                        </div>
+                                    </div>
+                                @endif
+                            </div>
                         @endif
                     </td>
                     
@@ -539,10 +640,10 @@
                                             || \Illuminate\Support\Str::contains(strtolower($item->remarks), ['cos', 'salary', 'wages', 'payroll']);
 
                                 return [
-                                    'text' => $item->remarks,
-                                    'type' => $isCosSalary ? 'COS' : 'DTrack',
+                                    'text'  => $item->remarks,
+                                    'type'  => $isCosSalary ? 'COS' : 'DTrack',
                                     'label' => $isCosSalary ? 'COS Remarks' : 'DTrack Remarks',
-                                    'icon' => $isCosSalary ? 'fa-id-badge text-warning' : 'fa-route text-secondary',
+                                    'icon'  => $isCosSalary ? 'fa-id-badge text-warning' : 'fa-route text-secondary',
                                     'class' => $isCosSalary ? 'border-warning' : 'border-secondary'
                                 ];
                             };
@@ -562,6 +663,104 @@
                                     {{ $firstStatus }}
                                 </span>
 
+                                {{-- Procurable / PO / CAF Tracking & Itemized Breakdown (Merged View) --}}
+                                @php
+                                    $isDisbursedState = in_array($firstStatus, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']);
+                                    $allProcurements = $fund->breakdown->flatMap(function($item) {
+                                        return DB::table('procurement_transactions')->where('fund_transaction_id', $item->id)->get();
+                                    });
+                                    $mergedPoCount = $allProcurements->where('caf_status', 'Tagged as PO')->count();
+                                    $mergedTotal = $allProcurements->count();
+                                    $mergedPoNumbers = $allProcurements->pluck('po_number')->filter()->unique()->implode(', ');
+                                    $mergedDtrackNos = $allProcurements->pluck('po_dtrack_no')->filter()->unique()->implode(', ');
+                                @endphp
+                                @if(!$isDisbursedState && $allProcurements->isNotEmpty())
+                                    <div class="mt-2 p-2 bg-light border border-secondary rounded shadow-sm" style="max-width: 380px;">
+                                        <div class="text-xs font-weight-bold text-navy mb-1 border-bottom pb-1">
+                                            <i class="fas fa-boxes mr-1"></i> Procurement Items Breakdown
+                                        </div>
+                                        
+                                        <div class="mt-1 text-xs">
+                                            <ul class="list-unstyled mb-0 pl-2 border-left border-primary">
+                                                @foreach($allProcurements as $pt)
+                                                    @php
+                                                        $parentCafStatus = $pt->caf_status ?? 'Tagged as CAF';
+                                                        
+                                                        $procItems = DB::table('procurement_transaction_items')
+                                                            ->where('procurement_transaction_id', $pt->id)
+                                                            ->get();
+                                                    @endphp
+
+                                                    @if($procItems->isNotEmpty())
+                                                        <li class="mb-2 pb-1 border-bottom border-light">
+                                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                                <span class="font-weight-bold text-dark">
+                                                                    <i class="fas fa-file-alt text-muted mr-1"></i> {{ $pt->item_name ?? $pt->pr_number ?? 'Procurement Ref' }}
+                                                                </span>
+                                                            </div>
+                                                            <div class="pl-2 border-left border-secondary">
+                                                                @foreach($procItems as $pItem)
+                                                                    @php
+                                                                        $isItemPo = (!empty($pItem->po_number) || (!empty($pItem->po_amount) && $pItem->po_amount > 0));
+                                                                        $itemStatusText = $isItemPo ? 'Tagged as PO' : 'Tagged as CAF';
+                                                                        $itemBadgeClass = $isItemPo ? 'badge-success' : 'badge-warning';
+                                                                        $displayItemAmount = $isItemPo ? $pItem->po_amount : ($pItem->item_amount ?? 0);
+                                                                    @endphp
+                                                                    <div class="mb-1 pb-1 border-bottom border-light-subtle">
+                                                                        <div class="d-flex justify-content-between align-items-center text-dark">
+                                                                            <span><i class="fas fa-cube mr-1 text-muted"></i> {{ $pItem->pr_item_name ?? 'Item' }}</span>
+                                                                            <span class="font-weight-bold">₱{{ number_format($displayItemAmount, 2) }}</span>
+                                                                        </div>
+                                                                        <div class="d-flex justify-content-between align-items-center mt-0.5" style="font-size: 0.60rem;">
+                                                                            <span class="text-muted">
+                                                                                @if(!empty($pItem->po_number)) PO: {{ $pItem->po_number }} @endif
+                                                                                @if(!empty($pItem->po_dtrack_no)) | DTrack: {{ $pItem->po_dtrack_no }} @endif
+                                                                            </span>
+                                                                            <span class="badge {{ $itemBadgeClass }}" style="font-size: 0.50rem;">
+                                                                                {{ $itemStatusText }}
+                                                                            </span>
+                                                                        </div>
+                                                                    </div>
+                                                                @endforeach
+                                                            </div>
+                                                            @if(!empty($pt->po_dtrack_no))
+                                                                <div class="text-muted mt-0.5 pl-2" style="font-size: 0.62rem;">
+                                                                    <i class="fas fa-route text-secondary mr-1"></i> DTrack: {{ $pt->po_dtrack_no }}
+                                                                </div>
+                                                            @endif
+                                                        </li>
+                                                    @else
+                                                        @php
+                                                            $isSinglePo = ($parentCafStatus === 'Tagged as PO' || !empty($pt->po_number));
+                                                            $singleStatusText = $isSinglePo ? 'Tagged as PO' : 'Tagged as CAF';
+                                                            $singleBadgeClass = $isSinglePo ? 'badge-success' : 'badge-warning';
+                                                            $displaySingleAmount = (!empty($pt->po_amount) && $pt->po_amount > 0) ? $pt->po_amount : ($pt->abc_allotment ?? 0);
+                                                        @endphp
+                                                        <li class="mb-1.5 pb-1 border-bottom border-light d-flex justify-content-between align-items-center">
+                                                            <div>
+                                                                <span class="font-weight-bold text-dark">
+                                                                    <i class="fas fa-cube text-muted mr-1"></i> {{ $pt->item_name ?? 'Procurement Item' }}
+                                                                </span>
+                                                                <div class="text-muted pl-3" style="font-size: 0.62rem;">
+                                                                    <i class="fas fa-route text-secondary mr-0.5"></i> DTrack: {{ $pt->po_dtrack_no ?? 'N/A' }}
+                                                                </div>
+                                                            </div>
+                                                            <div class="text-right">
+                                                                <span class="badge {{ $singleBadgeClass }} d-block mb-0.5" style="font-size: 0.55rem;">
+                                                                    {{ $singleStatusText }} @if(!empty($pt->po_number)) (PO: {{ $pt->po_number }}) @endif
+                                                                </span>
+                                                                <span class="font-weight-bold text-dark" style="font-size: 0.7rem;">
+                                                                    ₱{{ number_format($displaySingleAmount, 2) }}
+                                                                </span>
+                                                            </div>
+                                                        </li>
+                                                    @endif
+                                                @endforeach
+                                            </ul>
+                                        </div>
+                                    </div>
+                                @endif
+
                                 {{-- NORSA Savings Badge (Merged View) --}}
                                 @if(isset($fund->has_norsa) && $fund->has_norsa)
                                     <div class="mt-1">
@@ -571,7 +770,7 @@
                                     </div>
                                 @endif
 
-                                {{-- COS Contract Duration Badge --}}
+                                {{-- COS Contract Duration Badge (Merged View) --}}
                                 @if(isset($fund->remarks_salary) && $fund->remarks_salary === 'Imported HR COS Salary/Wages' && isset($fund->contract))
                                     <div class="mt-1">
                                         @if($fund->disbursed_months >= $fund->contract->total_months)
@@ -618,7 +817,6 @@
                                 @php
                                     $itemRemarkInfo = $classifyRemark($item);
                                     
-                                    // Robust Fallbacks for COS Detection
                                     $isCosItem = (isset($item->remarks_salary) && $item->remarks_salary === 'Imported HR COS Salary/Wages') 
                                         || \Illuminate\Support\Str::contains(strtolower($item->remarks ?? ''), ['cos', 'salary', 'wages', 'payroll'])
                                         || (isset($fund->remarks_salary) && $fund->remarks_salary === 'Imported HR COS Salary/Wages');
@@ -627,49 +825,214 @@
                                                     $fund->cosContract ?? $fund->contract ?? $fund->cos_contract ?? null;
 
                                     $itemDisbursements = collect($item->cosSalaryDisbursements ?? $item->cos_salary_disbursements ?? $item->cos_disbursements ?? 
-                                                                 $fund->cosSalaryDisbursements ?? $fund->cos_salary_disbursements ?? $fund->cos_disbursements ?? []);
+                                                                $fund->cosSalaryDisbursements ?? $fund->cos_salary_disbursements ?? $fund->cos_disbursements ?? []);
 
-                                    $disbursedMonths = $item->disbursed_months ?? $fund->disbursed_months ?? 0;
                                     $obDate = $item->obligation_date ?? $fund->obligation_date ?? null;
                                     $disbDate = $item->disbursement_date ?? $fund->disbursement_date ?? null;
-                                    $obAmount = $item->obligation_amount ?? $fund->obligation_amount ?? 0;
+                                    
+                                    // Saved obligation_amount in DB (which is already net of NORSA)
+                                    $dbObAmount = $item->obligation_amount ?? $fund->obligation_amount ?? 0;
                                     $disbAmount = $item->disbursement_amount ?? $fund->disbursement_amount ?? 0;
+                                    $norsaAmount = $item->norsa_amount ?? $fund->total_norsa ?? 0;
+                                    $hasNorsa = (isset($item->has_norsa) && $item->has_norsa) || (isset($fund->has_norsa) && $fund->has_norsa);
+
+                                    // Original Gross Obligation before NORSA deduction
+                                    $originalObAmount = $hasNorsa ? ($dbObAmount + $norsaAmount) : $dbObAmount;
+                                    // Net Obligation after NORSA deobligation
+                                    $netObAmount = $dbObAmount;
+
+                                    // -------------------------------------------------------------
+                                    // PRE-COMPUTE ACCURATE MONTH DISBURSEMENT SPAN BEFORE BADGES
+                                    // -------------------------------------------------------------
+                                    $expectedPerMonth = ($itemContract->monthly_remuneration ?? 0) + ($itemContract->premium_amount ?? 0);
+                                    $totalMonths = (int)($itemContract->total_months ?? 0);
+                                    $contractStart = ($itemContract && $itemContract->start_date) ? \Carbon\Carbon::parse($itemContract->start_date) : null;
+
+                                    $disbList = $itemDisbursements->values();
+                                    $coveredIndices = [];
+                                    $mappedDisbursements = [];
+
+                                    if ($isCosItem && $itemContract) {
+                                        foreach ($disbList as $cd) {
+                                            $amt = $cd->amount ?? 0;
+                                            $cdDisbDate = $cd->disbursement_date ? \Carbon\Carbon::parse($cd->disbursement_date) : null;
+                                            
+                                            $monthsSpan = 1;
+                                            if ($expectedPerMonth > 0 && $amt > 0) {
+                                                $rawRatio = $amt / $expectedPerMonth;
+                                                if ($rawRatio > 1.3) {
+                                                    $monthsSpan = (int) round($rawRatio);
+                                                } else {
+                                                    $monthsSpan = 1;
+                                                }
+                                            }
+                                            
+                                            $startMonthIdx = 0;
+                                            while (in_array($startMonthIdx, $coveredIndices) && $startMonthIdx < $totalMonths) {
+                                                $startMonthIdx++;
+                                            }
+
+                                            $spanMonths = [];
+                                            for ($s = 0; $s < $monthsSpan && ($startMonthIdx + $s) < $totalMonths; $s++) {
+                                                $targetIdx = $startMonthIdx + $s;
+                                                $coveredIndices[] = $targetIdx;
+                                                $spanMonths[] = $targetIdx;
+                                            }
+
+                                            if (!empty($spanMonths)) {
+                                                $mappedDisbursements[] = [
+                                                    'amount'        => $amt,
+                                                    'date'          => $cdDisbDate,
+                                                    'month_indices' => $spanMonths
+                                                ];
+                                            }
+                                        }
+
+                                        $calculatedDisbursedMonths = count(array_unique($coveredIndices));
+                                        $isFullyDisbursedContract = ($calculatedDisbursedMonths >= $totalMonths);
+                                    } else {
+                                        $calculatedDisbursedMonths = $item->disbursed_months ?? $fund->disbursed_months ?? 0;
+                                        $isFullyDisbursedContract = false;
+                                    }
+
+                                    // Dynamically evaluate status for badges
+                                    $displayStatus = $item->status;
+                                    if ($isCosItem && $isFullyDisbursedContract && in_array($item->status, ['Disbursed (Partially)', 'Disbursed'])) {
+                                        $displayStatus = $hasNorsa ? 'Disbursed (with savings)' : 'Disbursed';
+                                    }
+
+                                    $isItemDisbursed = in_array($displayStatus, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']);
                                 @endphp
+
                                 <div class="allocation-row {{ !$loop->last ? 'mb-3 border-bottom pb-2' : '' }}">
                                     <div class="small font-weight-bold text-dark mb-1">
                                         <i class="fas fa-wallet text-muted mr-1"></i> {{ $item->source_name }}
                                     </div>
 
-                                    {{-- Status Badge Rendering --}}
+                                    {{-- Main Status Badge --}}
                                     <span class="badge {{ 
-                                        in_array($item->status, ['Disbursed', 'Completed']) ? 'badge-success' : 
-                                        ($item->status == 'Disbursed (with savings)' ? 'badge-info' : 
-                                        ($item->status == 'Disbursed (Partially)' ? 'badge-warning' :
-                                        ($item->status == 'Cancelled' ? 'badge-danger' : 
-                                        ($item->status == 'Routed' ? 'badge-primary' : 
-                                        ($item->status == 'For CAF/Obligation' ? 'badge-warning' : 
-                                        ($item->status == 'Obligated' ? 'bg-orange text-white' : 'badge-info'))))))
+                                        in_array($displayStatus, ['Disbursed', 'Completed']) ? 'badge-success' : 
+                                        ($displayStatus == 'Disbursed (with savings)' ? 'badge-info' : 
+                                        ($displayStatus == 'Disbursed (Partially)' ? 'badge-warning' : 
+                                        ($displayStatus == 'Cancelled' ? 'badge-danger' : 
+                                        ($displayStatus == 'Routed' ? 'badge-primary' : 
+                                        ($displayStatus == 'For CAF/Obligation' ? 'badge-warning' : 
+                                        ($displayStatus == 'Obligated' ? 'bg-orange text-white' : 'badge-info'))))))
                                     }}">
-                                        {{ $item->status }}
+                                        {{ $displayStatus }}
                                     </span>
 
+                                    {{-- Procurable / CAF / PO Transactions & Items Breakdown --}}
+                                    @php
+                                        $procTransactions = DB::table('procurement_transactions')
+                                            ->where('fund_transaction_id', $item->id)
+                                            ->get();
+                                    @endphp
+
+                                    @if(!$isItemDisbursed && $procTransactions->isNotEmpty())
+                                        <div class="mt-2 p-2 bg-light border border-secondary rounded shadow-sm" style="max-width: 380px;">
+                                            <div class="text-xs font-weight-bold text-navy mb-1 border-bottom pb-1">
+                                                <i class="fas fa-boxes mr-1"></i> Procurement Items Breakdown
+                                            </div>
+                                            
+                                            <div class="mt-1 text-xs">
+                                                <ul class="list-unstyled mb-0 pl-2 border-left border-primary">
+                                                    @foreach($procTransactions as $pt)
+                                                        @php
+                                                            $parentCafStatus = $pt->caf_status ?? 'Tagged as CAF';
+                                                            
+                                                            $procItems = DB::table('procurement_transaction_items')
+                                                                ->where('procurement_transaction_id', $pt->id)
+                                                                ->get();
+                                                        @endphp
+
+                                                        @if($procItems->isNotEmpty())
+                                                            <li class="mb-2 pb-1 border-bottom border-light">
+                                                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                                                    <span class="font-weight-bold text-dark">
+                                                                        <i class="fas fa-file-alt text-muted mr-1"></i> {{ $pt->item_name ?? $pt->pr_number ?? 'Procurement Ref' }}
+                                                                    </span>
+                                                                </div>
+                                                                <div class="pl-2 border-left border-secondary">
+                                                                    @foreach($procItems as $pItem)
+                                                                        @php
+                                                                            $isItemPo = (!empty($pItem->po_number) || (!empty($pItem->po_amount) && $pItem->po_amount > 0));
+                                                                            $itemStatusText = $isItemPo ? 'Tagged as PO' : 'Tagged as CAF';
+                                                                            $itemBadgeClass = $isItemPo ? 'badge-success' : 'badge-warning';
+                                                                            $displayItemAmount = $isItemPo ? $pItem->po_amount : ($pItem->item_amount ?? 0);
+                                                                        @endphp
+                                                                        <div class="mb-1 pb-1 border-bottom border-light-subtle">
+                                                                            <div class="d-flex justify-content-between align-items-center text-dark">
+                                                                                <span><i class="fas fa-cube mr-1 text-muted"></i> {{ $pItem->pr_item_name ?? 'Item' }}</span>
+                                                                                <span class="font-weight-bold">₱{{ number_format($displayItemAmount, 2) }}</span>
+                                                                            </div>
+                                                                            <div class="d-flex justify-content-between align-items-center mt-0.5" style="font-size: 0.60rem;">
+                                                                                <span class="text-muted">
+                                                                                    @if(!empty($pItem->po_number)) PO: {{ $pItem->po_number }} @endif
+                                                                                    @if(!empty($pItem->po_dtrack_no)) | DTrack: {{ $pItem->po_dtrack_no }} @endif
+                                                                                </span>
+                                                                                <span class="badge {{ $itemBadgeClass }}" style="font-size: 0.50rem;">
+                                                                                    {{ $itemStatusText }}
+                                                                                </span>
+                                                                            </div>
+                                                                        </div>
+                                                                    @endforeach
+                                                                </div>
+                                                                @if(!empty($pt->po_dtrack_no))
+                                                                    <div class="text-muted mt-0.5 pl-2" style="font-size: 0.62rem;">
+                                                                        <i class="fas fa-route text-secondary mr-1"></i> DTrack: {{ $pt->po_dtrack_no }}
+                                                                    </div>
+                                                                @endif
+                                                            </li>
+                                                        @else
+                                                            @php
+                                                                $isSinglePo = ($parentCafStatus === 'Tagged as PO' || !empty($pt->po_number));
+                                                                $singleStatusText = $isSinglePo ? 'Tagged as PO' : 'Tagged as CAF';
+                                                                $singleBadgeClass = $isSinglePo ? 'badge-success' : 'badge-warning';
+                                                                $displaySingleAmount = (!empty($pt->po_amount) && $pt->po_amount > 0) ? $pt->po_amount : ($pt->abc_allotment ?? 0);
+                                                            @endphp
+                                                            <li class="mb-1.5 pb-1 border-bottom border-light d-flex justify-content-between align-items-center">
+                                                                <div>
+                                                                    <span class="font-weight-bold text-dark">
+                                                                        <i class="fas fa-cube text-muted mr-1"></i> {{ $pt->item_name ?? 'Procurement Item' }}
+                                                                    </span>
+                                                                    <div class="text-muted pl-3" style="font-size: 0.62rem;">
+                                                                        <i class="fas fa-route text-secondary mr-0.5"></i> DTrack: {{ $pt->po_dtrack_no ?? 'N/A' }}
+                                                                    </div>
+                                                                </div>
+                                                                <div class="text-right">
+                                                                    <span class="badge {{ $singleBadgeClass }} d-block mb-0.5" style="font-size: 0.55rem;">
+                                                                        {{ $singleStatusText }} @if(!empty($pt->po_number)) (PO: {{ $pt->po_number }}) @endif
+                                                                    </span>
+                                                                    <span class="font-weight-bold text-dark" style="font-size: 0.7rem;">
+                                                                        ₱{{ number_format($displaySingleAmount, 2) }}
+                                                                    </span>
+                                                                </div>
+                                                            </li>
+                                                        @endif
+                                                    @endforeach
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    @endif
+
                                     {{-- NORSA SAVINGS BADGE TAG --}}
-                                    @if(isset($item->has_norsa) && $item->has_norsa)
+                                    @if($hasNorsa)
                                         <span class="badge badge-danger shadow-sm ml-1" title="NORSA savings adjustment recorded">
-                                            <i class="fas fa-file-invoice-dollar mr-1"></i> NORSA: (₱{{ number_format($item->norsa_amount, 2) }})
+                                            <i class="fas fa-file-invoice-dollar mr-1"></i> NORSA: (₱{{ number_format($norsaAmount, 2) }})
                                         </span>
                                     @endif
 
-                                    {{-- COS Contract Duration Badge --}}
+                                    {{-- DYNAMIC COS CONTRACT DURATION BADGE --}}
                                     @if($isCosItem && $itemContract)
                                         <div class="mt-1">
-                                            @if($disbursedMonths >= $itemContract->total_months)
+                                            @if($isFullyDisbursedContract)
                                                 <span class="badge badge-success" title="Period: {{ $itemContract->start_date }} to {{ $itemContract->end_date }}">
-                                                    <i class="fas fa-check-circle mr-1"></i> Contract Fully Disbursed ({{ $disbursedMonths }}/{{ $itemContract->total_months }} mos)
+                                                    <i class="fas fa-check-circle mr-1"></i> Contract Fully Disbursed ({{ $calculatedDisbursedMonths }}/{{ $totalMonths }} mos)
                                                 </span>
                                             @else
                                                 <span class="badge badge-info" title="Period: {{ $itemContract->start_date }} to {{ $itemContract->end_date }}">
-                                                    <i class="fas fa-hourglass-half mr-1"></i> Paid {{ $disbursedMonths }} of {{ $itemContract->total_months }} Months
+                                                    <i class="fas fa-hourglass-half mr-1"></i> Paid {{ $calculatedDisbursedMonths }} of {{ $totalMonths }} Months
                                                 </span>
                                             @endif
                                         </div>
@@ -677,8 +1040,8 @@
 
                                     <div class="small mt-1">
                                         {{-- OBLIGATED STATE --}}
-                                        @if($item->status == 'Obligated')
-                                            @if(empty($obAmount) || $obAmount == 0)
+                                        @if($displayStatus == 'Obligated')
+                                            @if(empty($originalObAmount) || $originalObAmount == 0)
                                                 <div class="text-danger font-italic">
                                                     <i class="fas fa-sync fa-spin mr-1" style="font-size: 0.7rem;"></i> Awaiting sync to RAODS
                                                 </div>
@@ -689,32 +1052,35 @@
                                                     </div>
                                                 @endif
 
-                                                @if(isset($item->has_norsa) && $item->has_norsa)
+                                                <div class="text-dark font-weight-bold mt-0.5" style="font-size: 0.72rem;">
+                                                    Obligation Amount: ₱{{ number_format($originalObAmount, 2) }}
+                                                </div>
+
+                                                @if($hasNorsa)
                                                     <div class="text-info font-weight-bold mt-0.5" style="font-size: 0.72rem;">
-                                                        Net Obligation: ₱{{ number_format($item->net_obligation_amount, 2) }}
-                                                    </div>
-                                                    <div class="text-muted" style="font-size: 0.65rem;">
-                                                        (Gross: ₱{{ number_format($obAmount, 2) }})
+                                                        Net Obligation: ₱{{ number_format($netObAmount, 2) }}
                                                     </div>
                                                 @endif
                                             @endif
 
                                         {{-- DISBURSED / DISBURSED (WITH SAVINGS) / DISBURSED (PARTIALLY) / COMPLETED STATES --}}
-                                        @elseif(in_array($item->status, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']))
+                                        @elseif($isItemDisbursed)
                                             @if($obDate)
                                                 <div class="text-primary font-weight-bold" style="font-size: 0.72rem;">
                                                     <i class="far fa-calendar-alt mr-1"></i> Oblig: {{ \Carbon\Carbon::parse($obDate)->format('M d, Y') }}
                                                 </div>
                                             @endif
 
-                                            {{-- Explicitly Display Obligation Amount for Tracking --}}
-                                            @if($obAmount > 0)
+                                            @if($originalObAmount > 0)
                                                 <div class="text-dark font-weight-bold mt-0.5" style="font-size: 0.72rem;">
-                                                    Obligation Amount: ₱{{ number_format($obAmount, 2) }}
+                                                    Obligation Amount: ₱{{ number_format($originalObAmount, 2) }}
                                                 </div>
-                                                @if(isset($item->has_norsa) && $item->has_norsa)
-                                                    <div class="text-muted" style="font-size: 0.65rem;">
-                                                        (Total Disbursed: ₱{{ number_format($item->net_obligation_amount ?? 0, 2) }})
+                                                <div class="text-muted" style="font-size: 0.65rem;">
+                                                    (Total Disbursed: ₱{{ number_format($disbAmount, 2) }})
+                                                </div>
+                                                @if($hasNorsa)
+                                                    <div class="text-info font-weight-bold mt-0.5" style="font-size: 0.68rem;">
+                                                        Net Obligation (After NORSA): ₱{{ number_format($netObAmount, 2) }}
                                                     </div>
                                                 @endif
                                             @endif
@@ -740,18 +1106,18 @@
                                             @php
                                                 $savings = 0;
                                                 if ($isCosItem && $itemContract) {
-                                                    if ($disbursedMonths >= $itemContract->total_months || in_array($item->status, ['Completed', 'Disbursed (with savings)'])) {
-                                                        $savings = max(0, $obAmount - $disbAmount);
+                                                    if ($calculatedDisbursedMonths >= $totalMonths || in_array($displayStatus, ['Completed', 'Disbursed (with savings)'])) {
+                                                        $savings = max(0, $netObAmount - $disbAmount);
                                                     } else {
-                                                        $expectedDisbursement = ($itemContract->monthly_remuneration + $itemContract->premium_amount) * $disbursedMonths;
+                                                        $expectedDisbursement = $expectedPerMonth * $calculatedDisbursedMonths;
                                                         $savings = max(0, $expectedDisbursement - $disbAmount);
                                                     }
                                                 } else {
-                                                    $savings = max(0, $obAmount - $disbAmount);
+                                                    $savings = max(0, $netObAmount - $disbAmount);
                                                 }
                                             @endphp
 
-                                            @if($savings > 0 && in_array($item->status, ['Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']))
+                                            @if($savings > 0 && in_array($displayStatus, ['Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']))
                                                 <div class="text-success font-weight-bold mt-1" style="font-size: 0.75rem;">
                                                     <i class="fas fa-piggy-bank mr-1"></i> Savings: ₱{{ number_format($savings, 2) }}
                                                 </div>
@@ -759,13 +1125,12 @@
 
                                             {{-- ================= MONTHLY SALARY BREAKDOWN UI ================= --}}
                                             @if($isCosItem && $itemContract)
-                                                @php
-                                                    $expectedPerMonth = ($itemContract->monthly_remuneration ?? 0) + ($itemContract->premium_amount ?? 0);
-                                                @endphp
-
                                                 <div class="mt-2 p-2 bg-light border border-secondary rounded shadow-sm" style="max-width: 380px;">
-                                                    <div class="text-xs font-weight-bold text-navy mb-1 border-bottom pb-1">
-                                                        <i class="fas fa-list-ul mr-1"></i> Salary Disbursement Tracking (Per Contract Month)
+                                                    <div class="text-xs font-weight-bold text-navy mb-1 border-bottom pb-1 d-flex justify-content-between align-items-center">
+                                                        <span><i class="fas fa-list-ul mr-1"></i> Salary Disbursement Tracking</span>
+                                                        <span class="badge {{ $isFullyDisbursedContract ? 'badge-success' : 'badge-info' }}" style="font-size: 0.65rem;">
+                                                            {{ $calculatedDisbursedMonths }}/{{ $totalMonths }} Mos Paid
+                                                        </span>
                                                     </div>
                                                     
                                                     <div class="d-flex justify-content-between text-xs mb-1">
@@ -773,48 +1138,10 @@
                                                         <span class="font-weight-bold text-primary">₱{{ number_format($expectedPerMonth, 2) }}</span>
                                                     </div>
                                                     
-                                                    @if($itemDisbursements->count() > 0)
+                                                    @if(count($mappedDisbursements) > 0)
                                                         <div class="mt-2 text-xs">
                                                             <strong class="text-muted d-block mb-1">Contract Months Paid:</strong>
                                                             <ul class="list-unstyled mb-0 pl-2 border-left border-success">
-                                                                @php
-                                                                    $contractStart = $itemContract->start_date ? \Carbon\Carbon::parse($itemContract->start_date) : null;
-                                                                    $totalMonths = (int)$itemContract->total_months;
-                                                                    $disbList = $itemDisbursements->values();
-                                                                    
-                                                                    $coveredIndices = [];
-                                                                    $mappedDisbursements = [];
-
-                                                                    foreach ($disbList as $cd) {
-                                                                        $amt = $cd->amount ?? 0;
-                                                                        $disbDate = $cd->disbursement_date ? \Carbon\Carbon::parse($cd->disbursement_date) : null;
-                                                                        
-                                                                        // Automatically calculate how many months this disbursement amount covers
-                                                                        $monthsSpan = ($expectedPerMonth > 0) ? max(1, round($amt / $expectedPerMonth)) : 1;
-                                                                        
-                                                                        // Find the next unassigned contract month index
-                                                                        $startMonthIdx = 0;
-                                                                        while (in_array($startMonthIdx, $coveredIndices) && $startMonthIdx < $totalMonths) {
-                                                                            $startMonthIdx++;
-                                                                        }
-
-                                                                        $spanMonths = [];
-                                                                        for ($s = 0; $s < $monthsSpan && ($startMonthIdx + $s) < $totalMonths; $s++) {
-                                                                            $targetIdx = $startMonthIdx + $s;
-                                                                            $coveredIndices[] = $targetIdx;
-                                                                            $spanMonths[] = $targetIdx;
-                                                                        }
-
-                                                                        if (!empty($spanMonths)) {
-                                                                            $mappedDisbursements[] = [
-                                                                                'amount' => $amt,
-                                                                                'date' => $disbDate,
-                                                                                'month_indices' => $spanMonths
-                                                                            ];
-                                                                        }
-                                                                    }
-                                                                @endphp
-                                                                
                                                                 @for($i = 0; $i < $totalMonths; $i++)
                                                                     @php
                                                                         $serviceMonthLabel = $contractStart 
@@ -886,7 +1213,7 @@
                                     @if($itemRemarkInfo)
                                         <div class="mt-1 text-muted small border-left pl-2 {{ $itemRemarkInfo['class'] }}" style="font-style: italic; background-color: #fcfcfc;">
                                             <i class="fas {{ $itemRemarkInfo['icon'] }} mr-1" style="font-size: 0.7rem;"></i> 
-                                            <strong class="text-dark">{{ $itemRemarkInfo['label'] }}:</strong> {{ $itemRemarkInfo['text'] }}
+                                            <strong class="text-dark">{{ $itemRemarkInfo['label'] }}:</strong> {{ $item->remarks }}
                                         </div>
                                     @endif
 
@@ -1234,6 +1561,69 @@
     </div>
 </div>
 
+<!-- Manual Activity Obligation Modal -->
+<div class="modal fade" id="manualAllocationModal" tabindex="-1" role="dialog" data-backdrop="static">
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+            <div class="modal-header bg-navy text-white">
+                <h5 class="modal-title font-weight-bold">
+                    <i class="fas fa-balance-scale mr-2 text-info"></i> Consolidated Obligation Allocation
+                </h5>
+                <button type="button" class="close text-white" data-dismiss="modal">&times;</button>
+            </div>
+            <form id="manual-allocation-form">
+                @csrf
+                <input type="hidden" id="alloc_dtrack_no" name="dtrack_no">
+                <input type="hidden" id="alloc_obligation_serial" name="obligation_serial">
+                <input type="hidden" id="alloc_total_net" name="total_net_obligated">
+                <input type="hidden" id="alloc_total_norsa" name="total_norsa">
+                <input type="hidden" id="alloc_norsa_entries" name="tracker_norsa_entries">
+                <input type="hidden" id="alloc_tracker_data" name="tracker_data">
+                <input type="hidden" id="has_confirmed_disbursement" value="">
+
+                <div class="modal-body bg-light">
+                    <div class="alert alert-info border-0 shadow-xs mb-3">
+                        <i class="fas fa-info-circle mr-1"></i>
+                        DTrack <strong id="modal-dtrack-display"></strong> has a consolidated net obligation of 
+                        <strong id="modal-total-display" class="text-navy h5 mb-0">₱ 0.00</strong>.
+                        Please specify the actual obligated amount for each activity line item.
+                    </div>
+
+                    <div class="table-responsive bg-white rounded border">
+                        <table class="table table-bordered mb-0 align-middle">
+                            <thead class="bg-light">
+                                <tr>
+                                    <th>Activity Line Item</th>
+                                    <th class="text-right" style="width: 25%">Original Routed</th>
+                                    <th class="text-right" style="width: 35%">Actual Obligated Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody id="manual-allocation-body">
+                                <!-- Dynamic Rows Injected via JS -->
+                            </tbody>
+                            <tfoot>
+                                <tr class="bg-white font-weight-bold">
+                                    <td colspan="2" class="text-right">Total Allocated:</td>
+                                    <td class="text-right h6 mb-0 font-weight-bolder" id="alloc-sum-display">₱ 0.00</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+
+                    <div id="alloc-validation-msg" class="mt-2 text-right small font-weight-bold"></div>
+                </div>
+
+                <div class="modal-footer bg-light">
+                    <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
+                    <button type="submit" id="save-manual-alloc-btn" class="btn btn-success px-4" disabled>
+                        <i class="fas fa-check-circle mr-1"></i> Confirm & Save Allocation
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 
 @endsection
 
@@ -1497,17 +1887,14 @@
 
     $(document).on('click', '.btn-sync-sheet', function (e) {
         e.preventDefault();
-        const $btn = $(this);
+        const $btn =$(this);
         const fundId = $btn.data('id');
         const dtrackNo = $btn.data('dtrack'); 
         
-        // Select all buttons sharing the same DTrack
-        const $groupButtons = $(`.btn-sync-sheet[data-dtrack="${dtrackNo}"]`);
-        const $groupIcons = $groupButtons.find('i');
+        const $groupButtons =$(`.btn-sync-sheet[data-dtrack="${dtrackNo}"]`);
+        const $groupIcons =$groupButtons.find('i');
 
-        // UI Feedback
-        $groupButtons.prop('disabled', true);
-        $groupIcons.attr('class', 'fas fa-circle-notch fa-spin text-warning');
+        $groupButtons.prop('disabled', true);$groupIcons.attr('class', 'fas fa-circle-notch fa-spin text-warning');
 
         $.ajax({
             url: `/funds/${fundId}/sync`,
@@ -1515,40 +1902,223 @@
             dataType: "json",
             success: function (response) {
                 if (response.success) {
-                    const details = response.details;
-                    $('#rs-serial').text(details.dtrack_no);
+                    if (response.requires_manual_allocation) {
+                        handleSyncResponse(response);
+                        return;
+                    }
+
+                    const details = response.details || {};
+                    $('#rs-serial').text(details.dtrack_no || dtrackNo);
                     
-                    const $list = $('#rs-fund-list');
+                    const $list =$('#rs-fund-list');
                     $list.empty();
                     
-                    details.synced_items.forEach(item => {
-                        const statusBadge = item.status === 'Disbursed' ? 'badge-success' : 'badge-info';
-                        
-                        $list.append(`
-                            <div class="border-bottom pb-2 mb-2">
-                                <div class="d-flex justify-content-between align-items-start">
-                                    <span class="font-weight-bold text-dark">${item.name}</span>
-                                    <span class="badge ${statusBadge}">${item.status}</span>
+                    if (details.synced_items && details.synced_items.length > 0) {
+                        details.synced_items.forEach(item => {
+                            const statusBadge = item.status === 'Disbursed' ? 'badge-success' : 'badge-info';
+                            
+                            $list.append(`
+                                <div class="border-bottom pb-2 mb-2">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <span class="font-weight-bold text-dark">${item.name}</span>
+                                        <span class="badge ${statusBadge}">${item.status}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between text-muted" style="font-size: 0.75rem;">
+                                        <span>Serial: ${item.serial}</span>
+                                        <span>Amount: ₱${item.amount}</span>
+                                    </div>
                                 </div>
-                                <div class="d-flex justify-content-between text-muted" style="font-size: 0.75rem;">
-                                    <span>Serial: ${item.serial}</span>
-                                    <span>Amount: ₱${item.amount}</span>
-                                </div>
-                            </div>
-                        `);
-                    });
+                            `);
+                        });
+                    }
 
-                    $('#rs-amount').text(`${details.count} Record(s)`);
-                    $('#rs-status').text('Sync Successful').addClass('badge-success');
+                    $('#rs-amount').text(`${details.count || 0} Record(s)`);
+                    $('#rs-status').text('Sync Successful').removeClass('badge-danger').addClass('badge-success');
                     $('#syncResultModal').modal('show');
+                } else {
+                    alert('Sync Failed: ' + (response.message || 'Error syncing data.'));
                 }
             },
             error: function (xhr) {
                 alert('Error: ' + (xhr.responseJSON?.message || 'Server Error'));
             },
             complete: function() {
-                $groupButtons.prop('disabled', false);
-                $groupIcons.attr('class', 'fas fa-sync-alt');
+                $groupButtons.prop('disabled', false);$groupIcons.attr('class', 'fas fa-sync-alt');
+            }
+        });
+    });
+
+    function handleSyncResponse(response) {
+        $('#alloc_dtrack_no').val(response.dtrack_no);
+        $('#alloc_obligation_serial').val(response.obligation_serial);
+        $('#alloc_total_net').val(response.total_net_obligated);
+        $('#alloc_total_norsa').val(response.total_norsa);
+        $('#alloc_norsa_entries').val(JSON.stringify(response.tracker_data?.norsa_entries || []));
+        $('#alloc_tracker_data').val(JSON.stringify(response.tracker_data || {}));
+
+        $('#modal-dtrack-display').text(response.dtrack_no);
+        $('#modal-total-display').text('₱ ' + Number(response.total_net_obligated).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+        const $tbody =$('#manual-allocation-body');
+        $tbody.empty();
+
+        if (response.activities && response.activities.length > 0) {
+            response.activities.forEach((act, index) => {
+                const routedAmount = parseFloat(act.routed_amount || act.amount || 0);
+                
+                $tbody.append(`
+                    <tr>
+                        <td>
+                            <span class="font-weight-bold text-dark">${act.activity_name}</span>
+                            <input type="hidden" name="allocations[${index}][id]" value="${act.id || ''}">
+                            <input type="hidden" name="allocations[${index}][fund_id]" value="${act.fund_id || ''}">
+                            <input type="hidden" name="allocations[${index}][activity_name]" value="${act.activity_name || ''}">
+                            <input type="hidden" name="allocations[${index}][source_of_fund_id]" value="${act.source_of_fund_id || ''}">
+                            <input type="hidden" name="allocations[${index}][transaction_type_id]" value="${act.transaction_type_id || ''}">
+                            <input type="hidden" name="allocations[${index}][routed_amount]" value="${routedAmount}">
+                        </td>
+                        <td class="text-right align-middle text-muted">
+                            ₱ ${routedAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td>
+                            <input type="number" 
+                                step="0.01" 
+                                min="0" 
+                                name="allocations[${index}][amount]" 
+                                class="form-control text-right alloc-input font-weight-bold" 
+                                value="${act.obligation_amount ? parseFloat(act.obligation_amount).toFixed(2) : routedAmount.toFixed(2)}" 
+                                oninput="validateManualAllocation()">
+                        </td>
+                    </tr>
+                `);
+            });
+        }
+
+        validateManualAllocation();
+        $('#manualAllocationModal').modal('show');
+    }
+
+    // Live Validation for Sum Boundary Check
+    $(document).on('input', '.alloc-input', function() {
+        validateManualAllocation();
+    });
+
+    function validateManualAllocation() {
+        let targetTotal = parseFloat($('#alloc_total_net').val()) || 0;
+        let currentSum = 0;
+
+        $('.alloc-input').each(function() {
+            currentSum += parseFloat($(this).val()) || 0;
+        });
+
+        let diff = (targetTotal - currentSum).toFixed(2);
+
+        $('#alloc-sum-display').text('₱ ' + currentSum.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+
+        if (Math.abs(diff) < 0.01) {
+            $('#alloc-validation-msg').html('<span class="text-success"><i class="fas fa-check-circle mr-1"></i> Allocation Balanced!</span>');
+            $('#save-manual-alloc-btn').prop('disabled', false);
+        } else if (diff > 0) {
+            $('#alloc-validation-msg').html(`<span class="text-warning"><i class="fas fa-exclamation-triangle mr-1"></i> Remaining to allocate: ₱${Math.abs(diff).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`);
+            $('#save-manual-alloc-btn').prop('disabled', true);
+        } else {
+            $('#alloc-validation-msg').html(`<span class="text-danger"><i class="fas fa-times-circle mr-1"></i> Exceeds target by: ₱${Math.abs(diff).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`);
+            $('#save-manual-alloc-btn').prop('disabled', true);
+        }
+    }
+
+    // Submit Manual Allocation Form to Save Custom Activity Obligations
+    $('#manual-allocation-form').on('submit', function(e) {
+        e.preventDefault();
+
+        let $submitBtn =$('#save-manual-alloc-btn');
+        $submitBtn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin mr-1"></i> Saving...');
+
+        $.ajax({
+            url: "{{ route('funds.saveManualActivityObligation') }}",
+            type: 'POST',
+            data: $(this).serialize(),
+            success: function(response) {
+                if (response.success) {
+                    $('#manualAllocationModal').modal('hide');
+
+                    if (typeof $(document).Toasts === 'function') {$(document).Toasts('create', {
+                            class: 'bg-success',
+                            title: 'Allocation Saved',
+                            autohide: true,
+                            delay: 2000,
+                            body: response.message || 'Consolidated activity obligations updated successfully!'
+                        });
+                    } else {
+                        alert('Allocation Saved Successfully!');
+                    }
+
+                    setTimeout(() => { location.reload(); }, 1000);
+                } else {
+                    $submitBtn.prop('disabled', false).html('<i class="fas fa-check-circle mr-1"></i> Confirm & Save Allocation');
+                    alert('Save Failed: ' + (response.message || 'Error saving allocations.'));
+                }
+            },
+            error: function(xhr) {
+                $submitBtn.prop('disabled', false).html('<i class="fas fa-check-circle mr-1"></i> Confirm & Save Allocation');
+                let msg = xhr.responseJSON ? xhr.responseJSON.message : 'An error occurred while saving allocations.';
+                alert('Error: ' + msg);
+            }
+        });
+    });
+
+    // Submit Manual Allocation Form
+    $('#manual-allocation-form').on('submit', function(e) {
+        e.preventDefault();
+
+        let targetOb = parseFloat($('#alloc_total_net').val()) || 0;
+        let trackerDataRaw = $('#alloc_tracker_data').val();
+        let trackerObj = trackerDataRaw ? JSON.parse(trackerDataRaw) : {};
+        let targetDisb = parseFloat(trackerObj.netDisb) || 0;
+
+        // CONDITIONAL DISBURSEMENT CHECK:
+        // If there is disbursement AND disbursement < obligation (savings/partial disbursement split),
+        // trigger disbursement prompt if not already answered
+        if (targetDisb > 0 && Math.abs(targetDisb - targetOb) > 0.01 && !$('#has_confirmed_disbursement').val()) {
+            if (confirm(`Disbursement amount (₱${targetDisb.toLocaleString('en-US', {minimumFractionDigits: 2})}) differs from obligation amount (₱${targetOb.toLocaleString('en-US', {minimumFractionDigits: 2})}). Click OK to save prorated disbursements automatically.`)) {
+                $('#has_confirmed_disbursement').val('1');
+            } else {
+                return false;
+            }
+        }
+
+        let $submitBtn =$('#save-manual-alloc-btn');
+        $submitBtn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin mr-1"></i> Saving...');
+
+        $.ajax({
+            url: "{{ route('funds.saveManualActivityObligation') }}",
+            type: 'POST',
+            data: $(this).serialize(),
+            success: function(response) {
+                if (response.success) {
+                    $('#manualAllocationModal').modal('hide');
+
+                    if (typeof $(document).Toasts === 'function') {$(document).Toasts('create', {
+                            class: 'bg-success',
+                            title: 'Allocation Saved',
+                            autohide: true,
+                            delay: 2000,
+                            body: response.message || 'Consolidated activity obligations updated successfully!'
+                        });
+                    } else {
+                        alert('Allocation Saved Successfully!');
+                    }
+
+                    setTimeout(() => { location.reload(); }, 1000);
+                } else {
+                    $submitBtn.prop('disabled', false).html('<i class="fas fa-check-circle mr-1"></i> Confirm & Save Allocation');
+                    alert('Save Failed: ' + (response.message || 'Error saving allocations.'));
+                }
+            },
+            error: function(xhr) {
+                $submitBtn.prop('disabled', false).html('<i class="fas fa-check-circle mr-1"></i> Confirm & Save Allocation');
+                let msg = xhr.responseJSON ? xhr.responseJSON.message : 'An error occurred while saving allocations.';
+                alert('Error: ' + msg);
             }
         });
     });
@@ -1580,7 +2150,7 @@
                 failedList: [] 
             };
 
-            if (!confirm(`Start Bulk Sync? This will auto-import all new COS Salary rows and sync existing items.`)) return;
+            if (!confirm(`Start Bulk Sync? This will auto-import all new COS Salary rows and sync existing items. Consolidated multi-activity transactions will be skipped in the bulk sync, sync should be done per transaction as it will require to input the actual obligation amount per activity.`)) return;
 
             btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Auto-Importing COS Salaries...');
             $('#sync-progress-container').slideDown();
@@ -1908,59 +2478,6 @@
             });
         }
 
-        const allActivities = $('#modal_activity_select option').clone();
-        $(document).on('change', '#modal_source_select', function() {
-            let sourceId = $(this).val(); 
-            let activitySelect = $('#modal_activity_select');
-            
-            // Destroy Select2 to manipulate the underlying HTML
-            if (activitySelect.data('select2')) {
-                activitySelect.select2('destroy');
-            }
-
-            // Clear the current options
-            activitySelect.empty();
-
-            if (sourceId) {
-                // Enable the select
-                activitySelect.prop('disabled', false).removeAttr('disabled');
-
-                // Add the default placeholder option back
-                activitySelect.append('<option value="">-- Select Activity --</option>');
-
-                // Filter the master copy and append only matching ones
-                allActivities.each(function() {
-                    if ($(this).data('source') == sourceId || $(this).val() == "") {
-                        // Only append if it belongs to this source
-                        if($(this).val() !== "") {
-                            activitySelect.append($(this).clone());
-                        }
-                    }
-                });
-
-                // If no matches were found
-                if (activitySelect.find('option').length <= 1) {
-                    activitySelect.prop('disabled', true);
-                    activitySelect.find('option[value=""]').text('-- No Activities Found --');
-                }
-            } else {
-                activitySelect.prop('disabled', true);
-                activitySelect.append('<option value="">-- Select Source First --</option>');
-            }
-
-            // Re-initialize Select2
-            activitySelect.select2({
-                theme: 'bootstrap4',
-                placeholder: "Select Activity",
-                width: '100%',
-                dropdownParent: $('#addFundModal')
-            });
-
-            // Final UI Cleanup
-            setTimeout(function() {
-                activitySelect.next('.select2-container').removeClass('select2-container--disabled');
-            }, 50);
-        });
 
         const currentYear = new Date().getFullYear() + '-';
 
@@ -2273,25 +2790,32 @@
                 $('#allocation-body').empty(); 
 
                 allocations.forEach((alloc, index) => {
-                    addNewAllocationRow(index, alloc.id); // This calls your adder function
+                    addNewAllocationRow(index, alloc.id); 
                     const row = $(`.allocation-row`).last();
                     
                     // If it's the first row being restored, hide its delete button
                     if (index === 0) {
                         row.find('.remove-row')
                         .prop('disabled', true)
-                        .attr('title', 'Primary allocation cannot be removed') // Optional: Add a tooltip
-                        .css('cursor', 'not-allowed'); // Optional: Visual cue for disabled state
+                        .attr('title', 'Primary allocation cannot be removed')
+                        .css('cursor', 'not-allowed');
                     }
                     
+                    // Set the source and trigger change to fetch activities via AJAX
                     row.find('.source-select').val(alloc.source_of_fund_id).trigger('change');
                     row.find('.amount-field').val(alloc.amount);
 
-                    // 5. Dependent Dropdown Sync
+                    // 5. Dependent Dropdown Sync & Select2 Update
                     let checkExist = setInterval(function() {
                         const activitySelect = row.find('.activity-select');
+                        
+                        // Check if the target activity option has finished loading via AJAX
                         if (activitySelect.find('option[value="' + alloc.transaction_type_id + '"]').length) {
-                            activitySelect.val(alloc.transaction_type_id).removeAttr('disabled');
+                            activitySelect.prop('disabled', false);
+                            
+                            // Set the value and trigger change.select2 so Select2 visually updates
+                            activitySelect.val(alloc.transaction_type_id).trigger('change.select2');
+                            
                             clearInterval(checkExist);
                             updateGrandTotal(); 
                         }
@@ -2693,34 +3217,86 @@
             syncDuplicateActivities();
         });
 
-        // Handle Source Change
+        // 1. Handle Source Change (Unified with AJAX, Budget Checking, and Syncing)
         $(document).on('change', '.source-select', function() {
             const sourceId = $(this).val();
             const $row = $(this).closest('tr');
             const activitySelect = $row.find('.activity-select');
             const warningLabel = $row.find('.budget-warning');
 
+            // Reset warnings and validation states
             warningLabel.html('').hide();
             $row.removeAttr('data-budget-valid');
             $row.find('.amount-field').removeClass('is-invalid');
 
+            // If no source is selected
             if (!sourceId) {
+                if (activitySelect.data('select2')) {
+                    activitySelect.select2('destroy');
+                }
                 activitySelect.html('<option value="">-- Select Source First --</option>').prop('disabled', true);
-                syncDuplicateActivities();
+                
+                // Re-init Select2 for disabled state
+                activitySelect.select2({
+                    theme: 'bootstrap4',
+                    width: '100%',
+                    dropdownParent: $('#addFundModal')
+                });
+
+                if (typeof syncDuplicateActivities === "function") {
+                    syncDuplicateActivities();
+                }
                 return;
             }
 
-            activitySelect.prop('disabled', false).html('<option value="">Loading...</option>');
+            // Show loading state
+            if (activitySelect.data('select2')) {
+                activitySelect.select2('destroy');
+            }
+            activitySelect.prop('disabled', false).html('<option value="">Loading activities...</option>');
             
-            // FIXED: Prefixed with the dynamic APP_URL variable to target the subfolder correctly
+            activitySelect.select2({
+                theme: 'bootstrap4',
+                width: '100%',
+                dropdownParent: $('#addFundModal')
+            });
+
+            // Fetch activities via AJAX
             $.get(`${APP_URL}/api/sources/${sourceId}/activities`, function(data) {
+                if (activitySelect.data('select2')) {
+                    activitySelect.select2('destroy');
+                }
+
                 let options = '<option value="">-- Select Activity --</option>';
-                data.forEach(act => {
-                    options += `<option value="${act.id}">${act.name}</option>`;
-                });
-                activitySelect.html(options);
+                if (data && data.length > 0) {
+                    data.forEach(act => {
+                        options += `<option value="${act.id}">${act.name}</option>`;
+                    });
+                } else {
+                    options = '<option value="">-- No Activities Found for this Source --</option>';
+                }
                 
-                syncDuplicateActivities(); // Sync after new options load
+                activitySelect.html(options).prop('disabled', false);
+
+                // Re-initialize Select2 with proper multi-line wrapping and modal binding
+                activitySelect.select2({
+                    theme: 'bootstrap4',
+                    placeholder: "Select Activity",
+                    width: '100%',
+                    dropdownParent: $('#addFundModal'),
+                    templateResult: function (item) {
+                        if (!item.id) { return item.text; }
+                        return $('<div style="white-space: pre-line; word-break: break-word; color: #495057; padding: 6px 10px; line-height: 1.4;">' + item.text + '</div>');
+                    },
+                    templateSelection: function (item) {
+                        return item.text;
+                    }
+                });
+
+                // Sync and check budget balances
+                if (typeof syncDuplicateActivities === "function") {
+                    syncDuplicateActivities();
+                }
                 
                 if ($row.find('.amount-field').val() > 0 && typeof checkRowBudgetBalance === "function") {
                     checkRowBudgetBalance($row);
@@ -2728,12 +3304,34 @@
             });
         });
 
-        // Handle Activity Change
+        // 2. Handle Activity Change
         $(document).on('change', '.activity-select', function() {
-            syncDuplicateActivities(); // Sync immediately when user picks an activity
+            if (typeof syncDuplicateActivities === "function") {
+                syncDuplicateActivities(); 
+            }
             if (typeof checkRowBudgetBalance === "function") {
                 checkRowBudgetBalance($(this).closest('tr'));
             }
+        });
+
+        // 3. Modal Open Initialization
+        $('#addFundModal').on('shown.bs.modal', function () {
+            $('.activity-select').each(function() {
+                var $el = $(this);
+                if (!$el.data('select2')) {
+                    $el.select2({
+                        theme: 'bootstrap4',
+                        placeholder: "Select Activity",
+                        width: '100%',
+                        dropdownParent: $('#addFundModal'),
+                        templateResult: function (data) {
+                            if (!data.id) { return data.text; }
+                            return $('<div style="white-space: pre-line; word-break: break-word; color: #495057; padding: 6px 10px; line-height: 1.4;">' + data.text + '</div>');
+                        },
+                        templateSelection: function (data) { return data.text; }
+                    });
+                }
+            });
         });
 
         // Initial sync call for Edit mode
@@ -2938,6 +3536,7 @@
             });
         }
     });
+
 
 </script>
 @endsection

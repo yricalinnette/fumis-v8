@@ -15,6 +15,7 @@ class NorsaAdjustment extends Model
         'entry_date',
         'amount',
         'source_of_fund_id',
+        'transaction_type_id',
     ];
 
     /**

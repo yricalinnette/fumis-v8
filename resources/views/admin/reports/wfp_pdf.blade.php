@@ -3,7 +3,41 @@
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
     <style>
-        body { font-family: Arial, sans-serif; font-size: 10px; margin: 0; padding: 0; }
+        /* DomPDF Page Margins: Top Right Bottom Left */
+        @page { 
+            margin: 0.8cm 0.8cm 2.2cm 0.8cm; 
+        }
+
+        body { 
+            font-family: Arial, sans-serif; 
+            font-size: 10px; 
+            margin: 0; 
+            padding: 0; 
+        }
+
+        /* Fixed Footer for Every Page */
+        .pdf-footer {
+            position: fixed;
+            bottom: -1.8cm;
+            left: 0;
+            right: 0;
+            height: 1.5cm;
+            border-top: 1px solid #777;
+            padding-top: 4px;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
+        .footer-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .footer-table td {
+            border: none !important;
+            padding: 0;
+            vertical-align: middle;
+        }
+
         .header-table, .main-table { width: 100%; border-collapse: collapse; }
         .main-table th, .main-table td { border: 1px solid black; padding: 4px; text-align: center; }
         .text-left { text-align: left !important; }
@@ -27,8 +61,6 @@
             background-color: #e4baba; 
             font-weight: bold;
         }
-
-        @page { margin: 1cm; }
 
         .header-table {
             width: 100%;
@@ -59,6 +91,40 @@
     </style>
 </head>
 <body>
+
+    {{-- CLEAN MINIMALIST FOOTER --}}
+    <div class="pdf-footer">
+        <table class="footer-table">
+            <tr>
+                {{-- Encrypted QR Code --}}
+                <td style="width: 50px; text-align: left;">
+                    <img src="{{ $qrCodeUri }}" alt="Encrypted QR" style="width: 42px; height: 42px;">
+                </td>
+                
+                {{-- Clean System Notice & Unique System Code --}}
+                <td style="text-align: left; font-size: 8pt; color: #333; line-height: 1.3;">
+                    <strong style="color: #000; font-size: 8.5pt;">SYSTEM GENERATED WORK AND FINANCIAL PLAN</strong><br>
+                    <span style="color: #555;">Verification Code:</span> 
+                    <span style="font-family: monospace; font-size: 8.5pt; color: #1b4f72; font-weight: bold;">{{ $trackingCode }}</span>
+                </td>
+
+                {{-- Page Numbering --}}
+                <td style="text-align: right; font-size: 8pt; color: #555; vertical-align: bottom;">
+                    Page <script type="text/php">
+                        if (isset($pdf)) {
+                            $pdf->page_script('
+                                $font = $fontMetrics->get_font("sans-serif", "normal");
+                                $size = 8;
+                                $pageText = $PAGE_NUM . " of " . $PAGE_COUNT;
+                                $pdf->text(770, 560, $pageText, $font, $size, array(0.3, 0.3, 0.3));
+                            ');
+                        }
+                    </script>
+                </td>
+            </tr>
+        </table>
+    </div>
+
     {{-- Header Section --}}
     <table class="header-table">
         <tr>
@@ -101,7 +167,7 @@
         $columnWidth = $isThreeColumn ? '33.3%' : '50%';
     @endphp
 
-    <table style="width: 100%; border-collapse: collapse; margin-top: 30px; font-size: 11px; table-layout: fixed;">
+    <table style="width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 11px; table-layout: fixed;">
         <tr>
             <td style="width: {{ $columnWidth }}; border: 1px solid black; padding: 10px; text-align: center; vertical-align: top;">
                 <div style="text-align: left;">Prepared by:</div>

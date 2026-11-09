@@ -23,7 +23,8 @@ class Activity extends Model {
     'classification',
     'user_id',
     'section_id',
-    'is_for_procurement'
+    'is_for_procurement',
+    'is_converted',
     
 ];
 

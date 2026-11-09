@@ -7,46 +7,30 @@
     .bg-navy-light { background-color: #f1f4f8; color: #001f3f; }
     .bg-soft-light { background-color: #f8f9fa; }
     
-    /* Prominent Section Divider Styling */
     .section-banner {
         background: linear-gradient(135deg, #001f3f 0%, #003366 100%);
         color: #ffffff;
         border-radius: 6px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.08);
     }
-
-    .border-left-info { border-left: 3px solid #17a2b8 !important; }
-    .border-left-danger { border-left: 3px solid #dc3545 !important; }
-    .border-left-success { border-left: 3px solid #28a745 !important; }
-    .border-left-warning { border-left: 3px solid #ffc107 !important; }
-    .border-left-teal { border-left: 3px solid #20c997 !important; }
-    .border-left-primary { border-left: 3px solid #007bff !important; }
-    
     @media print { .filter-section { display: none !important; } }
 </style>
 
 <div class="container-fluid py-3">
     {{-- Top Header Strip --}}
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-2">
         <div>
             <h4 class="text-navy mb-1 font-weight-bold">
                 <i class="fas fa-list-ul mr-2 text-primary"></i>Activity Transaction Report
             </h4>
             <p class="text-muted small mb-0">
                 Financial Performance Analysis for Fiscal Year <strong>{{ request('year', $year ?? date('Y')) }}</strong>
-                @if(request('month'))
-                    | Month: <strong>{{ date('F', mktime(0, 0, 0, request('month'), 1)) }}</strong>
-                @elseif(!empty($selectedQuarters))
+                @if(!empty($selectedQuarters))
                     | Quarters: <strong>Q{{ implode(', Q', (array)$selectedQuarters) }} (Cumulative)</strong>
                 @endif
             </p>
-            <div class="mt-1 d-flex align-items-center text-xs text-muted">
-                <i class="fas fa-info-circle mr-1 text-info"></i>
-                <span>Obligations and Disbursements are strictly filtered based on transaction dates in the selected period.</span>
-            </div>
         </div>
         
-        {{-- Toolbar Buttons --}}
         <div class="btn-group shadow-sm">
             <a href="{{ request()->fullUrlWithQuery(['export' => 'excel']) }}" class="btn btn-sm btn-success">
                 <i class="fas fa-file-excel mr-1"></i> Export Excel
@@ -54,23 +38,25 @@
             <button class="btn btn-sm btn-outline-secondary" data-toggle="collapse" data-target="#filterCard">
                 <i class="fas fa-filter mr-1"></i> Filter Options
             </button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="$('.card').CardWidget('expand')" title="Expand All Cards">
-                <i class="fas fa-expand-alt"></i> Expand All
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="expandAllBtn">
+                <i class="fas fa-expand-arrows-alt mr-1"></i> Expand All
             </button>
             <button class="btn btn-sm btn-outline-secondary" onclick="window.print()">
                 <i class="fas fa-print mr-1"></i> Print
             </button>
         </div>
     </div>
+    <p class="text-muted small mb-4">
+        <i class="fas fa-info-circle text-info mr-1"></i> Obligations and Disbursements are strictly filtered based on transaction dates in the selected period.
+    </p>
 
     {{-- FILTER & SEARCH TOOLBAR --}}
     <div class="card card-default filter-section collapse show shadow-sm mb-4" id="filterCard">
         <div class="card-body p-3">
             <form method="GET" action="{{ url()->current() }}" id="filterForm">
                 <div class="row align-items-center">
-                    
                     {{-- Fiscal Year --}}
-                    <div class="col-md-2 col-6 mb-2 mb-md-0">
+                    <div class="col-md-2 mb-2 mb-md-0">
                         <label class="small font-weight-bold mb-1">Fiscal Year</label>
                         <select name="year" class="form-control form-control-sm" onchange="this.form.submit()">
                             @foreach(range(date('Y') + 1, 2022) as $y)
@@ -79,390 +65,238 @@
                         </select>
                     </div>
 
-                    {{-- Section Filter --}}
-                    @if($canFilter ?? false)
-                        <div class="col-md-3 col-6 mb-2 mb-md-0">
-                            <label class="small font-weight-bold mb-1">Filter Section</label>
-                            <select name="section_id" class="form-control form-control-sm select2" onchange="this.form.submit()">
-                                <option value="">-- All Sections --</option>
-                                @foreach($sectionNames as $secId => $secName)
-                                    <option value="{{ $secId }}" {{ ($selectedSection ?? '') == $secId ? 'selected' : '' }}>
-                                        {{ $secName }}
-                                    </option>
-                                @endforeach
-                            </select>
-                        </div>
-                    @endif
+                    {{-- Filter Section --}}
+                    <div class="col-md-2 mb-2 mb-md-0">
+                        <label class="small font-weight-bold mb-1">Filter Section</label>
+                        <select name="section" class="form-control form-control-sm" onchange="this.form.submit()">
+                            <option value="">-- All Sections --</option>
+                            @foreach($groupedReport as $sec)
+                                <option value="{{ $sec['section_name'] }}" {{ request('section') == $sec['section_name'] ? 'selected' : '' }}>
+                                    {{ $sec['section_name'] }}
+                                </option>
+                            @endforeach
+                        </select>
+                    </div>
 
-                    {{-- Cumulative Quarters Checkboxes --}}
-                    <div class="col-md-4 col-12 mb-2 mb-md-0">
+                    {{-- Select Quarters (Cumulative) --}}
+                    <div class="col-md-4 mb-2 mb-md-0">
                         <label class="small font-weight-bold mb-1 d-block">Select Quarters (Cumulative)</label>
                         <div class="d-flex align-items-center flex-wrap bg-white border rounded px-2 py-1" style="gap: 12px; height: 31px;">
                             @foreach([1 => 'Q1', 2 => 'Q2', 3 => 'Q3', 4 => 'Q4'] as $qNum => $qLabel)
                                 <div class="custom-control custom-checkbox custom-control-inline m-0">
-                                    <input type="checkbox" 
-                                        name="quarters[]" 
-                                        value="{{ $qNum }}" 
-                                        id="q_chk_{{ $qNum }}" 
-                                        class="custom-control-input"
-                                        {{ in_array($qNum, $selectedQuarters ?? []) ? 'checked' : '' }}
-                                        onchange="this.form.submit()">
-                                    <label class="custom-control-label small font-weight-bold text-dark" for="q_chk_{{ $qNum }}">
-                                        {{ $qLabel }}
-                                    </label>
+                                    <input type="checkbox" name="quarters[]" value="{{ $qNum }}" id="q_chk_{{ $qNum }}" class="custom-control-input" {{ in_array($qNum, $selectedQuarters ?? []) ? 'checked' : '' }} onchange="this.form.submit()">
+                                    <label class="custom-control-label small font-weight-bold text-dark cursor-pointer" for="q_chk_{{ $qNum }}">{{ $qLabel }}</label>
                                 </div>
                             @endforeach
                         </div>
                     </div>
 
-                    {{-- Search & Reset --}}
-                    <div class="col-md-3 col-12">
+                    {{-- Search Keywords with Search & Reset Buttons --}}
+                    <div class="col-md-4">
                         <label class="small font-weight-bold mb-1">Search Keywords</label>
                         <div class="input-group input-group-sm">
                             <input type="text" name="search" class="form-control" placeholder="DTrack, OBRN, Payee..." value="{{ $search ?? '' }}">
                             <div class="input-group-append">
-                                <button type="submit" class="btn btn-primary"><i class="fas fa-search"></i></button>
-                                @if(!empty($search) || !empty($selectedSection) || !empty($selectedQuarters))
-                                    <a href="{{ url()->current() }}" class="btn btn-default" title="Reset Filters"><i class="fas fa-undo"></i></a>
-                                @endif
+                                <button type="submit" class="btn btn-primary" title="Search"><i class="fas fa-search"></i></button>
+                                <a href="{{ url()->current() }}" class="btn btn-secondary" title="Reset Filters"><i class="fas fa-undo"></i></a>
                             </div>
                         </div>
                     </div>
-
                 </div>
             </form>
         </div>
     </div>
 
-    {{-- 1. SECTION LOOP --}}
+    {{-- CLEAN MASTER TABLE LAYOUT --}}
     @foreach($groupedReport as $section)
+        {{-- If section filter is active, skip non-matching sections --}}
+        @if(request('section') && request('section') !== $section['section_name'])
+            @continue
+        @endif
+
         <div class="mb-5">
-            {{-- Prominent Section Banner --}}
-            <div class="section-banner py-2 px-3 mb-3 d-flex align-items-center justify-content-between">
+            <div class="section-banner py-2 px-3 mb-2 d-flex align-items-center justify-content-between">
                 <div class="d-flex align-items-center">
-                    <i class="fas fa-university mr-2 text-warning" style="font-size: 1.1rem;"></i>
-                    <h5 class="font-weight-bold mb-0 text-uppercase" style="letter-spacing: 0.5px; font-size: 1.05rem;">
-                        {{ $section['section_name'] }}
-                    </h5>
+                    <i class="fas fa-university mr-2 text-warning"></i>
+                    <h5 class="font-weight-bold mb-0 text-uppercase" style="font-size: 1rem;">{{ $section['section_name'] }}</h5>
                 </div>
-                <span class="badge badge-light text-navy font-weight-bold px-2 py-1" style="font-size: 0.75rem;">
-                    {{ $section['sources']->count() }} Fund Sources
-                </span>
+                <span class="badge badge-light text-navy font-weight-bold px-2 py-1">{{ $section['sources']->count() }} Fund Sources</span>
             </div>
 
-            {{-- 2. FUND SOURCE LOOP --}}
             @foreach($section['sources'] as $source)
                 <div class="card card-navy card-outline mb-4 shadow-sm">
-                    {{-- Compact Header --}}
-                    <div class="card-header bg-white py-2 px-3" style="cursor: pointer;" data-card-widget="collapse">
+                    <div class="card-header bg-white py-2 px-3">
                         <div class="d-flex justify-content-between align-items-center">
-                            <div class="d-flex align-items-center">
-                                <i class="fas fa-folder text-warning mr-2"></i>
-                                <h6 class="card-title text-navy font-weight-bold mb-0 mr-3" style="font-size: 0.95rem;">
-                                    {{ $source['source_name'] }}
-                                </h6>
-                                
-                                <div class="d-flex align-items-center border-left pl-3" style="height: 16px; border-color: #dee2e6 !important;">
-                                    <span class="text-uppercase text-muted mr-2" style="font-size: 0.65rem; font-weight: 700;">Source Total:</span>
-                                    <span class="text-dark font-weight-bold financial-number" style="font-size: 0.95rem;">
-                                        ₱{{ number_format($source['source_total'] ?? 0, 2) }}
-                                    </span>
-                                </div>
-                            </div>
-
-                            <div class="card-tools d-flex align-items-center">
-                                <button type="button" class="btn btn-tool btn-xs text-primary mr-1" title="Copy Card Summary">
-                                    <i class="fas fa-camera"></i>
-                                </button>
-                                <button type="button" class="btn btn-tool btn-xs" data-card-widget="collapse">
-                                    <i class="fas fa-minus"></i>
-                                </button>
-                            </div>
+                            <h6 class="card-title text-navy font-weight-bold mb-0">
+                                <i class="fas fa-folder text-warning mr-2"></i>{{ $source['source_name'] }}
+                            </h6>
+                            <span class="text-dark font-weight-bold financial-number">Total: ₱{{ number_format($source['source_total'] ?? 0, 2) }}</span>
                         </div>
                     </div>
                     
                     <div class="card-body p-0">
-                        {{-- 3. ACTIVITY LOOP --}}
-                        @foreach($source['activities'] as $act)
-                            <div class="border-top p-3 {{ $act['is_pooled'] ? 'bg-light border-left-warning' : 'bg-white' }}">
-                                <div class="row align-items-center">
-                                    <div class="col-md-3">
-                                        <div class="d-flex align-items-center flex-wrap" style="gap: 6px;">
-                                            <h6 class="font-weight-bold text-dark mb-0" style="font-size: 0.9rem;">
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-hover mb-0 text-xs">
+                                <thead class="bg-navy-light text-uppercase">
+                                    <tr>
+                                        <th style="width: 28%;">Activity / Line Item</th>
+                                        <th class="text-right" style="width: 9%;">Alloted Budget</th>
+                                        <th class="text-right" style="width: 9%;">Pending</th>
+                                        <th class="text-right" style="width: 9%;">Obligated</th>
+                                        <th class="text-right" style="width: 8%;">NORSA</th>
+                                        <th class="text-right" style="width: 9%;">Disbursed</th>
+                                        <th class="text-right" style="width: 9%;">Savings</th>
+                                        <th class="text-right" style="width: 9%;">Unobligated</th>
+                                        <th class="text-center" style="width: 10%;">Transactions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach($source['activities'] as $act)
+                                        <tr>
+                                            <td class="align-middle font-weight-bold text-dark">
                                                 {{ $act['details']->name }}
-                                            </h6>
-
-                                            {{-- POOLED ACTIVITY BADGE TAG --}}
-                                            @if($act['is_pooled'])
-                                                <span class="badge badge-warning text-dark font-weight-bold px-2 py-1 shadow-sm" style="font-size: 0.65rem;" title="This activity has pooled funds">
-                                                    <i class="fas fa-layer-group mr-1"></i> POOLED ACTIVITY
-                                                </span>
-                                            @endif
-                                        </div>
-
-                                        <div class="d-flex align-items-center mt-2">
-                                            <button class="btn btn-xs btn-outline-info font-weight-bold text-uppercase px-2 mr-2" 
-                                                    data-toggle="collapse" 
-                                                    data-target="#collapse-{{ $act['details']->id }}">
-                                                <i class="fas fa-search-dollar mr-1"></i> 
-                                                Transactions ({{ $act['transactions']->count() }})
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    <div class="col-md-9">
-                                        <div class="row text-center no-gutters bg-soft-light rounded border py-2">
-                                            <div class="col border-right">
-                                                <small class="d-block text-muted text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Net Budget</small>
-                                                <span class="font-weight-bold financial-number">₱{{ number_format($act['net_budget'], 2) }}</span>
-                                            </div>
-
-                                            {{-- POOLED AMOUNT COLUMN --}}
-                                            @if($act['is_pooled'])
-                                                <div class="col border-right bg-warning-subtle">
-                                                    <small class="d-block text-danger text-uppercase" style="font-size: 0.6rem; font-weight: 700;">
-                                                        <i class="fas fa-minus-circle mr-0.5"></i> Pooled
-                                                    </small>
-                                                    <span class="font-weight-bold text-danger financial-number">
-                                                        ₱{{ number_format($act['pooled_amount'], 2) }}
+                                                @if($act['is_pooled'])
+                                                    <span class="badge badge-warning text-dark ml-1 d-block mt-1" style="font-size: 0.65rem; width: fit-content;">
+                                                        POOLED AMOUNT: ₱{{ number_format($act['pooled_amount'], 2) }}
                                                     </span>
-                                                </div>
-                                            @endif
-
-                                            <div class="col border-right border-left-warning">
-                                                <small class="d-block text-warning text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Pending</small>
-                                                <span class="font-weight-bold text-warning financial-number">₱{{ number_format($act['pending'], 2) }}</span>
-                                            </div>
-
-                                            {{-- OBLIGATED COLUMN --}}
-                                            <div class="col border-right border-left-info">
-                                                <small class="d-block text-info text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Net Obligated</small>
-                                                <span class="font-weight-bold text-info financial-number">₱{{ number_format($act['obligated'], 2) }}</span>
-                                                @if(($act['norsa_amount'] ?? 0) > 0)
-                                                    <small class="d-block text-muted font-weight-normal" style="font-size: 0.58rem;">
-                                                        (Gross: ₱{{ number_format($act['gross_obligated'], 2) }})
-                                                    </small>
                                                 @endif
-                                            </div>
+                                            </td>
+                                            <td class="text-right align-middle financial-number">₱{{ number_format($act['net_budget'], 2) }}</td>
+                                            <td class="text-right align-middle financial-number text-warning">₱{{ number_format($act['pending'], 2) }}</td>
+                                            <td class="text-right align-middle financial-number text-info">₱{{ number_format($act['gross_obligated'], 2) }}</td>
+                                            <td class="text-right align-middle financial-number text-danger">
+                                                {{ ($act['norsa_amount'] ?? 0) > 0 ? '(₱'.number_format($act['norsa_amount'], 2).')' : '-' }}
+                                            </td>
+                                            <td class="text-right align-middle financial-number text-success">₱{{ number_format($act['disbursed'], 2) }}</td>
+                                            <td class="text-right align-middle financial-number text-teal">
+                                                {{ ($act['has_cos_salary'] && $act['savings'] > 0) ? '₱'.number_format($act['savings'], 2) : '-' }}
+                                            </td>
+                                            <td class="text-right align-middle financial-number text-primary">₱{{ number_format($act['untouched'], 2) }}</td>
+                                            <td class="text-center align-middle">
+                                                <button class="btn btn-xs btn-outline-info font-weight-bold px-2" data-toggle="collapse" data-target="#trx-collapse-{{ $act['details']->id }}">
+                                                    <i class="fas fa-list mr-1"></i> ({{ $act['transactions']->count() }})
+                                                </button>
+                                            </td>
+                                        </tr>
 
-                                            {{-- NORSA SAVINGS COLUMN --}}
-                                            <div class="col border-right border-left-danger">
-                                                <small class="d-block text-danger text-uppercase" style="font-size: 0.6rem; font-weight: 700;">NORSA</small>
-                                                <span class="font-weight-bold text-danger financial-number">
-                                                    @if(($act['norsa_amount'] ?? 0) > 0)
-                                                        (₱{{ number_format($act['norsa_amount'], 2) }})
-                                                    @else
-                                                        <span class="text-muted font-weight-normal">-</span>
-                                                    @endif
-                                                </span>
-                                            </div>
+                                        {{-- Inline Collapsible Transaction Breakdown Table --}}
+                                        <tr class="collapse bg-soft-light" id="trx-collapse-{{ $act['details']->id }}">
+                                            <td colspan="9" class="p-3">
+                                                <div class="border rounded bg-white p-2">
+                                                    <span class="font-weight-bold text-muted mb-2 d-block"><i class="fas fa-info-circle mr-1"></i> Transaction Breakdown</span>
+                                                    <table class="table table-sm table-bordered mb-0">
+                                                        <thead class="bg-light text-uppercase" style="font-size: 0.65rem;">
+                                                            <tr>
+                                                                <th>Oblig. Date</th>
+                                                                <th>Disb. Date</th>
+                                                                <th>DTrack / OBRN</th>
+                                                                <th>Payee / Creditor</th>
+                                                                <th>Particulars</th>
+                                                                <th class="text-right">Amount</th>
+                                                                <th class="text-right border-left-info">Gross Obligated</th>
+                                                                <th class="text-right border-left-danger text-danger">NORSA</th>
+                                                                <th class="text-right border-left-success">Disbursed</th>
+                                                                <th class="text-center border-left-primary" style="width: 180px;">Status & Remarks</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody class="text-xs">
+                                                            @forelse($act['transactions'] as $tx)
+                                                                @php
+                                                                    $creditorName = $tx->creditor ?? null;
+                                                                    if (!$creditorName && isset($tx->creditors) && $tx->creditors->isNotEmpty()) {
+                                                                        $creditorName = $tx->creditors->map(fn($c) => $c->employeeDetail->fullname ?? $c->full_name ?? null)->filter()->implode(', ');
+                                                                    }
+                                                                    $isCosSalary = (isset($tx->remarks_salary) && $tx->remarks_salary === 'Imported HR COS Salary/Wages') 
+                                                                        || \Illuminate\Support\Str::contains(strtolower($tx->remarks ?? ''), ['cos', 'salary', 'wages', 'payroll']);
+                                                                    
+                                                                    $txGrossOblig = (float) $tx->obligation_amount;
+                                                                    if (!empty($tx->is_multi_activity) && ($tx->norsa_amount ?? 0) > 0) {
+                                                                        $txGrossOblig += (float) $tx->norsa_amount;
+                                                                    }
+                                                                @endphp
+                                                                <tr>
+                                                                    <td class="align-middle text-nowrap">{{ !empty($tx->obligation_date) ? \Carbon\Carbon::parse($tx->obligation_date)->format('M d, Y') : '-' }}</td>
+                                                                    <td class="align-middle text-nowrap">{{ !empty($tx->disbursement_date) ? \Carbon\Carbon::parse($tx->disbursement_date)->format('M d, Y') : '-' }}</td>
+                                                                    <td class="align-middle text-nowrap">
+                                                                        @if(!empty($tx->dtrack_no))<div><span class="badge badge-light text-danger border">{{ $tx->dtrack_no }}</span></div>@endif
+                                                                        @if($tx->obligation_serial)<div class="text-primary financial-number" style="font-size: 0.68rem;"><i class="fas fa-barcode mr-1"></i>{{ $tx->obligation_serial }}</div>@endif
+                                                                    </td>
+                                                                    <td class="align-middle font-weight-bold">{{ $creditorName ?: '-' }}</td>
+                                                                    <td class="align-middle text-wrap">{{ $tx->particulars }}</td>
+                                                                    
+                                                                    <td class="text-right align-middle financial-number font-weight-bold">
+                                                                        ₱{{ number_format($tx->amount, 2) }}
+                                                                    </td>
 
-                                            <div class="col border-right border-left-success">
-                                                <small class="d-block text-success text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Disbursed</small>
-                                                <span class="font-weight-bold text-success financial-number">₱{{ number_format($act['disbursed'], 2) }}</span>
-                                            </div>
-                                            
-                                            {{-- SAVINGS COLUMN --}}
-                                            <div class="col border-right border-left-teal">
-                                                <small class="d-block text-teal text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Savings (COS)</small>
-                                                <span class="font-weight-bold text-teal financial-number">
-                                                    @if($act['has_cos_salary'] && $act['savings'] > 0)
-                                                        ₱{{ number_format($act['savings'], 2) }}
-                                                    @else
-                                                        <span class="text-muted font-weight-normal">-</span>
-                                                    @endif
-                                                </span>
-                                            </div>
+                                                                    <td class="text-right align-middle font-weight-bold text-info border-left-info financial-number">
+                                                                        ₱{{ number_format($txGrossOblig, 2) }}
+                                                                    </td>
 
-                                            <div class="col border-left-primary">
-                                                <small class="d-block text-primary text-uppercase" style="font-size: 0.6rem; font-weight: 700;">Unobligated</small>
-                                                <span class="font-weight-bold text-primary financial-number">₱{{ number_format($act['untouched'], 2) }}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                                                                    <td class="text-right align-middle font-weight-bold text-danger border-left-danger financial-number">
+                                                                        @if(($tx->norsa_amount ?? 0) > 0)
+                                                                            (₱{{ number_format($tx->norsa_amount, 2) }})
+                                                                        @else
+                                                                            -
+                                                                        @endif
+                                                                    </td>
 
-                                {{-- POOLED REASON BANNER --}}
-                                @if($act['is_pooled'])
-                                    <div class="mt-2 p-2 bg-warning-light border border-warning rounded text-dark small d-flex align-items-center justify-content-between" style="background-color: #fff9e6;">
-                                        <div>
-                                            <i class="fas fa-exclamation-triangle text-warning mr-1.5"></i>
-                                            <strong>Pooling Info:</strong> 
-                                            <span>Amount of <strong>₱{{ number_format($act['pooled_amount'], 2) }}</strong> was pooled from the total budget (₱{{ number_format($act['gross_budget'], 2) }}).</span>
-                                            @if(!empty($act['pooled_remarks']))
-                                                <span class="ml-2 border-left border-warning pl-2 font-italic text-muted">
-                                                    <i class="far fa-comment-alt mr-1"></i>Reason: "{{ $act['pooled_remarks'] }}"
-                                                </span>
-                                            @endif
-                                        </div>
-                                    </div>
-                                @endif
+                                                                    <td class="text-right align-middle font-weight-bold text-success border-left-success financial-number">
+                                                                        ₱{{ number_format($tx->disbursement_amount, 2) }}
+                                                                    </td>
 
-                                {{-- Transactions Table Collapse --}}
-                                <div class="collapse mt-3" id="collapse-{{ $act['details']->id }}">
-                                    <div class="table-responsive shadow-sm border rounded">
-                                        <table class="table table-sm table-hover mb-0 bg-white">
-                                            <thead>
-                                                <tr class="bg-navy-light text-uppercase text-xs" style="font-size: 0.68rem;">
-                                                    <th class="pl-3 py-2 text-nowrap" style="width: 100px;">Oblig. Date</th>
-                                                    <th class="py-2 text-nowrap" style="width: 100px;">Disb. Date</th>
-                                                    <th class="py-2 text-nowrap" style="width: 140px;">DTrack / OBRN</th>
-                                                    <th class="py-2" style="width: 150px;">Payee / Creditor</th>
-                                                    <th class="py-2">Particulars</th>
-                                                    <th class="text-right py-2">Amount</th>
-                                                    <th class="text-right py-2 border-left-info">Gross Obligated</th>
-                                                    <th class="text-right py-2 border-left-danger text-danger">NORSA</th>
-                                                    <th class="text-right py-2 border-left-success">Disbursed</th>
-                                                    <th class="text-center py-2 border-left-primary" style="width: 200px;">Status & Remarks</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody class="text-xs">
-                                                @forelse($act['transactions'] as $tx)
-                                                    @php
-                                                        $creditorName = $tx->creditor ?? null;
-                                                        if (!$creditorName && isset($tx->creditors) && $tx->creditors->isNotEmpty()) {
-                                                            $creditorName = $tx->creditors->map(function($c) {
-                                                                return $c->employeeDetail->fullname ?? $c->full_name ?? null;
-                                                            })->filter()->implode(', ');
-                                                        }
-
-                                                        $isCosSalary = (isset($tx->remarks_salary) && $tx->remarks_salary === 'Imported HR COS Salary/Wages') 
-                                                                    || \Illuminate\Support\Str::contains(strtolower($tx->remarks ?? ''), ['cos', 'salary', 'wages', 'payroll']);
-                                                    @endphp
-                                                    <tr>
-                                                        {{-- Obligation Date --}}
-                                                        <td class="pl-3 align-middle text-nowrap">
-                                                            @if(!empty($tx->obligation_date))
-                                                                <span class="text-dark font-weight-bold">
-                                                                    {{ \Carbon\Carbon::parse($tx->obligation_date)->format('M d, Y') }}
-                                                                </span>
-                                                            @else
-                                                                <span class="text-muted font-italic" title="Created date fallback">{{ $tx->created_at->format('M d, Y') }}</span>
-                                                            @endif
-                                                        </td>
-
-                                                        {{-- Disbursement Date --}}
-                                                        <td class="align-middle text-nowrap">
-                                                            @if(!empty($tx->disbursement_date))
-                                                                <span class="text-success font-weight-bold">
-                                                                    {{ \Carbon\Carbon::parse($tx->disbursement_date)->format('M d, Y') }}
-                                                                </span>
-                                                            @else
-                                                                <span class="text-muted font-italic">-</span>
-                                                            @endif
-                                                        </td>
-
-                                                        {{-- DTrack No. & Obligation Serial --}}
-                                                        <td class="align-middle text-nowrap">
-                                                            @if(!empty($tx->dtrack_no))
-                                                                <div>
-                                                                    <span class="badge badge-light text-danger border border-danger-subtle font-weight-normal" style="font-size: 0.65rem;">
-                                                                        {{ $tx->dtrack_no }}
-                                                                    </span>
-                                                                </div>
-                                                            @endif
-
-                                                            @if($tx->obligation_serial)
-                                                                <div class="{{ !empty($tx->dtrack_no) ? 'mt-1' : '' }}">
-                                                                    <span class="text-primary font-weight-bold financial-number" style="font-size: 0.72rem;">
-                                                                        <i class="fas fa-barcode mr-1 text-primary"></i>{{ $tx->obligation_serial }}
-                                                                    </span>
-                                                                </div>
-                                                            @elseif(empty($tx->dtrack_no))
-                                                                <span class="text-muted font-italic">-</span>
-                                                            @endif
-                                                        </td>
-
-                                                        {{-- Creditor / Payee --}}
-                                                        <td class="align-middle font-weight-bold text-dark">
-                                                            @if($creditorName)
-                                                                <span class="d-inline-flex align-items-center">
-                                                                    <i class="fas fa-user-tag text-muted mr-1.5" style="font-size: 0.65rem;"></i>
-                                                                    <span>{{ $creditorName }}</span>
-                                                                </span>
-                                                            @else
-                                                                <span class="text-muted font-italic">-</span>
-                                                            @endif
-                                                        </td>
-
-                                                        {{-- Particulars --}}
-                                                        <td class="align-middle text-wrap" style="line-height: 1.3;">{{ $tx->particulars }}</td>
-
-                                                        {{-- Transaction Amount --}}
-                                                        <td class="text-right align-middle financial-number">₱{{ number_format($tx->amount, 2) }}</td>
-                                                        
-                                                        {{-- Gross Obligated --}}
-                                                        <td class="text-right align-middle font-weight-bold text-info border-left-info financial-number">
-                                                            ₱{{ number_format($tx->obligation_amount, 2) }}
-                                                        </td>
-
-                                                        {{-- NORSA SAVINGS COLUMN --}}
-                                                        <td class="text-right align-middle font-weight-bold text-danger border-left-danger financial-number">
-                                                            @if(($tx->norsa_amount ?? 0) > 0)
-                                                                (₱{{ number_format($tx->norsa_amount, 2) }})
-                                                            @else
-                                                                <span class="text-muted font-weight-normal">-</span>
-                                                            @endif
-                                                        </td>
-
-                                                        {{-- Disbursed --}}
-                                                        <td class="text-right align-middle font-weight-bold text-success border-left-success financial-number">
-                                                            ₱{{ number_format($tx->disbursement_amount, 2) }}
-                                                        </td>
-
-                                                        {{-- Status & Remarks --}}
-                                                        <td class="text-center align-middle bg-soft-light py-2 border-left-primary">
-                                                            <div class="d-inline-block text-center" style="max-width: 200px;">
-                                                                <div>
-                                                                    @php
-                                                                        $statusName = $tx->status ?? 'N/A';
-                                                                    @endphp
-
-                                                                    <span class="badge px-2 py-1 shadow-sm {{ 
-                                                                        in_array($statusName, ['Disbursed', 'Completed']) ? 'badge-success' : 
-                                                                        ($statusName == 'Disbursed (with savings)' ? 'badge-info' : 
-                                                                        ($statusName == 'Cancelled' || $statusName == 'Rejected' ? 'badge-danger' : 
-                                                                        ($statusName == 'Routed' ? 'badge-primary' : 
-                                                                        ($statusName == 'For CAF/Obligation' ? 'badge-warning text-dark' : 
-                                                                        ($statusName == 'Obligated' ? 'bg-orange text-white' : 'badge-secondary')))))
-                                                                    }}">
-                                                                        {{ $statusName }}
-                                                                    </span>
-                                                                </div>
-
-                                                                {{-- COS / DTrack Remark --}}
-                                                                @if(!empty($tx->remarks))
-                                                                    <div class="mt-1 text-left small border-left pl-2 {{ $isCosSalary ? 'border-warning text-dark' : 'border-secondary text-muted' }}" style="line-height: 1.25; font-style: italic; font-size: 0.68rem;">
-                                                                        <i class="fas {{ $isCosSalary ? 'fa-id-badge text-warning' : 'fa-route text-secondary' }} mr-1"></i>
-                                                                        <strong>{{ $isCosSalary ? 'COS Remark' : 'DTrack Remark' }}:</strong> {{ $tx->remarks }}
-                                                                    </div>
-                                                                @endif
-
-                                                                {{-- Internal Manual Remark --}}
-                                                                @if(!empty($tx->manual_remarks))
-                                                                    <div class="mt-1 text-left small border-left border-primary pl-2 text-dark rounded bg-white py-1 shadow-sm" style="line-height: 1.25; font-size: 0.68rem;">
-                                                                        <i class="fas fa-user-edit text-primary mr-1"></i>
-                                                                        <strong class="text-primary">Internal Remark:</strong> {{ $tx->manual_remarks }}
-                                                                    </div>
-                                                                @endif
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                @empty
-                                                    <tr>
-                                                        <td colspan="10" class="text-center py-3 text-muted">No transactions found for this activity.</td>
-                                                    </tr>
-                                                @endforelse
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            </div>
-                        @endforeach
+                                                                    <td class="text-center align-middle bg-soft-light py-2 border-left-primary">
+                                                                        <div>
+                                                                            <span class="badge px-2 py-1 shadow-sm {{ 
+                                                                                in_array($tx->status, ['Disbursed', 'Completed']) ? 'badge-success' : 
+                                                                                ($tx->status == 'Disbursed (with savings)' ? 'badge-info' : 
+                                                                                ($tx->status == 'Cancelled' || $tx->status == 'Rejected' ? 'badge-danger' : 'badge-secondary')) }}">
+                                                                                {{ $tx->status ?? 'N/A' }}
+                                                                            </span>
+                                                                        </div>
+                                                                        @if(!empty($tx->remarks))
+                                                                            <div class="mt-1 text-left small border-left pl-2 {{ $isCosSalary ? 'border-warning text-dark' : 'border-secondary text-muted' }}" style="font-size: 0.65rem; font-style: italic;">
+                                                                                <strong>{{ $isCosSalary ? 'COS' : 'DTrack' }}:</strong> {{ $tx->remarks }}
+                                                                            </div>
+                                                                        @endif
+                                                                    </td>
+                                                                </tr>
+                                                            @empty
+                                                                <tr>
+                                                                    <td colspan="10" class="text-center text-muted py-2">No transactions recorded for this activity.</td>
+                                                                </tr>
+                                                            @endforelse
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             @endforeach
         </div>
     @endforeach
 </div>
+@endsection
+
+@section('scripts')
+<script>
+    $(document).ready(function() {
+        // Expand All / Collapse All functionality for cards/tables
+        let isExpanded = false;
+        $('#expandAllBtn').on('click', function() {
+            isExpanded = !isExpanded;
+            if (isExpanded) {
+                $('.collapse').collapse('show');
+                $(this).html('<i class="fas fa-compress-arrows-alt mr-1"></i> Collapse All');
+            } else {
+                $('.collapse').collapse('hide');
+                $(this).html('<i class="fas fa-expand-arrows-alt mr-1"></i> Expand All');
+            }
+        });
+    });
+</script>
 @endsection

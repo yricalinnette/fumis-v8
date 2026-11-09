@@ -23,6 +23,8 @@ class SourceOfFund extends Model
         'sheet_name',
         'is_active',
         'section_id',
+        'funding_source', 
+        'is_converted'
     ];
     
     protected $casts = [
@@ -48,6 +50,11 @@ class SourceOfFund extends Model
     public function budgetLineItem()
     {
         return $this->belongsTo(BudgetLineItem::class, 'budget_line_item_id');
+    }
+
+    public function multiActivities()
+    {
+        return $this->hasMany(FundMultiActivity::class, 'source_of_fund_id');
     }
 
 }
