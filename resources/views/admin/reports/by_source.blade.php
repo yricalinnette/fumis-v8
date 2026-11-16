@@ -1,33 +1,163 @@
 @extends('layouts.adminlte')
 
 @section('content')
+@php
+    $allSources = $groupedReport->flatten(1);
+    $kpiGrossAllotted      = $allSources->sum('source_total');
+    $kpiPooled             = $allSources->sum('total_pooled');
+    $kpiAdjustedAllotment  = $allSources->sum('adjusted_allotment');
+    $kpiNetObligated       = $allSources->sum('total_obligated');
+    $kpiNorsa              = $allSources->sum('total_norsa');
+    $kpiDisbursed          = $allSources->sum('total_disbursed');
+    $kpiPending            = $allSources->sum('total_pending');
+    $kpiSavings            = $allSources->sum('total_savings');
+    $kpiUnpaid             = max(0, $kpiNetObligated - $kpiDisbursed);
+    $kpiUnobligAllotment   = max(0, $kpiGrossAllotted - $kpiNetObligated);
+    $kpiUnobligMinusPend   = max(0, $kpiAdjustedAllotment - ($kpiNetObligated + $kpiPending));
+    $kpiObligRate          = $kpiAdjustedAllotment > 0 ? ($kpiNetObligated / $kpiAdjustedAllotment) * 100 : 0;
+    $kpiDisbRate           = $kpiNetObligated > 0 ? ($kpiDisbursed / $kpiNetObligated) * 100 : 0;
+
+    $activeSectionName = !empty(request('section_id')) && isset($sectionOptions[request('section_id')])
+        ? $sectionOptions[request('section_id')]
+        : null;
+@endphp
+
 <style>
-    /* Professional Financial Table Styles */
-    .financial-number { font-family: 'Consolas', 'Courier New', Courier, monospace; font-weight: 600; letter-spacing: -0.3px; }
-    .card-navy.card-outline { border-top: 3px solid #001f3f; }
-    .bg-navy-light { background-color: #f1f4f8; color: #001f3f; }
-    
-    /* Column Accent Borders */
-    .border-left-info { border-left: 3px solid #17a2b8 !important; }
-    .border-left-danger { border-left: 3px solid #dc3545 !important; }
-    .border-left-success { border-left: 3px solid #28a745 !important; }
-    .border-left-warning { border-left: 3px solid #ffc107 !important; }
-    .border-left-teal { border-left: 3px solid #20c997 !important; }
-    .border-left-primary { border-left: 3px solid #007bff !important; }
-    
-    .section-header-row { background-color: #e9ecef !important; color: #343a40; font-weight: 700; }
-    .table-sticky thead th { position: sticky; top: 0; z-index: 10; background: #f8f9fa; box-shadow: inset 0 -2px 0 #dee2e6; font-size: 0.7rem; letter-spacing: 0.5px; }
-    .bg-soft-light { background-color: #fafbfc; }
+    /* Clean Executive Financial Styling */
+    .financial-number {
+        font-family: 'Consolas', 'Courier New', Courier, monospace;
+        font-weight: 600;
+        letter-spacing: -0.25px;
+        font-size: 0.8rem;
+    }
+    .card-navy.card-outline {
+        border-top: 3px solid #001f3f;
+    }
+    .bg-navy-light {
+        background-color: #eef3f8 !important;
+        color: #001f3f;
+    }
+
+    /* Executive KPI Cards */
+    .kpi-box {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 12px 14px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        border-top: 3px solid #64748b;
+        height: 100%;
+    }
+    .kpi-box.kpi-navy    { border-top-color: #001f3f; }
+    .kpi-box.kpi-info    { border-top-color: #0284c7; }
+    .kpi-box.kpi-success { border-top-color: #16a34a; }
+    .kpi-box.kpi-warning { border-top-color: #d97706; }
+    .kpi-box.kpi-indigo  { border-top-color: #4f46e5; }
+    .kpi-box.kpi-primary { border-top-color: #0d9488; }
+
+    .kpi-title {
+        font-size: 0.67rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #64748b;
+        margin-bottom: 4px;
+    }
+    .kpi-val {
+        font-family: 'Consolas', 'Courier New', Courier, monospace;
+        font-size: 1.08rem;
+        font-weight: 700;
+        color: #0f172a;
+        line-height: 1.25;
+    }
+    .kpi-meta {
+        font-size: 0.68rem;
+        color: #64748b;
+        margin-top: 4px;
+    }
+
+    /* Subtle Group Separators (Clean, No Heavy Clutter) */
+    .col-sep {
+        border-left: 1px solid #cbd5e1 !important;
+    }
+
+    /* Full-Width Section Banner */
+    .section-header-row {
+        background-color: #e2e8f0 !important;
+        color: #0f172a;
+        font-weight: 700;
+        border-top: 1px solid #cbd5e1;
+        border-bottom: 1px solid #cbd5e1;
+    }
+    .section-header-sticky-text {
+        position: sticky;
+        left: 1.25rem;
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+    }
+
+    /* Sticky Multi-Row Header & Left Column */
+    .table-sticky thead tr.group-row th {
+        position: sticky;
+        top: 0;
+        z-index: 12;
+        font-size: 0.64rem;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        padding: 5px 8px;
+        border-bottom: 1px solid #cbd5e1;
+    }
+    .table-sticky thead tr.col-row th {
+        position: sticky;
+        top: 25px;
+        z-index: 11;
+        background: #f8fafc;
+        color: #334155;
+        box-shadow: inset 0 -2px 0 #94a3b8;
+        font-size: 0.66rem;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        vertical-align: middle;
+        padding: 7px 8px;
+        line-height: 1.2;
+    }
+    .th-subtext {
+        display: block;
+        font-size: 0.58rem;
+        font-weight: 500;
+        text-transform: none;
+        letter-spacing: 0;
+        color: #64748b;
+        margin-top: 2px;
+    }
+    .sticky-col {
+        position: sticky;
+        left: 0;
+        z-index: 9;
+        background: #ffffff;
+        box-shadow: 2px 0 5px rgba(15, 23, 42, 0.04);
+    }
+    .table-sticky thead .sticky-col {
+        z-index: 14;
+    }
+    .bg-navy-light .sticky-col {
+        background-color: #eef3f8 !important;
+    }
+    .bg-soft-light   { background-color: #f8fafc; }
+    .bg-soft-indigo  { background-color: rgba(79, 70, 229, 0.04); }
+    .bg-soft-teal    { background-color: rgba(13, 148, 136, 0.04); }
 
     /* Custom Checkbox Container Styling */
     .quarter-checkbox-group {
-        background-color: #f8f9fa;
+        background-color: #f8fafc;
         border: 1px solid #ced4da;
-        border-radius: 6px;
-        padding: 5px 12px;
+        border-radius: 4px;
+        padding: 4px 12px;
+        height: 31px;
         display: flex;
         align-items: center;
-        gap: 15px;
+        justify-content: space-between;
     }
     .quarter-checkbox-item {
         display: inline-flex;
@@ -35,50 +165,66 @@
         cursor: pointer;
         margin-bottom: 0;
         font-weight: 700;
-        color: #333;
+        font-size: 0.8rem;
+        color: #1e293b;
         user-select: none;
     }
     .quarter-checkbox-item input[type="checkbox"] {
         margin-right: 5px;
-        width: 16px;
-        height: 16px;
+        width: 15px;
+        height: 15px;
         cursor: pointer;
     }
 
-    /* Tooltip Custom styling for multi-line reasons */
+    /* Plain-English Glossary Bar */
+    .glossary-bar {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 0.74rem;
+        color: #475569;
+    }
+
+    /* Tooltip Custom styling */
     .tooltip-inner {
         white-space: pre-line !important;
         text-align: left !important;
         max-width: 320px !important;
     }
-    
-    @media print { .filter-section { display: none !important; } }
+
+    @media print {
+        .filter-section, .glossary-bar { display: none !important; }
+    }
 </style>
 
 <div class="container-fluid py-3">
-    {{-- Header Section --}}
+    {{-- Page Header --}}
     <div class="row mb-3">
-        <div class="col-12 d-flex justify-content-between align-items-end">
+        <div class="col-12 d-flex flex-wrap justify-content-between align-items-end">
             <div>
                 <h4 class="text-navy mb-1 font-weight-bold">
                     <i class="fas fa-layer-group mr-2 text-primary"></i>By Source Budget Tracking
                 </h4>
                 <p class="text-muted small mb-0">
-                    Financial Summary for Fiscal Year <strong>{{ request('year', date('Y')) }}</strong> 
-                    @if(request('source_type')) | Type: <span class="text-uppercase text-info font-weight-bold">{{ request('source_type') }}</span> @endif
-                    @if(request('month')) | Month: <strong>{{ date('F', mktime(0, 0, 0, request('month'), 1)) }}</strong>
-                    @elseif(!empty(request('quarters'))) 
-                        | Quarters: <strong>{{ implode(', ', array_map(fn($q) => 'Q'.$q, (array)request('quarters'))) }}</strong> 
-                    @elseif(request('quarter')) 
-                        | Quarter: <strong>Q{{ request('quarter') }}</strong> 
+                    Financial Summary for Fiscal Year <strong>{{ request('year', date('Y')) }}</strong>
+                    @if($activeSectionName)
+                        | Unit/Section: <span class="badge badge-primary font-weight-bold px-2 py-1">{{ $activeSectionName }}</span>
+                    @endif
+                    @if(request('source_type'))
+                        | Type: <span class="text-uppercase text-info font-weight-bold">{{ request('source_type') }}</span>
+                    @endif
+                    @if(request('month'))
+                        | Month: <strong>{{ date('F', mktime(0, 0, 0, request('month'), 1)) }}</strong>
+                    @elseif(!empty(request('quarters')))
+                        | Quarters: <strong>{{ implode(', ', array_map(fn($q) => 'Q'.$q, (array)request('quarters'))) }}</strong>
+                    @elseif(request('quarter'))
+                        | Quarter: <strong>Q{{ request('quarter') }}</strong>
                     @endif
                 </p>
-                <div class="text-info small mt-1">
-                    <i class="fas fa-info-circle mr-1"></i> Obligations and Disbursements are strictly filtered based on transaction dates in the selected period.
-                </div>
             </div>
-            <div class="btn-group shadow-sm">
-                <a href="{{ route('reports.by_source.export', request()->all()) }}" class="btn btn-sm btn-success">
+            <div class="btn-group shadow-sm mt-2 mt-md-0">
+                <a href="{{ route('reports.by_source.export', request()->all()) }}" class="btn btn-sm btn-success font-weight-bold">
                     <i class="fas fa-file-excel mr-1"></i> Export Excel
                 </a>
                 <button class="btn btn-sm btn-outline-secondary" data-toggle="collapse" data-target="#filterCard">
@@ -88,16 +234,83 @@
         </div>
     </div>
 
+    {{-- Executive KPI Summary Cards --}}
+    <div class="row mb-3">
+        <div class="col-xl-2 col-md-4 col-sm-6 mb-2">
+            <div class="kpi-box kpi-navy">
+                <div class="kpi-title">Total Fund Source</div>
+                <div class="kpi-val">₱{{ number_format($kpiGrossAllotted, 2) }}</div>
+                <div class="kpi-meta">
+                    Usable Allotment: <strong>₱{{ number_format($kpiAdjustedAllotment, 2) }}</strong>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-2 col-md-4 col-sm-6 mb-2">
+            <div class="kpi-box kpi-info">
+                <div class="kpi-title">Net Obligated</div>
+                <div class="kpi-val" style="color: #0284c7;">₱{{ number_format($kpiNetObligated, 2) }}</div>
+                <div class="kpi-meta">
+                    Utilization: <strong>{{ number_format($kpiObligRate, 1) }}%</strong>
+                    @if($kpiNorsa > 0) · NORSA: <span class="text-danger">-₱{{ number_format($kpiNorsa, 2) }}</span> @endif
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-2 col-md-4 col-sm-6 mb-2">
+            <div class="kpi-box kpi-success">
+                <div class="kpi-title">Total Disbursed</div>
+                <div class="kpi-val text-success">₱{{ number_format($kpiDisbursed, 2) }}</div>
+                <div class="kpi-meta">
+                    Paid Rate: <strong>{{ number_format($kpiDisbRate, 1) }}%</strong> · Unpaid: ₱{{ number_format($kpiUnpaid, 2) }}
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-2 col-md-4 col-sm-6 mb-2">
+            <div class="kpi-box kpi-warning">
+                <div class="kpi-title">Pending Transactions</div>
+                <div class="kpi-val" style="color: #d97706;">₱{{ number_format($kpiPending, 2) }}</div>
+                <div class="kpi-meta">Realized Savings: <strong class="text-teal">₱{{ number_format($kpiSavings, 2) }}</strong></div>
+            </div>
+        </div>
+        <div class="col-xl-2 col-md-4 col-sm-6 mb-2">
+            <div class="kpi-box kpi-indigo">
+                <div class="kpi-title">Unobligated Allotment Bal.</div>
+                <div class="kpi-val" style="color: #4f46e5;">₱{{ number_format($kpiUnobligAllotment, 2) }}</div>
+                <div class="kpi-meta">Total Source minus Net Obligated</div>
+            </div>
+        </div>
+        <div class="col-xl-2 col-md-4 col-sm-6 mb-2">
+            <div class="kpi-box kpi-primary">
+                <div class="kpi-title">Unobligated (Minus Pending)</div>
+                <div class="kpi-val" style="color: #0f766e;">₱{{ number_format($kpiUnobligMinusPend, 2) }}</div>
+                <div class="kpi-meta">Free Balance After Pending</div>
+            </div>
+        </div>
+    </div>
+
     {{-- Filter Card --}}
     <div class="collapse show filter-section" id="filterCard">
-        <div class="card shadow-sm mb-4 border-navy">
+        <div class="card shadow-sm mb-3 border-navy">
             <div class="card-body py-3 bg-white">
                 <form action="{{ route('reports.by_source') }}" method="GET" class="row align-items-end">
-                    
-                    {{-- CUMULATIVE QUARTERS CHECKBOXES --}}
-                    <div class="col-md-5">
+                    {{-- Section / Unit Dropdown (Shown for Budget, Admin, and Division Users) --}}
+                    @if(!empty($canFilterSection) && $canFilterSection)
+                        <div class="col-lg-3 col-md-6 mb-2">
+                            <label class="text-xs font-weight-bold text-muted text-uppercase mb-1">Unit / Section</label>
+                            <select name="section_id" class="form-control form-control-sm border-navy">
+                                <option value="">All Units / Sections</option>
+                                @foreach($sectionOptions ?? [] as $secId => $secName)
+                                    <option value="{{ $secId }}" {{ (string)request('section_id') === (string)$secId ? 'selected' : '' }}>
+                                        {{ $secName }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                    @endif
+
+                    {{-- Cumulative Quarters Checkboxes --}}
+                    <div class="{{ (!empty($canFilterSection) && $canFilterSection) ? 'col-lg-3' : 'col-lg-4' }} col-md-6 mb-2">
                         <label class="text-xs font-weight-bold text-muted text-uppercase d-block mb-1">
-                            Cumulative Quarters <span class="text-primary font-weight-normal text-lowercase">(select multiple for cumulative report)</span>
+                            Cumulative Quarters
                         </label>
                         @php
                             $selectedQuarters = (array) request('quarters', []);
@@ -115,8 +328,8 @@
                         </div>
                     </div>
 
-                    <div class="col-md-2">
-                        <label class="text-xs font-weight-bold text-muted text-uppercase">Source Type</label>
+                    <div class="col-lg-2 col-md-4 mb-2">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1">Source Type</label>
                         <select name="source_type" class="form-control form-control-sm border-navy text-uppercase">
                             <option value="">All Types</option>
                             @foreach($sourceTypes ?? ['saa', 'regular', 'continuing'] as $type)
@@ -125,8 +338,8 @@
                         </select>
                     </div>
 
-                    <div class="col-md-2">
-                        <label class="text-xs font-weight-bold text-muted text-uppercase">Specific Month</label>
+                    <div class="col-lg-2 col-md-4 mb-2">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1">Specific Month</label>
                         <select name="month" class="form-control form-control-sm border-navy">
                             <option value="">All Months</option>
                             @foreach(range(1, 12) as $m)
@@ -135,127 +348,160 @@
                         </select>
                     </div>
 
-                    <div class="col-md-1">
-                        <label class="text-xs font-weight-bold text-muted text-uppercase">Fiscal Year</label>
-                        <select name="year" class="form-control form-control-sm border-navy">
-                            @php $currentYear = date('Y'); @endphp
-                            @foreach(range($currentYear, $currentYear - 4) as $yearOption)
-                                <option value="{{ $yearOption }}" {{ request('year', $currentYear) == $yearOption ? 'selected' : '' }}>{{ $yearOption }}</option>
-                            @endforeach
-                        </select>
-                    </div>
-
-                    <div class="col-md-2 text-right">
-                        <button type="submit" class="btn btn-sm text-white px-3 shadow-sm" style="background-color: #001f3f;">
-                            <i class="fas fa-sync-alt mr-1"></i> Apply Filter
-                        </button>
-                        <a href="{{ route('reports.by_source') }}" class="btn btn-sm btn-light border ml-1 text-muted">Reset</a>
+                    <div class="{{ (!empty($canFilterSection) && $canFilterSection) ? 'col-lg-2' : 'col-lg-2' }} col-md-4 mb-2">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1">Fiscal Year</label>
+                        <div class="d-flex">
+                            <select name="year" class="form-control form-control-sm border-navy mr-2" style="min-width: 78px;">
+                                @php $currentYear = date('Y'); @endphp
+                                @foreach(range($currentYear, $currentYear - 4) as $yearOption)
+                                    <option value="{{ $yearOption }}" {{ request('year', $currentYear) == $yearOption ? 'selected' : '' }}>{{ $yearOption }}</option>
+                                @endforeach
+                            </select>
+                            <button type="submit" class="btn btn-sm text-white px-2 shadow-sm text-nowrap" style="background-color: #001f3f;">
+                                <i class="fas fa-search mr-1"></i> Apply
+                            </button>
+                            <a href="{{ route('reports.by_source') }}" class="btn btn-sm btn-light border ml-1 text-muted" title="Reset Filters">
+                                <i class="fas fa-undo"></i>
+                            </a>
+                        </div>
                     </div>
                 </form>
             </div>
         </div>
     </div>
 
+    {{-- Quick Guide for Easy Reading --}}
+    <div class="glossary-bar mb-3 d-flex flex-wrap align-items-center justify-content-between">
+        <div class="mb-1 mb-md-0">
+            <strong class="text-navy mr-2"><i class="fas fa-book-open mr-1 text-primary"></i>Quick Guide:</strong>
+            <span class="mr-3"><strong>Adjusted Allotment</strong> = Total Source minus Pooled funds</span>
+            <span class="mr-3"><strong>Net Obligated</strong> = Obligated minus NORSA</span>
+            <span class="mr-3"><strong>Unobligated Allotment Bal.</strong> = Total Source minus Net Obligated</span>
+            <span><strong>Unobligated (Minus Pending)</strong> = Remaining free funds after deducting pending requests</span>
+        </div>
+        <span class="text-info small"><i class="fas fa-calendar-check mr-1"></i>Filtered by transaction date</span>
+    </div>
+
+    {{-- Main Financial Report Table --}}
     <div class="card card-navy card-outline shadow-sm">
         <div class="card-body p-0">
-            <div class="table-responsive" style="max-height: 650px;">
+            <div class="table-responsive" style="max-height: 680px;">
                 <table class="table table-sm table-hover table-sticky mb-0 border-0">
                     <thead>
-                        <tr class="text-muted text-uppercase">
-                            <th class="pl-4 py-2" style="width: 16%;">Fund Source</th>
-                            <th class="text-right py-2">Total Fund Source</th>
-                            <th class="text-center py-2">Procurable</th>
-                            <th class="text-center py-2">Non-Procurable</th>
-                            <th class="text-right py-2">Adjusted Allotment</th>
-                            <th class="text-right py-2 bg-light border-left-info">Net Obligated</th>
-                            <th class="text-right py-2 border-left-danger text-danger">NORSA</th>
-                            <th class="text-center py-2 bg-light">Oblig. %</th>
-                            <th class="text-right py-2 border-left-success">Disbursed</th>
-                            <th class="text-center py-2">Disb. %</th>
-                            <th class="text-right py-2 border-left-teal text-teal">Savings (COS)</th>
-                            <th class="text-right py-2 border-left-warning text-warning">Pending Trans.</th>
-                            <th class="text-right py-2 bg-light">Unpaid Obligations</th>
-                            <th class="text-right py-2 pr-4 border-left-primary bg-light text-primary">Unobligated</th>
+                        {{-- Category Group Header Row --}}
+                        <tr class="group-row text-uppercase text-center">
+                            <th class="sticky-col pl-3 text-left" style="background-color: #e2e8f0; color: #0f172a;">Source</th>
+                            <th colspan="4" style="background-color: #e0e7ff; color: #1e3a8a;">1. Allotment Allocation</th>
+                            <th colspan="6" style="background-color: #dcfce7; color: #14532d;">2. Obligation &amp; Disbursement</th>
+                            <th colspan="4" style="background-color: #fef3c7; color: #78350f;">3. Savings &amp; Remaining Balances</th>
+                        </tr>
+                        {{-- Column Header Row --}}
+                        <tr class="col-row text-uppercase">
+                            <th class="sticky-col pl-3" style="min-width: 195px;">Fund Source</th>
+                            <th class="text-right">Total Fund Source</th>
+                            <th class="text-center">Procurable</th>
+                            <th class="text-center">Non-Procurable</th>
+                            <th class="text-right">
+                                Adjusted Allotment
+                                <span class="th-subtext">Less Pooled</span>
+                            </th>
+                            <th class="text-right col-sep bg-soft-light">
+                                Net Obligated
+                                <span class="th-subtext">Gross − NORSA</span>
+                            </th>
+                            <th class="text-right text-danger">NORSA</th>
+                            <th class="text-center bg-soft-light">Oblig. %</th>
+                            <th class="text-right">Disbursed</th>
+                            <th class="text-center">Disb. %</th>
+                            <th class="text-right bg-soft-light">
+                                Unpaid Oblig.
+                                <span class="th-subtext">Oblig. − Disb.</span>
+                            </th>
+                            <th class="text-right col-sep text-teal">
+                                Savings
+                                <span class="th-subtext">COS + Proc.</span>
+                            </th>
+                            <th class="text-right text-warning">
+                                Pending
+                                <span class="th-subtext">For Obligation</span>
+                            </th>
+                            <th class="text-right bg-soft-indigo" style="color: #4338ca; min-width: 145px;">
+                                Unobligated Allotment Bal.
+                                <span class="th-subtext">Source − Net Oblig.</span>
+                            </th>
+                            <th class="text-right pr-3 bg-soft-teal" style="color: #0f766e; min-width: 155px;">
+                                Unobligated (Minus Pending)
+                                <span class="th-subtext">Adj. − (Oblig. + Pending)</span>
+                            </th>
                         </tr>
                     </thead>
                     <tbody>
-                        @php
-                            $grandTotals = [
-                                'gross_allotted' => 0, 'pooled' => 0, 'adjusted_allotment' => 0, 
-                                'gross_obligated' => 0, 'norsa' => 0, 'obligated' => 0, 
-                                'disbursed' => 0, 'pending' => 0, 'savings' => 0, 
-                                'procurable' => 0, 'non_procurable' => 0
-                            ];
-                        @endphp
-
                         @forelse($groupedReport as $sectionName => $sources)
                             @php
                                 $sectionTotals = [
-                                    'gross_allotted' => 0, 'pooled' => 0, 'adjusted_allotment' => 0, 
-                                    'gross_obligated' => 0, 'norsa' => 0, 'obligated' => 0, 
-                                    'disbursed' => 0, 'pending' => 0, 'savings' => 0, 
-                                    'procurable' => 0, 'non_procurable' => 0
+                                    'gross_allotted' => 0, 'pooled' => 0, 'adjusted_allotment' => 0,
+                                    'gross_obligated' => 0, 'norsa' => 0, 'obligated' => 0,
+                                    'disbursed' => 0, 'pending' => 0, 'savings' => 0,
+                                    'procurable' => 0, 'non_procurable' => 0,
+                                    'unobligated_allotment' => 0, 'unobligated_minus_pending' => 0
                                 ];
                             @endphp
 
+                            {{-- Full-Width Section / Unit Banner --}}
                             <tr class="section-header-row">
-                                <td colspan="14" class="pl-4 py-2">
-                                    <i class="fas fa-building mr-2 text-secondary"></i>
-                                    <span>{{ $sectionName }}</span>
+                                <td colspan="15" class="pl-3 py-2">
+                                    <div class="section-header-sticky-text">
+                                        <i class="fas fa-building mr-2 text-primary"></i>
+                                        <span class="text-uppercase" style="font-size: 0.8rem; letter-spacing: 0.3px;">{{ $sectionName }}</span>
+                                        <span class="badge badge-light border text-muted ml-2 font-weight-normal" style="font-size: 0.68rem;">
+                                            {{ $sources->count() }} {{ \Illuminate\Support\Str::plural('fund source', $sources->count()) }}
+                                        </span>
+                                    </div>
                                 </td>
                             </tr>
 
                             @foreach($sources as $data)
                                 @php
-                                    $currentGross      = $data['source_total'];
-                                    $currentPooled     = $data['total_pooled'] ?? 0;
-                                    $currentAdjusted   = $data['adjusted_allotment'];
-                                    $currentGrossOblig = $data['gross_obligated'] ?? $data['total_obligated'];
-                                    $currentNorsa      = $data['total_norsa'] ?? 0;
-                                    $currentObligated  = $data['total_obligated'];
-                                    $currentDisbursed  = $data['total_disbursed'];
-                                    $currentPending    = $data['total_pending'];
-                                    $currentSavings    = $data['total_savings'] ?? 0;
-                                    $budgetP           = $data['procurable_budget_total']; 
-                                    $budgetNP          = $data['non_procurable_budget_total'];
-                                    
+                                    $currentGross          = $data['source_total'];
+                                    $currentPooled         = $data['total_pooled'] ?? 0;
+                                    $currentAdjusted       = $data['adjusted_allotment'];
+                                    $currentGrossOblig     = $data['gross_obligated'] ?? $data['total_obligated'];
+                                    $currentNorsa          = $data['total_norsa'] ?? 0;
+                                    $currentObligated      = $data['total_obligated'];
+                                    $currentDisbursed      = $data['total_disbursed'];
+                                    $currentPending        = $data['total_pending'];
+                                    $currentSavings        = $data['total_savings'] ?? 0;
+                                    $budgetP               = $data['procurable_budget_total'];
+                                    $budgetNP              = $data['non_procurable_budget_total'];
+
                                     $percP  = $currentAdjusted > 0 ? ($budgetP / $currentAdjusted) * 100 : 0;
                                     $percNP = $currentAdjusted > 0 ? ($budgetNP / $currentAdjusted) * 100 : 0;
 
-                                    $unpaid      = $currentObligated - $currentDisbursed;
-                                    $unobligated = $data['total_unobligated'];
+                                    $unpaid                 = max(0, $currentObligated - $currentDisbursed);
+                                    $unobligAllotmentBal    = $data['unobligated_allotment_balance'] ?? max(0, $currentGross - $currentObligated);
+                                    $unobligMinusPending    = $data['total_unobligated'] ?? max(0, $currentAdjusted - ($currentObligated + $currentPending));
 
                                     // Update Section Totals
-                                    $sectionTotals['gross_allotted']     += $currentGross;
-                                    $sectionTotals['pooled']             += $currentPooled;
-                                    $sectionTotals['adjusted_allotment'] += $currentAdjusted;
-                                    $sectionTotals['gross_obligated']    += $currentGrossOblig;
-                                    $sectionTotals['norsa']              += $currentNorsa;
-                                    $sectionTotals['obligated']          += $currentObligated;
-                                    $sectionTotals['disbursed']          += $currentDisbursed;
-                                    $sectionTotals['pending']            += $currentPending;
-                                    $sectionTotals['savings']            += $currentSavings;
-                                    $sectionTotals['procurable']         += $budgetP;
-                                    $sectionTotals['non_procurable']     += $budgetNP;
-
-                                    // Update Grand Totals
-                                    $grandTotals['gross_allotted']     += $currentGross;
-                                    $grandTotals['pooled']             += $currentPooled;
-                                    $grandTotals['adjusted_allotment'] += $currentAdjusted;
-                                    $grandTotals['gross_obligated']    += $currentGrossOblig;
-                                    $grandTotals['norsa']              += $currentNorsa;
-                                    $grandTotals['obligated']          += $currentObligated;
-                                    $grandTotals['disbursed']          += $currentDisbursed;
-                                    $grandTotals['pending']            += $currentPending;
-                                    $grandTotals['savings']            += $currentSavings;
-                                    $grandTotals['procurable']         += $budgetP;
-                                    $grandTotals['non_procurable']     += $budgetNP;
+                                    $sectionTotals['gross_allotted']            += $currentGross;
+                                    $sectionTotals['pooled']                    += $currentPooled;
+                                    $sectionTotals['adjusted_allotment']        += $currentAdjusted;
+                                    $sectionTotals['gross_obligated']           += $currentGrossOblig;
+                                    $sectionTotals['norsa']                     += $currentNorsa;
+                                    $sectionTotals['obligated']                 += $currentObligated;
+                                    $sectionTotals['disbursed']                 += $currentDisbursed;
+                                    $sectionTotals['pending']                   += $currentPending;
+                                    $sectionTotals['savings']                   += $currentSavings;
+                                    $sectionTotals['procurable']                += $budgetP;
+                                    $sectionTotals['non_procurable']            += $budgetNP;
+                                    $sectionTotals['unobligated_allotment']     += $unobligAllotmentBal;
+                                    $sectionTotals['unobligated_minus_pending'] += $unobligMinusPending;
 
                                     $obligClass = $data['overall_oblig_rate'] >= 90 ? 'badge-success' : ($data['overall_oblig_rate'] >= 50 ? 'badge-info' : 'badge-warning');
+                                    $disbClass  = $data['overall_disb_rate'] >= 90 ? 'badge-success' : ($data['overall_disb_rate'] >= 50 ? 'badge-info' : 'badge-light border');
                                 @endphp
                                 <tr>
                                     {{-- Source Name --}}
-                                    <td class="pl-4 align-middle">
+                                    <td class="sticky-col pl-3 align-middle">
                                         <span class="text-navy font-weight-bold text-uppercase small d-block">{{ $data['source_name'] }}</span>
                                     </td>
 
@@ -267,34 +513,33 @@
                                     {{-- Procurable % & Amount --}}
                                     <td class="text-center align-middle">
                                         <span class="text-xs font-weight-bold text-info">{{ number_format($percP, 1) }}%</span>
-                                        <small class="d-block text-muted financial-number" style="font-size: 0.65rem;">₱{{ number_format($budgetP, 2) }}</small>
+                                        <small class="d-block text-muted financial-number" style="font-size: 0.64rem;">₱{{ number_format($budgetP, 2) }}</small>
                                     </td>
 
                                     {{-- Non-Procurable % & Amount --}}
                                     <td class="text-center align-middle">
                                         <span class="text-xs font-weight-bold text-secondary">{{ number_format($percNP, 1) }}%</span>
-                                        <small class="d-block text-muted financial-number" style="font-size: 0.65rem;">₱{{ number_format($budgetNP, 2) }}</small>
+                                        <small class="d-block text-muted financial-number" style="font-size: 0.64rem;">₱{{ number_format($budgetNP, 2) }}</small>
                                     </td>
 
                                     {{-- Adjusted Allotment --}}
                                     <td class="text-right align-middle financial-number">
                                         <div class="font-weight-bold">₱{{ number_format($currentAdjusted, 2) }}</div>
-                                        
                                         @if($data['has_pooled'])
                                             <div class="mt-0.5">
-                                                <span class="badge badge-warning text-dark font-weight-bold px-1.5 py-0.5 cursor-pointer" 
-                                                      style="font-size: 0.62rem;" 
-                                                      data-toggle="tooltip" 
-                                                      data-placement="left" 
+                                                <span class="badge badge-warning text-dark font-weight-bold px-1 py-0.5"
+                                                      style="font-size: 0.6rem; cursor: help;"
+                                                      data-toggle="tooltip"
+                                                      data-placement="left"
                                                       title="Pooling Reason(s):&#10;{{ $data['pooled_reasons'] }}">
-                                                    <i class="fas fa-layer-group mr-1"></i> Less Pooled: ₱{{ number_format($currentPooled, 2) }}
+                                                    <i class="fas fa-layer-group mr-1"></i>Less Pooled: ₱{{ number_format($currentPooled, 2) }}
                                                 </span>
                                             </div>
                                         @endif
                                     </td>
-                                    
+
                                     {{-- Net Obligated --}}
-                                    <td class="text-right align-middle financial-number text-info font-weight-bold border-left-info bg-soft-light">
+                                    <td class="text-right align-middle financial-number font-weight-bold col-sep bg-soft-light" style="color: #0284c7;">
                                         <div>₱{{ number_format($currentObligated, 2) }}</div>
                                         @if($currentNorsa > 0)
                                             <small class="d-block text-muted font-weight-normal" style="font-size: 0.6rem;">
@@ -303,8 +548,8 @@
                                         @endif
                                     </td>
 
-                                    {{-- NORSA Savings --}}
-                                    <td class="text-right align-middle financial-number text-danger border-left-danger">
+                                    {{-- NORSA --}}
+                                    <td class="text-right align-middle financial-number text-danger">
                                         @if($currentNorsa > 0)
                                             (₱{{ number_format($currentNorsa, 2) }})
                                         @else
@@ -318,17 +563,22 @@
                                     </td>
 
                                     {{-- Disbursed --}}
-                                    <td class="text-right align-middle financial-number text-success font-weight-bold border-left-success">
+                                    <td class="text-right align-middle financial-number text-success font-weight-bold">
                                         ₱{{ number_format($currentDisbursed, 2) }}
                                     </td>
 
                                     {{-- Disbursed % --}}
                                     <td class="text-center align-middle">
-                                        <span class="badge badge-light border">{{ number_format($data['overall_disb_rate'], 1) }}%</span>
+                                        <span class="badge {{ $disbClass }}">{{ number_format($data['overall_disb_rate'], 1) }}%</span>
                                     </td>
 
-                                    {{-- Savings (COS) --}}
-                                    <td class="text-right align-middle border-left-teal financial-number {{ $currentSavings > 0 ? 'text-teal font-weight-bold' : 'text-muted' }}">
+                                    {{-- Unpaid Obligations --}}
+                                    <td class="text-right align-middle financial-number bg-soft-light text-dark">
+                                        ₱{{ number_format($unpaid, 2) }}
+                                    </td>
+
+                                    {{-- Savings --}}
+                                    <td class="text-right align-middle col-sep financial-number {{ $currentSavings > 0 ? 'text-teal font-weight-bold' : 'text-muted' }}">
                                         @if($currentSavings > 0)
                                             ₱{{ number_format($currentSavings, 2) }}
                                         @else
@@ -336,19 +586,19 @@
                                         @endif
                                     </td>
 
-                                    {{-- Pending --}}
-                                    <td class="text-right align-middle financial-number text-warning border-left-warning">
+                                    {{-- Pending Transactions --}}
+                                    <td class="text-right align-middle financial-number" style="color: #d97706;">
                                         ₱{{ number_format($currentPending, 2) }}
                                     </td>
 
-                                    {{-- Unpaid --}}
-                                    <td class="text-right align-middle financial-number bg-soft-light">
-                                        ₱{{ number_format($unpaid, 2) }}
+                                    {{-- Unobligated Allotment Balance (Total Fund Source - Net Obligated) --}}
+                                    <td class="text-right align-middle financial-number bg-soft-indigo font-weight-bold" style="color: #4338ca;">
+                                        ₱{{ number_format($unobligAllotmentBal, 2) }}
                                     </td>
 
-                                    {{-- Unobligated --}}
-                                    <td class="text-right align-middle financial-number pr-4 border-left-primary bg-soft-light {{ $unobligated < 0 ? 'text-danger' : 'text-primary' }}">
-                                        ₱{{ number_format($unobligated, 2) }}
+                                    {{-- Unobligated (Minus Pending Transactions) --}}
+                                    <td class="text-right align-middle financial-number pr-3 bg-soft-teal font-weight-bold {{ $unobligMinusPending < 0 ? 'text-danger' : '' }}" style="{{ $unobligMinusPending >= 0 ? 'color: #0f766e;' : '' }}">
+                                        ₱{{ number_format($unobligMinusPending, 2) }}
                                     </td>
                                 </tr>
                             @endforeach
@@ -358,19 +608,19 @@
                                 $secObligRate = $sectionTotals['adjusted_allotment'] > 0 ? ($sectionTotals['obligated'] / $sectionTotals['adjusted_allotment']) * 100 : 0;
                                 $secDisbRate  = $sectionTotals['obligated'] > 0 ? ($sectionTotals['disbursed'] / $sectionTotals['obligated']) * 100 : 0;
                             @endphp
-                            <tr class="bg-navy-light shadow-sm">
-                                <td class="pl-4 py-2 align-middle text-uppercase small"><b>Total: {{ $sectionName }}</b></td>
+                            <tr class="bg-navy-light shadow-sm font-weight-bold" style="border-bottom: 2px solid #94a3b8;">
+                                <td class="sticky-col pl-3 py-2 align-middle text-uppercase small"><b>Total: {{ $sectionName }}</b></td>
                                 <td class="text-right align-middle financial-number">₱{{ number_format($sectionTotals['gross_allotted'], 2) }}</td>
-                                <td class="text-center align-middle text-xs font-weight-bold">{{ number_format($sectionTotals['adjusted_allotment'] > 0 ? ($sectionTotals['procurable'] / $sectionTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
-                                <td class="text-center align-middle text-xs font-weight-bold">{{ number_format($sectionTotals['adjusted_allotment'] > 0 ? ($sectionTotals['non_procurable'] / $sectionTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
+                                <td class="text-center align-middle text-xs">{{ number_format($sectionTotals['adjusted_allotment'] > 0 ? ($sectionTotals['procurable'] / $sectionTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
+                                <td class="text-center align-middle text-xs">{{ number_format($sectionTotals['adjusted_allotment'] > 0 ? ($sectionTotals['non_procurable'] / $sectionTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
                                 <td class="text-right align-middle financial-number">
                                     ₱{{ number_format($sectionTotals['adjusted_allotment'], 2) }}
                                     @if($sectionTotals['pooled'] > 0)
-                                        <small class="d-block text-danger font-weight-normal" style="font-size: 0.65rem;">(Pooled: ₱{{ number_format($sectionTotals['pooled'], 2) }})</small>
+                                        <small class="d-block text-danger font-weight-normal" style="font-size: 0.64rem;">(Pooled: ₱{{ number_format($sectionTotals['pooled'], 2) }})</small>
                                     @endif
                                 </td>
-                                <td class="text-right align-middle financial-number border-left-info text-info">₱{{ number_format($sectionTotals['obligated'], 2) }}</td>
-                                <td class="text-right align-middle financial-number border-left-danger text-danger">
+                                <td class="text-right align-middle financial-number col-sep" style="color: #0284c7;">₱{{ number_format($sectionTotals['obligated'], 2) }}</td>
+                                <td class="text-right align-middle financial-number text-danger">
                                     @if($sectionTotals['norsa'] > 0)
                                         (₱{{ number_format($sectionTotals['norsa'], 2) }})
                                     @else
@@ -378,69 +628,33 @@
                                     @endif
                                 </td>
                                 <td class="text-center align-middle"><span class="badge badge-info">{{ number_format($secObligRate, 1) }}%</span></td>
-                                <td class="text-right align-middle financial-number border-left-success text-success">₱{{ number_format($sectionTotals['disbursed'], 2) }}</td>
+                                <td class="text-right align-middle financial-number text-success">₱{{ number_format($sectionTotals['disbursed'], 2) }}</td>
                                 <td class="text-center align-middle"><span class="badge badge-light border">{{ number_format($secDisbRate, 1) }}%</span></td>
-                                <td class="text-right align-middle financial-number border-left-teal text-teal">₱{{ number_format($sectionTotals['savings'], 2) }}</td>
-                                <td class="text-right align-middle financial-number border-left-warning text-warning">₱{{ number_format($sectionTotals['pending'], 2) }}</td>
-                                <td class="text-right align-middle financial-number">₱{{ number_format($sectionTotals['obligated'] - $sectionTotals['disbursed'], 2) }}</td>
-                                <td class="text-right align-middle financial-number pr-4 border-left-primary text-primary">₱{{ number_format($sectionTotals['adjusted_allotment'] - $sectionTotals['obligated'], 2) }}</td>
+                                <td class="text-right align-middle financial-number">₱{{ number_format(max(0, $sectionTotals['obligated'] - $sectionTotals['disbursed']), 2) }}</td>
+                                <td class="text-right align-middle financial-number col-sep text-teal">₱{{ number_format($sectionTotals['savings'], 2) }}</td>
+                                <td class="text-right align-middle financial-number" style="color: #d97706;">₱{{ number_format($sectionTotals['pending'], 2) }}</td>
+                                <td class="text-right align-middle financial-number" style="color: #4338ca;">₱{{ number_format($sectionTotals['unobligated_allotment'], 2) }}</td>
+                                <td class="text-right align-middle financial-number pr-3" style="color: #0f766e;">₱{{ number_format($sectionTotals['unobligated_minus_pending'], 2) }}</td>
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="14" class="text-center py-5 text-muted">
+                                <td colspan="15" class="text-center py-5 text-muted">
                                     <i class="fas fa-folder-open fa-2x mb-2 d-block"></i>
                                     No records found matching the active filter configuration.
                                 </td>
                             </tr>
                         @endforelse
                     </tbody>
-                    
-                    @if($grandTotals['gross_allotted'] > 0)
-                        <tfoot class="bg-navy-light shadow-sm border-top" style="border-top: 2px solid #001f3f !important;">
-                            @php
-                                $gtObligRate = $grandTotals['adjusted_allotment'] > 0 ? ($grandTotals['obligated'] / $grandTotals['adjusted_allotment']) * 100 : 0;
-                                $gtDisbRate  = $grandTotals['obligated'] > 0 ? ($grandTotals['disbursed'] / $grandTotals['obligated']) * 100 : 0;
-                            @endphp
-                            <tr class="font-weight-bold" style="color: #001f3f;">
-                                <td class="pl-4 py-3 align-middle text-uppercase small"><b>GRAND TOTAL</b></td>
-                                <td class="text-right align-middle financial-number">₱{{ number_format($grandTotals['gross_allotted'], 2) }}</td>
-                                <td class="text-center align-middle text-xs">{{ number_format($grandTotals['adjusted_allotment'] > 0 ? ($grandTotals['procurable'] / $grandTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
-                                <td class="text-center align-middle text-xs">{{ number_format($grandTotals['adjusted_allotment'] > 0 ? ($grandTotals['non_procurable'] / $grandTotals['adjusted_allotment']) * 100 : 0, 1) }}%</td>
-                                <td class="text-right align-middle financial-number">
-                                    ₱{{ number_format($grandTotals['adjusted_allotment'], 2) }}
-                                    @if($grandTotals['pooled'] > 0)
-                                        <small class="d-block text-danger font-weight-normal" style="font-size: 0.65rem;">(Pooled: ₱{{ number_format($grandTotals['pooled'], 2) }})</small>
-                                    @endif
-                                </td>
-                                <td class="text-right text-info align-middle financial-number border-left-info">₱{{ number_format($grandTotals['obligated'], 2) }}</td>
-                                <td class="text-right text-danger align-middle financial-number border-left-danger">
-                                    @if($grandTotals['norsa'] > 0)
-                                        (₱{{ number_format($grandTotals['norsa'], 2) }})
-                                    @else
-                                        <span class="text-muted font-weight-normal">-</span>
-                                    @endif
-                                </td>
-                                <td class="text-center align-middle bg-light"><span class="badge badge-success">{{ number_format($gtObligRate, 1) }}%</span></td>
-                                <td class="text-right text-success align-middle financial-number border-left-success">₱{{ number_format($grandTotals['disbursed'], 2) }}</td>
-                                <td class="text-center align-middle"><span class="badge badge-success">{{ number_format($gtDisbRate, 1) }}%</span></td>
-                                <td class="text-right text-teal align-middle financial-number border-left-teal">₱{{ number_format($grandTotals['savings'], 2) }}</td>
-                                <td class="text-right text-warning align-middle financial-number border-left-warning">₱{{ number_format($grandTotals['pending'], 2) }}</td>
-                                <td class="text-right align-middle financial-number">₱{{ number_format($grandTotals['obligated'] - $grandTotals['disbursed'], 2) }}</td>
-                                <td class="text-right align-middle financial-number pr-4 border-left-primary text-primary">₱{{ number_format($grandTotals['adjusted_allotment'] - $grandTotals['obligated'], 2) }}</td>
-                            </tr>
-                        </tfoot>
-                    @endif
                 </table>
             </div>
         </div>
     </div>
-</div>  
+</div>
 @endsection
 
 @section('scripts')
 <script>
     $(document).ready(function() {
-        // Initialize Tooltips for Pooled Reasons
         $('[data-toggle="tooltip"]').tooltip({
             html: true
         });

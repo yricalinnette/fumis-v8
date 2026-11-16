@@ -9,12 +9,18 @@ class ProcurementTransactionItem extends Model
     protected $fillable = [
         'procurement_transaction_id',
         'pr_item_name',
-        'item_amount',
         'pr_number',
+        'item_amount',
         'po_number',
         'po_dtrack_no',
         'po_amount',
         'po_date',
+        'obligation_serial',
+        'obligation_amount',
+        'obligation_date',
+        'disbursement_amount',
+        'disbursement_date',
+        'status',
     ];
 
     public function transaction()

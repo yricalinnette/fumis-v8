@@ -92,6 +92,8 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
         Route::get('/budget-by-source/export', 'exportBudgetBySource')->name('by_source.export');
 
         Route::get('/by-line-item/export', [ReportController::class, 'exportBudgetByLineItem'])->name('by_line_item.export');
+
+        Route::get('/uacs', 'uacsReport')->name('uacs');
     });
 
     // Profile Controller Group

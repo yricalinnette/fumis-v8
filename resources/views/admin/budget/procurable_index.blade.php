@@ -294,8 +294,8 @@
 @foreach($procurableFunds as $fund)
     @if($fund->activity)
         @php
-            // UPDATE THIS LINE: Allow both 'Tagged as CAF' and 'Tagged as PO'
-            $cafTransaction = $fund->activity->procurementTransactions
+            // Match the exact per-fund check used in the table row
+            $cafTransaction = $fund->prTransactions
                 ->whereIn('caf_status', ['Tagged as CAF', 'Tagged as PO'])
                 ->first();
         @endphp

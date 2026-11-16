@@ -79,11 +79,9 @@ class SettingsController extends Controller
         $template = \App\Models\ImportTemplate::first();
         $uacsCodes = \App\Models\UacsCode::orderBy('uacs_code', 'asc')->get();
         
+        // Fetch ALL active Budget Line Items so both Indicative and Final WFP modals have full access
         $budgetLineItems = \App\Models\BudgetLineItem::where('is_active', 1)
-            ->whereHas('fundSources', function ($query) {
-                $query->where('funding_source', 'NEP');
-            })
-            ->orderBy('budget_line_item_name')
+            ->orderBy('budget_line_item_name', 'asc')
             ->get();
         
         $activities = Activity::with('source')
@@ -836,7 +834,7 @@ class SettingsController extends Controller
             'objective'           => $isEdit ? 'nullable|string' : 'required|string',
             'budget_line_item_id' => $isEdit ? 'nullable|exists:budget_line_items,id' : 'required|exists:budget_line_items,id', 
             'source_of_fund_id'   => $isEdit ? 'nullable|exists:source_of_funds,id' : 'required|exists:source_of_funds,id',
-            'uacs_code_id'        => $isEdit ? 'nullable|exists:uacs_codes,id' : 'required|exists:uacs_codes,id',
+            'uacs_code_id'        => 'required|exists:uacs_codes,id', // Always required so UACS can be updated
             'name'                => $isEdit ? 'nullable|string' : 'required|string',
             'budget_amount'       => $isEdit ? 'nullable|numeric|min:0' : 'required|numeric|min:0',
             'start_date'          => 'required|date',
@@ -939,27 +937,32 @@ class SettingsController extends Controller
                 }
             }
 
+            // Fetch UACS record for both locked and unlocked updates
+            $uacsId = $request->input('uacs_code_id', $activity->uacs_code_id);
+            $uacsRecord = \App\Models\UacsCode::findOrFail($uacsId);
+
             // HANDLE THE ACTUAL UPDATE
             if ($hasTransactions || $isLocked) {
                 $activity->update([
                     'user_id'            => $userId,
                     'section_id'         => $secid,
+                    'uacs_code_id'       => $uacsRecord->id,
+                    'uacs_code'          => $uacsRecord->uacs_code,
                     'start_date'         => $validated['start_date'],
                     'end_date'           => $validated['end_date'],
                     'is_for_procurement' => $isForProcurement, 
                     'target_quarters'    => $selectedQuarters,
                     'physical_targets'   => $physicalTargets,
                 ]);
-                $msg = 'Activity timeframe and targets updated. Financial fields were locked due to existing transactions.';
+                $msg = 'Activity timeframe, targets, and UACS code updated. Other financial fields were locked due to existing transactions.';
             } else {
-                $uacsRecord = \App\Models\UacsCode::findOrFail($request->uacs_code_id);
                 $activity->update([
                     'user_id'             => $userId,
                     'section_id'          => $secid,
-                    'budget_line_item_id' => $request->budget_line_item_id, // Added
-                    'source_of_fund_id'   => $request->source_of_fund_id,   // Added
+                    'budget_line_item_id' => $request->budget_line_item_id,
+                    'source_of_fund_id'   => $request->source_of_fund_id,
                     'objective'           => $request->objective,
-                    'uacs_code_id'        => $request->uacs_code_id,
+                    'uacs_code_id'        => $uacsRecord->id,
                     'uacs_code'           => $uacsRecord->uacs_code,
                     'name'                => $request->name,
                     'is_for_procurement'  => $isForProcurement, 
@@ -999,7 +1002,7 @@ class SettingsController extends Controller
                 'budget_line_item_id' => $request->budget_line_item_id,
                 'source_of_fund_id'   => $request->source_of_fund_id,
                 'objective'           => $request->objective,
-                'uacs_code_id'        => $request->uacs_code_id,
+                'uacs_code_id'        => $uacsRecord->id,
                 'uacs_code'           => $uacsRecord->uacs_code,
                 'name'                => $request->name,
                 'is_for_procurement'  => $isForProcurement, 

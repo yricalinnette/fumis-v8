@@ -152,5 +152,10 @@ class Fund extends Model
     {
         return $this->hasOne(ProcurementTransaction::class, 'fund_transaction_id', 'id');
     }
+
+    public function cancellations()
+    {
+        return $this->hasMany(FundCancellation::class);
+    }
   
 }

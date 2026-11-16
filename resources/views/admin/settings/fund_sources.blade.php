@@ -225,6 +225,7 @@
                                                                 data-reference_number="{{ $source->reference_number }}" 
                                                                 data-fund_code="{{ $source->fund_code }}" 
                                                                 data-approp_code="{{ $source->approp_code }}" 
+                                                                data-url="{{ route('settings.fund_sources.update', $source->id) }}"
                                                                 data-toggle="tooltip" title="Edit">
                                                                 <i class="fas fa-edit text-info"></i>
                                                             </button>
@@ -1117,7 +1118,7 @@
         // Edit Button Data Populating
         $('.btn-edit-source').on('click', function() {
             const data = $(this).data();
-            $('#edit-source-form').attr('action', `/settings/fund_sources/${data.id}`);
+            $('#edit-source-form').attr('action', data.url || `{{ url('/settings/fund_sources') }}/${data.id}`);
             
             $('#edit_funding_source').val(data.funding_source);
             $('#edit_source_type').val(data.source_type).trigger('change');

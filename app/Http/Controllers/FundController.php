@@ -457,12 +457,13 @@ class FundController extends Controller
             $request->merge(['dtrack_no' => $yearPrefix . $suffix]);
         }
 
-        // VALIDATION
+        // VALIDATION (creditor_ids is completely optional)
         $validated = $request->validate([
             'dtrack_no'                 => ['required', 'regex:/^\d{4}-\d{6}$/'],
             'transaction_date'          => 'required|date',
             'particulars'               => 'required|string',
             'creditor_ids'              => 'nullable|array',
+            'creditor_ids.*'            => 'exists:creditors,id',
             'allocations'               => 'required|array|min:1',
             'allocations.*.source_id'   => 'required|exists:source_of_funds,id',
             'allocations.*.activity_id' => 'required|exists:activities,id',
@@ -537,8 +538,8 @@ class FundController extends Controller
                 $fundHeader->dtrack_no           = $validated['dtrack_no'];
                 $fundHeader->transaction_date    = $validated['transaction_date'];
                 $fundHeader->particulars         = $validated['particulars'];
-                $fundHeader->amount              = $totalConsolidatedAmount; // Stores initial routed amount total
-                $fundHeader->obligation_amount   = 0.00;                     // 0.00 until synced from RAODS
+                $fundHeader->amount              = $totalConsolidatedAmount;
+                $fundHeader->obligation_amount   = 0.00;
                 $fundHeader->source_of_fund_id   = $primarySourceId;
                 $fundHeader->transaction_type_id = $primaryActivityId; 
                 $fundHeader->user_id             = auth()->id();
@@ -547,26 +548,26 @@ class FundController extends Controller
                 $fundHeader->is_multi_activity   = $isMultiActivity;
                 $fundHeader->save();
 
-                // Sync creditors to the summary header record
+                // Sync creditors only if selected
                 if (!empty($request->creditor_ids)) {
                     $fundHeader->creditors()->sync($request->creditor_ids);
                 }
 
                 // --- 2. RECORD EACH ALLOCATION INTO FUND_MULTI_ACTIVITIES ---
                 foreach ($request->allocations as $allocation) {
-                    $activityId = $allocation['activity_id']; // Explicitly pulls each row's unique activity id
+                    $activityId = $allocation['activity_id'];
                     $activity = \App\Models\Activity::findOrFail($activityId);
                     $allocatedAmount = round((float)$allocation['amount'], 2);
 
                     \App\Models\FundMultiActivity::create([
                         'fund_id'             => $fundHeader->id,
                         'source_of_fund_id'   => $allocation['source_id'] ?? $primarySourceId,
-                        'transaction_type_id' => $activityId, // Correctly assigns each loop's specific activity ID
+                        'transaction_type_id' => $activityId,
                         'dtrack_no'           => $validated['dtrack_no'],
                         'routed_amount'       => $allocatedAmount,
                         'creditor'            => $activity->name,
                         'particulars'         => $validated['particulars'],
-                        'obligation_amount'   => 0.00,  // 0.00 until synced from RAODS
+                        'obligation_amount'   => 0.00,
                         'status'              => 'Routed',
                     ]);
                 }
@@ -599,32 +600,144 @@ class FundController extends Controller
         $primaryFund = Fund::findOrFail($id);
         $dtrack = $primaryFund->dtrack_no;
 
-        // 2. Fetch all allocations in this group
+        // 2. Auto-format dtrack_no_new if provided (e.g. "041234" -> "2026-041234")
+        if ($request->filled('dtrack_no_new')) {
+            $yearPrefix = date('Y') . '-';
+            $rawNewDtrack = trim($request->dtrack_no_new);
+
+            if (!str_starts_with($rawNewDtrack, $yearPrefix)) {
+                $cleanNumber = preg_replace('/[^0-9]/', '', $rawNewDtrack);
+                $suffix = str_replace(date('Y'), '', $cleanNumber);
+                $request->merge(['dtrack_no_new' => $yearPrefix . $suffix]);
+            } else {
+                $request->merge(['dtrack_no_new' => $rawNewDtrack]);
+            }
+        }
+
+        // 3. Validate Request
+        $request->validate([
+            'status_date'                          => 'required|date',
+            'status'                               => 'required|in:Routed,For Signature,Obligated,Cancelled',
+            'dtrack_no_new'                        => ['nullable', 'regex:/^\d{4}-\d{6}$/'],
+            'remarks'                              => $request->status === 'Cancelled' ? 'required|string' : 'nullable|string',
+            'serials'                              => 'nullable|array',
+            'cancellations'                        => 'nullable|array',
+            'cancellations.*.fund_id'              => 'required_with:cancellations|exists:funds,id',
+            'cancellations.*.cancellation_serial'  => 'required_with:cancellations|string|max:50',
+            'cancellations.*.cancelled_amount'     => 'required_with:cancellations|numeric|min:0.01',
+        ]);
+
+        // 4. Prevent assigning a PO DTrack that already belongs to another PR group
+        if ($request->filled('dtrack_no_new')) {
+            $duplicatePoDtrack = Fund::where('dtrack_no', '!=', $dtrack)
+                ->where(function ($q) use ($request) {
+                    $q->where('dtrack_no', $request->dtrack_no_new)
+                    ->orWhere('dtrack_no_new', $request->dtrack_no_new);
+                })
+                ->exists();
+
+            if ($duplicatePoDtrack) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "PO DTrack {$request->dtrack_no_new} is already linked to another transaction."
+                ], 422);
+            }
+        }
+
+        // 5. Fetch all allocations in this DTrack group
         $funds = Fund::where('dtrack_no', $dtrack)->get();
 
         DB::beginTransaction();
         try {
+            $submittedSerials       = collect($request->input('serials', []))->keyBy('id');
+            $submittedCancellations = collect($request->input('cancellations', []))->keyBy('fund_id');
+            $newPoDtrack            = $request->filled('dtrack_no_new') ? $request->dtrack_no_new : null;
+
             foreach ($funds as $fund) {
-                // Prepare common update data
+                $wasObligated = (
+                    $fund->status === 'Obligated' ||
+                    (float) $fund->obligation_amount > 0 ||
+                    !empty($fund->obligation_serial)
+                );
+
+                // CASE A: Cancelling / Deobligating a transaction
+                if ($request->status === 'Cancelled') {
+                    if ($wasObligated) {
+                        $cancelRow = $submittedCancellations->get($fund->id);
+
+                        if (!$cancelRow || empty(trim($cancelRow['cancellation_serial'] ?? ''))) {
+                            throw new \Exception("New Cancellation ORS Serial Number is required for obligated fund #{$fund->id}.");
+                        }
+
+                        $cancelledAmt = round((float) $cancelRow['cancelled_amount'], 2);
+                        $maxAllowed   = (float) ($fund->obligation_amount > 0 ? $fund->obligation_amount : $fund->amount);
+
+                        if ($cancelledAmt > ($maxAllowed + 0.01)) {
+                            throw new \Exception("Cancelled amount (₱" . number_format($cancelledAmt, 2) . ") cannot exceed obligated amount (₱" . number_format($maxAllowed, 2) . ").");
+                        }
+
+                        // Record deobligation into fund_cancellations (keeps original obligation_serial & obligation_date intact)
+                        \App\Models\FundCancellation::updateOrCreate(
+                            [
+                                'fund_id'                        => $fund->id,
+                                'cancellation_obligation_serial' => trim($cancelRow['cancellation_serial']),
+                            ],
+                            [
+                                'source_of_fund_id'          => $fund->source_of_fund_id,
+                                'dtrack_no'                  => $fund->dtrack_no,
+                                'original_obligation_serial' => $fund->obligation_serial,
+                                'cancellation_date'          => $request->status_date,
+                                'cancelled_amount'           => $cancelledAmt,
+                                'reason'                     => $request->remarks,
+                                'cancelled_by'               => auth()->id(),
+                            ]
+                        );
+
+                        $fund->update([
+                            'status'        => 'Cancelled',
+                            'status_date'   => $request->status_date,
+                            'remarks'       => $request->remarks,
+                            'dtrack_no_new' => $newPoDtrack ?? $fund->dtrack_no_new,
+                        ]);
+                    } else {
+                        // Not yet obligated (Routed / For Signature) -> simply mark Cancelled
+                        $fund->update([
+                            'status'            => 'Cancelled',
+                            'status_date'       => $request->status_date,
+                            'remarks'           => $request->remarks,
+                            'dtrack_no_new'     => $newPoDtrack,
+                            'obligation_serial' => null,
+                        ]);
+                    }
+
+                    // Sync Cancelled status to child multi-activity records
+                    \App\Models\FundMultiActivity::where('fund_id', $fund->id)
+                        ->update(['status' => 'Cancelled']);
+
+                    continue;
+                }
+
+                // CASE B: Standard Status Updates (Routed / For Signature / Obligated)
                 $updateData = [
-                    'status_date' => $request->status_date,
-                    'remarks'     => $request->remarks,
+                    'status_date'   => $request->status_date,
+                    'remarks'       => $request->remarks,
+                    'dtrack_no_new' => $newPoDtrack,
                 ];
 
-                // 3. Logic for Status and Serial Number
-                // If the specific row is ALREADY obligated/synced, we protect its status/serial
+                // Protect already-synced/obligated rows unless explicitly updating serials
                 if ($fund->status === 'Obligated' && $fund->obligation_amount > 0) {
-                    // Keep existing status and serial for this row
+                    $rowSerial = $submittedSerials->get($fund->id);
+                    if ($rowSerial && !empty($rowSerial['serial_no'])) {
+                        $updateData['obligation_serial'] = trim($rowSerial['serial_no']);
+                    }
                 } else {
                     $updateData['status'] = $request->status;
 
                     if ($request->status === 'Obligated') {
-                        // Match the serial number from the request to this specific row ID
-                        // We look for the 'serials' array sent from the modal
-                        $submittedSerials = collect($request->serials);
-                        $rowSerial = $submittedSerials->firstWhere('id', $fund->id);
-                        
-                        $updateData['obligation_serial'] = $rowSerial ? $rowSerial['serial_no'] : null;
+                        $rowSerial = $submittedSerials->get($fund->id);
+                        $updateData['obligation_serial'] = !empty($rowSerial['serial_no'])
+                            ? trim($rowSerial['serial_no'])
+                            : null;
                     } else {
                         $updateData['obligation_serial'] = null;
                     }
@@ -636,40 +749,49 @@ class FundController extends Controller
             DB::commit();
             return response()->json([
                 'success' => true,
-                'message' => 'Group status updated successfully!',
+                'message' => $request->status === 'Cancelled'
+                    ? 'Transaction cancelled and deobligation recorded successfully!'
+                    : 'Group status updated successfully!',
             ]);
 
         } catch (\Exception $e) {
             DB::rollBack();
-            return response()->json(['message' => 'Error: ' . $e->getMessage()], 422);
+            return response()->json([
+                'success' => false,
+                'message' => 'Error: ' . $e->getMessage()
+            ], 422);
         }
     }
 
     public function getGroupByDtrack($dtrack)
     {
         $allocations = Fund::where('dtrack_no', $dtrack)
-            ->with(['fundSource']) 
+            ->with(['fundSource', 'cancellations'])
             ->get()
             ->map(function ($fund) {
+                $latestCancel = $fund->cancellations->sortByDesc('id')->first();
+
                 return [
-                    'id' => $fund->id,
-                    'source_name' => $fund->fundSource->name ?? 'N/A',
-                    'amount' => number_format($fund->amount, 2), 
-                    'obligation_serial' => $fund->obligation_serial,
-                    // ADD THESE FIELDS:
-                    'status' => $fund->status,
-                    'remarks' => $fund->remarks,
-                    'status_date' => $fund->status_date ? \Carbon\Carbon::parse($fund->status_date)->format('Y-m-d') : date('Y-m-d'),
+                    'id'                    => $fund->id,
+                    'dtrack_no_new'         => $fund->dtrack_no_new,
+                    'source_name'           => $fund->fundSource->name ?? 'N/A',
+                    'amount'                => number_format($fund->amount, 2),
+                    'raw_amount'            => (float) $fund->amount,
+                    'raw_obligation_amount' => (float) $fund->obligation_amount,
+                    'obligation_serial'     => $fund->obligation_serial,
+                    'cancellation_serial'   => $latestCancel?->cancellation_obligation_serial,
+                    'status'                => $fund->status,
+                    'remarks'               => $fund->remarks,
+                    'status_date'           => $fund->status_date ? \Carbon\Carbon::parse($fund->status_date)->format('Y-m-d') : date('Y-m-d'),
                 ];
             });
 
         return response()->json(['allocations' => $allocations]);
     }
 
-    public function edit(\App\Models\Fund $fund) 
+    public function edit(\App\Models\Fund $fund)
     {
-        // 1. Validation (matches your JS editableStatuses)
-        // Using strtolower to be safe with casing
+        // 1. Validation (Only 'Routed' status can be edited)
         if (strtolower($fund->status) !== 'routed') {
             return response()->json([
                 'success' => false,
@@ -677,29 +799,57 @@ class FundController extends Controller
             ], 403);
         }
 
-        // 2. Fetch all allocations sharing the same DTrack Number
-        $allAllocations = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)
-            ->with(['fundSource', 'activity'])
+        // 2. Fetch all activity line items from fund_multi_activities for this parent fund
+        $multiItems = \App\Models\FundMultiActivity::where('fund_id', $fund->id)
+            ->with(['sourceOfFund', 'activity'])
+            ->orderBy('id')
             ->get();
 
-        /**
-         * 3. Load Creditors (Pivot table)
-         * We bypass the Eloquent relationship because the IDs (1077, etc.) 
-         * don't exist in the local users table.
-         */
+        if ($multiItems->isNotEmpty()) {
+            $allAllocations = $multiItems->map(function ($item) {
+                return [
+                    'id'                  => $item->id,
+                    'source_of_fund_id'   => $item->source_of_fund_id,
+                    'transaction_type_id' => $item->transaction_type_id,
+                    'amount'              => (float) $item->routed_amount,
+                    'routed_amount'       => (float) $item->routed_amount,
+                    'fund_source'         => $item->sourceOfFund,
+                    'activity'            => $item->activity,
+                ];
+            })->values();
+        } else {
+            // Fallback for legacy records created before fund_multi_activities was used
+            $allAllocations = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)
+                ->with(['fundSource', 'activity'])
+                ->get()
+                ->map(function ($row) {
+                    return [
+                        'id'                  => null, // Will be saved into fund_multi_activities on update
+                        'source_of_fund_id'   => $row->source_of_fund_id,
+                        'transaction_type_id' => $row->transaction_type_id,
+                        'amount'              => (float) $row->amount,
+                        'routed_amount'       => (float) $row->amount,
+                        'fund_source'         => $row->fundSource,
+                        'activity'            => $row->activity,
+                    ];
+                })->values();
+        }
+
+        // 3. Load Creditors from employee_fund pivot table
+        $relatedFundIds = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)->pluck('id');
         $creditorIds = \DB::table('employee_fund')
-            ->whereIn('fund_id', $allAllocations->pluck('id'))
+            ->whereIn('fund_id', $relatedFundIds)
             ->pluck('user_id') // user_id column stores the dbedid
             ->unique()
             ->values()
             ->toArray();
 
-        // 4. Return as a structured JSON object
+        // 4. Return structured JSON object
         return response()->json([
             'success'      => true,
             'main'         => $fund,
             'allocations'  => $allAllocations,
-            'creditor_ids' => $creditorIds // This will now correctly contain [1077, ...]
+            'creditor_ids' => $creditorIds,
         ]);
     }
 
@@ -707,11 +857,10 @@ class FundController extends Controller
     {
         // 1. Initial Fetch and Guard Clause
         $primaryFund = \App\Models\Fund::findOrFail($id);
-        
-        // REQUIREMENT: Only 'Routed' status can be edited
-        if ($primaryFund->status !== 'Routed') {
+
+        if (strtolower($primaryFund->status) !== 'routed') {
             return response()->json([
-                'success' => false, 
+                'success' => false,
                 'message' => "This transaction is currently '{$primaryFund->status}' and cannot be modified."
             ], 422);
         }
@@ -726,20 +875,34 @@ class FundController extends Controller
             $request->merge(['dtrack_no' => $yearPrefix . $suffix]);
         }
 
-        // 3. VALIDATION
+        // 3. VALIDATION (creditor_ids is optional for all transactions)
         $validated = $request->validate([
-            'dtrack_no'         => ['required', 'regex:/^\d{4}-\d{6}$/'], 
-            'transaction_date'  => 'required|date',
-            'particulars'       => 'required|string',
-            'creditor_ids'      => 'nullable|array',
+            'dtrack_no'                 => ['required', 'regex:/^\d{4}-\d{6}$/'],
+            'transaction_date'          => 'required|date',
+            'particulars'               => 'required|string',
+            'creditor_ids'              => 'nullable|array',
             'allocations'               => 'required|array|min:1',
-            'allocations.*.id'          => 'nullable|exists:funds,id', 
+            'allocations.*.id'          => 'nullable|integer',
             'allocations.*.source_id'   => 'required|exists:source_of_funds,id',
             'allocations.*.activity_id' => 'required|exists:activities,id',
             'allocations.*.amount'      => 'required|numeric|min:0.01',
         ]);
 
-        // 4. SECID Logic (Standardized)
+        // Check DTrack uniqueness if changed
+        if ($validated['dtrack_no'] !== $oldDtrack) {
+            $duplicateDtrack = \App\Models\Fund::where('dtrack_no', $validated['dtrack_no'])
+                ->where('id', '!=', $primaryFund->id)
+                ->exists();
+
+            if ($duplicateDtrack) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This DTrack number has already been used.'
+                ], 422);
+            }
+        }
+
+        // 4. SECID Logic
         $userId = auth()->id();
         $secid = (auth()->user()->username === 'admin') ? 0 : null;
 
@@ -753,58 +916,128 @@ class FundController extends Controller
         }
 
         if (is_null($secid) && auth()->user()->username !== 'admin') {
-            return response()->json(['success' => false, 'message' => 'System Error: Profile section link missing.'], 422);
+            return response()->json([
+                'success' => false,
+                'message' => 'System Error: Profile section link missing.'
+            ], 422);
         }
 
         try {
-            return \DB::transaction(function () use ($request, $validated, $secid, $oldDtrack) {
-                
-                // A. Handle Deletions (Rows removed from the UI)
-                $existingRowIds = \App\Models\Fund::where('dtrack_no', $oldDtrack)->pluck('id')->toArray();
-                $submittedRowIds = collect($request->allocations)->pluck('id')->filter()->toArray();
-                \App\Models\Fund::whereIn('id', array_diff($existingRowIds, $submittedRowIds))->delete();
+            return \DB::transaction(function () use ($request, $validated, $secid, $primaryFund, $oldDtrack) {
+                $allocations = collect($request->allocations);
+                $totalConsolidatedAmount = round((float) $allocations->sum('amount'), 2);
 
-                // B. Process Allocations
+                // Group submitted amounts by activity_id in case multiple rows share an activity
+                $submittedByActivity = $allocations->groupBy('activity_id')
+                    ->map(fn($rows) => round((float) $rows->sum('amount'), 2));
+
+                // A. Budget Check per Activity (excluding this parent transaction's existing allocations)
                 foreach ($request->allocations as $index => $item) {
                     $activity = \App\Models\Activity::findOrFail($item['activity_id']);
 
-                    // BUDGET CHECK LOGIC
-                    // Sum all funds for this activity, EXCLUDING the one we are currently updating
-                    $currentFundId = $item['id'] ?? 0;
-                    $totalSpentByOthers = \App\Models\Fund::where('transaction_type_id', $activity->id)
-                        ->where('id', '!=', $currentFundId)
+                    // Spent in fund_multi_activities excluding current parent fund
+                    $multiSpentByOthers = (float) \App\Models\FundMultiActivity::where('transaction_type_id', $activity->id)
+                        ->where('fund_id', '!=', $primaryFund->id)
+                        ->whereHas('parentFund', function ($q) {
+                            $q->whereNotIn('status', ['Cancelled', 'Rejected']);
+                        })
+                        ->sum('routed_amount');
+
+                    // Spent in legacy single-activity funds (no fund_multi_activities rows) excluding current parent fund
+                    $legacySingleSpentByOthers = (float) \App\Models\Fund::where('transaction_type_id', $activity->id)
+                        ->where('id', '!=', $primaryFund->id)
+                        ->where('dtrack_no', '!=', $oldDtrack)
+                        ->whereNotIn('status', ['Cancelled', 'Rejected'])
+                        ->whereDoesntHave('multiActivities')
                         ->sum('amount');
 
-                    $remaining = (float)$activity->budget - (float)$activity->pooled_amount - $totalSpentByOthers;
+                    $totalSpentByOthers = $multiSpentByOthers + $legacySingleSpentByOthers;
+                    $availableBudget = ((float) ($activity->budget_adjusted ?? $activity->budget ?? 0)) - ((float) ($activity->pooled_amount ?? 0));
+                    $remaining = $availableBudget - $totalSpentByOthers;
 
-                    if ($item['amount'] > $remaining) {
-                        throw new \Exception("Row " . ($index + 1) . " exceeds budget for {$activity->name}. Available: ₱" . number_format($remaining, 2));
+                    if ($submittedByActivity[$activity->id] > ($remaining + 0.01)) {
+                        throw new \Exception(
+                            "Row " . ($index + 1) . " exceeds budget for {$activity->name}. Available: ₱" . number_format(max(0, $remaining), 2)
+                        );
                     }
-
-                    // C. Update or Create the fund row
-                    $fund = \App\Models\Fund::updateOrCreate(
-                        ['id' => $item['id'] ?? null],
-                        [
-                            'dtrack_no'         => $validated['dtrack_no'],
-                            'transaction_date'  => $validated['transaction_date'],
-                            'particulars'       => $validated['particulars'],
-                            'source_of_fund_id' => $item['source_id'],
-                            'transaction_type_id' => $activity->id, 
-                            'amount'            => $item['amount'],
-                            'user_id'           => auth()->id(),
-                            'secid'             => $secid,
-                            'status'            => 'Routed', // Maintain status
-                        ]
-                    );
-
-                    // D. Sync Creditors (Applied to each allocation row)
-                    $fund->creditors()->sync($request->creditor_ids ?? []);
                 }
 
-                return response()->json(['success' => true, 'message' => 'Transaction updated successfully!']);
+                // B. Clean up any legacy duplicate Fund rows sharing oldDtrack (keep only $primaryFund)
+                \App\Models\Fund::where('dtrack_no', $oldDtrack)
+                    ->where('id', '!=', $primaryFund->id)
+                    ->delete();
+
+                // C. Update Single Parent Header Record in `funds`
+                $primarySourceId   = $request->allocations[0]['source_id'];
+                $primaryActivityId = $request->allocations[0]['activity_id'];
+                $isMultiActivity   = count($request->allocations) > 1;
+
+                $primaryFund->update([
+                    'dtrack_no'           => $validated['dtrack_no'],
+                    'transaction_date'    => $validated['transaction_date'],
+                    'particulars'         => $validated['particulars'],
+                    'amount'              => $totalConsolidatedAmount,
+                    'source_of_fund_id'   => $primarySourceId,
+                    'transaction_type_id' => $primaryActivityId,
+                    'user_id'             => auth()->id(),
+                    'secid'               => $secid,
+                    'status'              => 'Routed',
+                    'is_multi_activity'   => $isMultiActivity,
+                ]);
+
+                // Sync Creditors once on the parent summary record
+                $primaryFund->creditors()->sync($request->creditor_ids ?? []);
+
+                // D. Handle Deletions in `fund_multi_activities` (Rows removed in Edit Modal)
+                $existingItemIds = \App\Models\FundMultiActivity::where('fund_id', $primaryFund->id)
+                    ->pluck('id')
+                    ->toArray();
+
+                $submittedItemIds = collect($request->allocations)
+                    ->pluck('id')
+                    ->filter(fn($val) => !empty($val) && in_array((int) $val, $existingItemIds))
+                    ->map(fn($val) => (int) $val)
+                    ->toArray();
+
+                $idsToDelete = array_diff($existingItemIds, $submittedItemIds);
+                if (!empty($idsToDelete)) {
+                    \App\Models\FundMultiActivity::whereIn('id', $idsToDelete)->delete();
+                }
+
+                // E. Update or Create Each Line Item in `fund_multi_activities`
+                foreach ($request->allocations as $item) {
+                    $activity = \App\Models\Activity::findOrFail($item['activity_id']);
+                    $allocatedAmount = round((float) $item['amount'], 2);
+                    $itemId = (!empty($item['id']) && in_array((int) $item['id'], $existingItemIds))
+                        ? (int) $item['id']
+                        : null;
+
+                    \App\Models\FundMultiActivity::updateOrCreate(
+                        ['id' => $itemId],
+                        [
+                            'fund_id'             => $primaryFund->id,
+                            'source_of_fund_id'   => $item['source_id'],
+                            'transaction_type_id' => $activity->id,
+                            'dtrack_no'           => $validated['dtrack_no'],
+                            'routed_amount'       => $allocatedAmount,
+                            'creditor'            => $activity->name,
+                            'particulars'         => $validated['particulars'],
+                            'obligation_amount'   => 0.00,
+                            'status'              => 'Routed',
+                        ]
+                    );
+                }
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Transaction updated successfully!'
+                ]);
             });
         } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 422);
         }
     }
 
@@ -1017,10 +1250,32 @@ class FundController extends Controller
         set_time_limit(300);
 
         try {
-            $clickedFund = Fund::findOrFail($id);
-            $targetDtrack = trim((string)$clickedFund->dtrack_no);
+            $clickedFund  = Fund::findOrFail($id);
+            $prDtrack     = trim((string) $clickedFund->dtrack_no);
+            $poDtrack     = trim((string) ($clickedFund->dtrack_no_new ?? ''));
+            $targetDtrack = !empty($poDtrack) ? $poDtrack : $prDtrack;
 
-            if (empty($targetDtrack)) {
+            // Fetch any PO DTracks encoded under procurement_transactions / procurement_transaction_items
+            $procTx = \App\Models\ProcurementTransaction::where('fund_transaction_id', $clickedFund->id)->first();
+            $procPoDtracks = [];
+
+            if ($procTx) {
+                if (!empty($procTx->po_dtrack_no)) {
+                    $procPoDtracks[] = trim((string) $procTx->po_dtrack_no);
+                }
+                $itemDtracks = \App\Models\ProcurementTransactionItem::where('procurement_transaction_id', $procTx->id)
+                    ->whereNotNull('po_dtrack_no')
+                    ->pluck('po_dtrack_no')
+                    ->map(fn($d) => trim((string) $d))
+                    ->toArray();
+
+                $procPoDtracks = array_values(array_unique(array_merge($procPoDtracks, $itemDtracks)));
+            }
+
+            // Match against PR DTrack, PO DTrack (dtrack_no_new), and any Procurement PO DTracks
+            $candidateDtracks = array_values(array_filter(array_unique(array_merge([$prDtrack, $poDtrack], $procPoDtracks))));
+
+            if (empty($candidateDtracks)) {
                 return response()->json(['success' => false, 'message' => 'DTrack number is missing.']);
             }
 
@@ -1043,6 +1298,95 @@ class FundController extends Controller
             $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
             $rows = $response->getValues();
 
+            // =====================================================================
+            // BRANCH A: PROCURABLE TRANSACTION WITH PO DTRACK(S) IN PROCUREMENT TABLES
+            // =====================================================================
+            if (!empty($rows) && !empty($procPoDtracks)) {
+                $allMatchedRows = [];
+
+                foreach ($procPoDtracks as $singlePoDtrack) {
+                    $poTracker = [
+                        'netOb'          => 0.0,
+                        'netDisb'        => 0.0,
+                        'latestObDate'   => null,
+                        'latestDisbDate' => null,
+                        'found_serial'   => null,
+                        'found'          => false,
+                        'disbursements'  => [],
+                        'norsa_entries'  => [],
+                    ];
+                    $poSerial   = null;
+                    $poCreditor = null;
+
+                    foreach ($rows as $rowData) {
+                        $sheetDtrack    = isset($rowData[0])  ? trim((string) $rowData[0])  : '';
+                        $sheetSerialRow = isset($rowData[3])  ? trim((string) $rowData[3])  : '';
+                        $creditorRow    = isset($rowData[10]) ? trim((string) $rowData[10]) : null;
+                        $particularsRow = isset($rowData[11]) ? trim((string) $rowData[11]) : '';
+
+                        if ($sheetDtrack !== $singlePoDtrack) continue;
+
+                        $poTracker['found'] = true;
+                        $allMatchedRows[]   = $rowData;
+
+                        if (!empty($sheetSerialRow)) $poSerial   = $sheetSerialRow;
+                        if (!empty($creditorRow))    $poCreditor = $creditorRow;
+
+                        $this->processApiRowData($rowData, $poTracker, $particularsRow, false);
+                    }
+
+                    if ($poTracker['found']) {
+                        if ($poTracker['netDisb'] > 0) {
+                            $poStatus = ($poTracker['netOb'] > 0 && $poTracker['netDisb'] < $poTracker['netOb'])
+                                ? 'Disbursed (with savings)'
+                                : 'Disbursed';
+                            $displayAmt = $poTracker['netDisb'];
+                        } else {
+                            $poStatus = 'Obligated';
+                            $displayAmt = $poTracker['netOb'];
+                        }
+
+                        $this->syncProcurementPoFromRaods($singlePoDtrack, $poTracker, $poSerial, $poCreditor, $poStatus);
+                        $this->syncDisbursementRecords($clickedFund, $poTracker['disbursements'], false);
+                        $this->syncNorsaAdjustments($clickedFund, $poTracker['norsa_entries'] ?? [], $sourceConfig->id);
+
+                        $syncedDetails[] = [
+                            'name'   => $sourceConfig->name ?? 'Fund Source',
+                            'dtrack' => $singlePoDtrack,
+                            'serial' => $poSerial,
+                            'amount' => number_format($displayAmt, 2),
+                            'status' => $poStatus,
+                        ];
+                    }
+                }
+
+                if (!empty($allMatchedRows)) {
+                    $this->syncFundDtrackLogs($clickedFund, $allMatchedRows, $rows);
+                }
+
+                if (empty($syncedDetails)) {
+                    return response()->json([
+                        'success'           => false,
+                        'obligation_serial' => implode(', ', $procPoDtracks),
+                        'message'           => 'PO DTrack(s) (' . implode(', ', $procPoDtracks) . ') not yet found in RAODS',
+                    ]);
+                }
+
+                $freshFund = $clickedFund->fresh();
+                return response()->json([
+                    'success'           => true,
+                    'obligation_serial' => $freshFund->obligation_serial ?: implode(', ', $procPoDtracks),
+                    'details'           => [
+                        'dtrack_no'    => implode(', ', $procPoDtracks),
+                        'synced_items' => $syncedDetails,
+                        'count'        => count($syncedDetails),
+                    ],
+                ]);
+            }
+
+            // =====================================================================
+            // BRANCH B: STANDARD NON-PROCUREMENT / DIRECT TRANSACTION SYNC
+            // =====================================================================
             if (!empty($rows)) {
                 $tracker = [
                     'netOb'          => 0.0, 
@@ -1052,30 +1396,40 @@ class FundController extends Controller
                     'found_serial'   => null, 
                     'found'          => false,
                     'disbursements'  => [],
-                    'norsa_entries'  => []
+                    'norsa_entries'  => [],
                 ];
 
-                $creditorName = null;
-                $particulars  = '';
-                $sheetSerial  = null;
-                $isCosSalary  = false;
-                $matchedRows  = [];
+                $creditorName       = null;
+                $particulars        = '';
+                $sheetSerial        = null;
+                $matchedSheetDtrack = null;
+                $isCosSalary        = false;
+                $matchedRows        = [];
+                $cancellationRows   = [];
 
                 foreach ($rows as $rowIndex => $rowData) {
-                    $sheetDtrack    = isset($rowData[0])  ? trim((string)$rowData[0])  : '';
-                    $sheetSerialRow = isset($rowData[3])  ? trim((string)$rowData[3])  : '';
-                    $allotment      = isset($rowData[5])  ? trim((string)$rowData[5])  : '';
-                    $creditorRow    = isset($rowData[10]) ? trim((string)$rowData[10]) : null;
-                    $particularsRow = isset($rowData[11]) ? trim((string)$rowData[11]) : '';
+                    $sheetDtrack    = isset($rowData[0])  ? trim((string) $rowData[0])  : '';
+                    $sheetSerialRow = isset($rowData[3])  ? trim((string) $rowData[3])  : '';
+                    $allotment      = isset($rowData[5])  ? trim((string) $rowData[5])  : '';
+                    $creditorRow    = isset($rowData[10]) ? trim((string) $rowData[10]) : null;
+                    $particularsRow = isset($rowData[11]) ? trim((string) $rowData[11]) : '';
 
                     if (empty($sheetDtrack) && empty($sheetSerialRow)) continue;
 
-                    $isTargetMatch = ($sheetDtrack === $targetDtrack) || 
-                                     (!empty($sheetSerialRow) && $sheetSerialRow === $clickedFund->obligation_serial);
+                    // Check if row is a RAODS Deobligation / Cancellation entry referencing this transaction's ORS or DTrack
+                    $isCancellationEntry = (
+                        stripos($particularsRow, 'cancelled ors') !== false ||
+                        stripos($particularsRow, 'deobligation') !== false ||
+                        (!empty($clickedFund->obligation_serial) && stripos($particularsRow, $clickedFund->obligation_serial) !== false && stripos($particularsRow, 'cancel') !== false)
+                    );
+
+                    $isTargetMatch = in_array($sheetDtrack, $candidateDtracks, true) || 
+                                    (!empty($sheetSerialRow) && $sheetSerialRow === $clickedFund->obligation_serial) ||
+                                    ($isCancellationEntry && in_array($sheetDtrack, $candidateDtracks, true));
 
                     if (!$isTargetMatch) continue;
 
-                    if ($clickedFund->creditor && $creditorRow) {
+                    if ($clickedFund->creditor && $creditorRow && !$isCancellationEntry) {
                         $normTargetCreditor = strtolower(preg_replace('/\s+/', ' ', trim($clickedFund->creditor)));
                         $normSheetCreditor  = strtolower(preg_replace('/\s+/', ' ', trim($creditorRow)));
                         if ($normTargetCreditor !== $normSheetCreditor) {
@@ -1083,12 +1437,21 @@ class FundController extends Controller
                         }
                     }
 
+                    // Separate RAODS cancellation rows from normal obligation/disbursement rows
+                    if ($isCancellationEntry) {
+                        $cancellationRows[] = $rowData;
+                        $matchedRows[]      = $rowData;
+                        $tracker['found']   = true;
+                        continue;
+                    }
+
                     $tracker['found'] = true;
                     $matchedRows[] = $rowData;
 
-                    if (!empty($sheetSerialRow)) $sheetSerial = $sheetSerialRow;
-                    if (!empty($creditorRow))    $creditorName = $creditorRow;
-                    if (!empty($particularsRow)) $particulars = $particularsRow;
+                    if (!empty($sheetDtrack))    $matchedSheetDtrack = $sheetDtrack;
+                    if (!empty($sheetSerialRow)) $sheetSerial        = $sheetSerialRow;
+                    if (!empty($creditorRow))    $creditorName       = $creditorRow;
+                    if (!empty($particularsRow)) $particulars        = $particularsRow;
 
                     $cleanAllotment   = strtolower(preg_replace('/\s+/', ' ', $allotment));
                     $cleanParticulars = strtolower(preg_replace('/\s+/', ' ', $particularsRow));
@@ -1132,7 +1495,13 @@ class FundController extends Controller
                         }
                     }
 
-                    if ($tracker['netDisb'] > 0) {
+                    // Determine Status (Preserve Cancelled if already cancelled or if RAODS cancellation entry exists)
+                    $hasCancellation = !empty($cancellationRows) || strtolower($clickedFund->status) === 'cancelled';
+
+                    if ($hasCancellation) {
+                        $status = 'Cancelled';
+                        $displayAmount = $tracker['netOb'] > 0 ? $tracker['netOb'] : (float) $clickedFund->obligation_amount;
+                    } elseif ($tracker['netDisb'] > 0) {
                         if ($isCosSalary && !empty($contractDetails['total_months'])) {
                             if ($disbursedMonthCount < $contractDetails['total_months']) {
                                 $status = 'Disbursed (Partially)';
@@ -1152,14 +1521,14 @@ class FundController extends Controller
                         $displayAmount = $tracker['netOb'];
                     }
 
-                    $totalObligatedFromRaods = $tracker['netOb'];
+                    $totalObligatedFromRaods = $tracker['netOb'] > 0 ? $tracker['netOb'] : (float) $clickedFund->obligation_amount;
                     $totalDisbursedFromRaods = $tracker['netDisb'];
 
                     // Calculate Total Sheet NORSA
                     $totalSheetNorsa = 0;
                     if (!empty($tracker['norsa_entries'])) {
                         foreach ($tracker['norsa_entries'] as $nEntry) {
-                            $totalSheetNorsa += (float)($nEntry['amount'] ?? 0);
+                            $totalSheetNorsa += (float) ($nEntry['amount'] ?? 0);
                         }
                     }
 
@@ -1168,13 +1537,12 @@ class FundController extends Controller
                     // --- CHECK MULTI-ACTIVITY STATUS VIA LINE ITEMS ---
                     $lineItems = \App\Models\FundMultiActivity::where('fund_id', $clickedFund->id)->get();
                     $lineItemsCount = $lineItems->count();
-                    $isConsolidatedMultiActivity = ($lineItemsCount > 1 || count($matchedRows) > 1) && !$isCosSalary;
+                    $isConsolidatedMultiActivity = ($lineItemsCount > 1 || count($matchedRows) > 1) && !$isCosSalary && !$hasCancellation;
 
                     $totalRoutedAmount = $lineItems->isNotEmpty() 
-                        ? (float)$lineItems->sum('routed_amount') 
-                        : ((float)($clickedFund->amount ?? $totalObligatedFromRaods));
+                        ? (float) $lineItems->sum('routed_amount') 
+                        : ((float) ($clickedFund->amount ?? $totalObligatedFromRaods));
 
-                    // Determine discrepancy
                     $hasDiscrepancy = (abs($netConsolidatedObligated - $totalRoutedAmount) > 0.01) || ($totalSheetNorsa > 0);
 
                     // =====================================================================
@@ -1186,11 +1554,11 @@ class FundController extends Controller
                                 return [
                                     'id'                  => $item->id,
                                     'fund_id'             => $item->fund_id,
-                                    'transaction_type_id' => $item->transaction_type_id, // Retain unique Activity ID
+                                    'transaction_type_id' => $item->transaction_type_id,
                                     'source_of_fund_id'   => $item->source_of_fund_id,
                                     'activity_name'       => $item->creditor ?? ('Item #' . $item->id),
-                                    'routed_amount'       => (float)$item->routed_amount,
-                                    'obligation_amount'   => (float)$item->obligation_amount,
+                                    'routed_amount'       => (float) $item->routed_amount,
+                                    'obligation_amount'   => (float) $item->obligation_amount,
                                 ];
                             })->values()->all();
                         } else {
@@ -1199,8 +1567,8 @@ class FundController extends Controller
                                     'fund_id'             => $idx + 1,
                                     'transaction_type_id' => $clickedFund->transaction_type_id,
                                     'source_of_fund_id'   => $clickedFund->source_of_fund_id,
-                                    'activity_name'       => trim((string)($row[10] ?? $row[11] ?? ('Activity Line #' . ($idx + 1)))),
-                                    'routed_amount'       => (float)str_replace(',', '', $row[6] ?? 0),
+                                    'activity_name'       => trim((string) ($row[10] ?? $row[11] ?? ('Activity Line #' . ($idx + 1)))),
+                                    'routed_amount'       => (float) str_replace(',', '', $row[6] ?? 0),
                                 ];
                             })->values()->all();
                         }
@@ -1222,7 +1590,7 @@ class FundController extends Controller
                     }
 
                     // =====================================================================
-                    // 2. AUTO-DISTRIBUTION (NO DISCREPANCY / EXACT MATCH)
+                    // 2. AUTO-DISTRIBUTION & RECORD UPDATE
                     // =====================================================================
                     $updateData = [
                         'creditor'            => $creditorName ?: $clickedFund->creditor,
@@ -1235,19 +1603,29 @@ class FundController extends Controller
                         'status_date'         => now(),
                     ];
 
+                    // If matched via a new PO DTrack that wasn't saved yet, persist it to dtrack_no_new
+                    if (!empty($matchedSheetDtrack) && $matchedSheetDtrack !== $prDtrack && empty($clickedFund->dtrack_no_new)) {
+                        $updateData['dtrack_no_new'] = $matchedSheetDtrack;
+                    }
+
                     if ($isCosSalary) {
                         if ($contractId) $updateData['cos_contract_id'] = $contractId;
-                        $updateData['disbursed_months'] = $disbursedMonthCount;
-                        $updateData['remarks_salary']   = 'Imported HR COS Salary/Wages';
+                        $updateData['disbursed_months']  = $disbursedMonthCount;
+                        $updateData['remarks_salary']    = 'Imported HR COS Salary/Wages';
                         $updateData['is_multi_activity'] = 0;
                     }
 
                     $clickedFund->update($updateData);
 
+                    // Record any RAODS cancellation / deobligation rows into fund_cancellations
+                    if (!empty($cancellationRows)) {
+                        $this->syncCancellationRecords($clickedFund, $cancellationRows, $sourceConfig->id, $userId);
+                    }
+
                     // Update multi-activity line items proportionally without modifying transaction_type_id
-                    if ($isConsolidatedMultiActivity && $lineItems->isNotEmpty()) {
+                    if (($lineItemsCount > 1 || count($matchedRows) > 1) && !$isCosSalary && $lineItems->isNotEmpty()) {
                         foreach ($lineItems as $actItem) {
-                            $actRouted = (float)$actItem->routed_amount;
+                            $actRouted = (float) $actItem->routed_amount;
                             
                             $actObligation = ($totalRoutedAmount > 0) 
                                 ? round($netConsolidatedObligated * ($actRouted / $totalRoutedAmount), 2) 
@@ -1257,7 +1635,9 @@ class FundController extends Controller
                                 ? round($totalDisbursedFromRaods * ($actObligation / $netConsolidatedObligated), 2) 
                                 : 0;
 
-                            if ($actDisbursement > 0) {
+                            if ($hasCancellation) {
+                                $actStatus = 'Cancelled';
+                            } elseif ($actDisbursement > 0) {
                                 $actStatus = ($actObligation > 0 && $actDisbursement < $actObligation)
                                     ? 'Disbursed (with savings)'
                                     : 'Disbursed';
@@ -1280,7 +1660,7 @@ class FundController extends Controller
 
                     $syncedDetails[] = [
                         'name'   => $sourceConfig->name ?? 'Fund Source', 
-                        'dtrack' => $targetDtrack,
+                        'dtrack' => $matchedSheetDtrack ?: $targetDtrack,
                         'serial' => $sheetSerial ?: $clickedFund->obligation_serial,
                         'amount' => number_format($displayAmount, 2),
                         'status' => $status
@@ -1298,7 +1678,7 @@ class FundController extends Controller
             }
 
             $freshFund = $clickedFund->fresh();
-            $dbSerial  = !empty($freshFund->obligation_serial) ? $freshFund->obligation_serial : $freshFund->dtrack_no;
+            $dbSerial  = !empty($freshFund->obligation_serial) ? $freshFund->obligation_serial : ($freshFund->dtrack_no_new ?: $freshFund->dtrack_no);
 
             return response()->json([
                 'success'           => true,
@@ -1396,7 +1776,7 @@ class FundController extends Controller
                     sleep(1); 
                 }
 
-                $allotClass = strtoupper(trim((string)($sourceConfig->allotment_class ?? '')));
+                $allotClass = strtoupper(trim((string) ($sourceConfig->allotment_class ?? '')));
                 $sourceName = $sourceConfig->name ?? '';
                 $sourceCode = $sourceConfig->code ?? '';
 
@@ -1412,8 +1792,8 @@ class FundController extends Controller
                 if (!empty($rows)) {
                     $groupedRows = [];
                     foreach ($rows as $rowIndex => $rowData) {
-                        $sheetDtrack = isset($rowData[0]) ? trim((string)$rowData[0]) : '';
-                        $sheetSerial = isset($rowData[3]) ? trim((string)$rowData[3]) : '';
+                        $sheetDtrack = isset($rowData[0]) ? trim((string) $rowData[0]) : '';
+                        $sheetSerial = isset($rowData[3]) ? trim((string) $rowData[3]) : '';
                         
                         if (empty($sheetDtrack) && empty($sheetSerial)) continue;
 
@@ -1445,26 +1825,31 @@ class FundController extends Controller
                             'found_serial'   => null, 
                             'found'          => true,
                             'disbursements'  => [],
-                            'norsa_entries'  => []
+                            'norsa_entries'  => [],
                         ];
 
-                        $creditorName = null;
-                        $particulars  = '';
-                        $sheetSerial  = null;
-                        $sheetDtrack  = '';
-                        $isCosSalary  = false;
-                        $isCapitalOutlay = false;
+                        $creditorName        = null;
+                        $particulars         = '';
+                        $sheetSerial         = null;
+                        $sheetDtrack         = '';
+                        $isCosSalary         = false;
+                        $isCapitalOutlay     = false;
+                        $isCancellationGroup = false;
 
                         foreach ($groupRows as $rowData) {
-                            $sheetDtrack    = isset($rowData[0])  ? trim((string)$rowData[0])  : $sheetDtrack;
-                            $sheetSerial    = isset($rowData[3])  ? trim((string)$rowData[3])  : $sheetSerial;
-                            $allotment      = isset($rowData[5])  ? trim((string)$rowData[5])  : '';
-                            $creditorRow    = isset($rowData[10]) ? trim((string)$rowData[10]) : null;
-                            $particularsRow = isset($rowData[11]) ? trim((string)$rowData[11]) : '';
+                            $sheetDtrack    = isset($rowData[0])  ? trim((string) $rowData[0])  : $sheetDtrack;
+                            $sheetSerial    = isset($rowData[3])  ? trim((string) $rowData[3])  : $sheetSerial;
+                            $allotment      = isset($rowData[5])  ? trim((string) $rowData[5])  : '';
+                            $creditorRow    = isset($rowData[10]) ? trim((string) $rowData[10]) : null;
+                            $particularsRow = isset($rowData[11]) ? trim((string) $rowData[11]) : '';
 
-                            if (!empty($sheetSerial)) $sheetSerial = $sheetSerial;
-                            if (!empty($creditorRow)) $creditorName = $creditorRow;
-                            if (!empty($particularsRow)) $particulars = $particularsRow;
+                            if (!empty($creditorRow))    $creditorName = $creditorRow;
+                            if (!empty($particularsRow)) $particulars  = $particularsRow;
+
+                            // Detect RAODS Cancellation / Deobligation rows (e.g., "CANCELLED ORS NO 02-101101-2026-09-00085...")
+                            if (stripos($particularsRow, 'cancelled ors') !== false || stripos($particularsRow, 'deobligation') !== false) {
+                                $isCancellationGroup = true;
+                            }
 
                             $cleanAllotment   = strtolower(preg_replace('/\s+/', ' ', $allotment));
                             $cleanParticulars = strtolower(preg_replace('/\s+/', ' ', $particularsRow));
@@ -1476,7 +1861,7 @@ class FundController extends Controller
                             }
 
                             if ($isCosSalary) {
-                                $allClass = strtoupper(trim((string)($sourceConfig->allotment_class ?? '')));
+                                $allClass   = strtoupper(trim((string) ($sourceConfig->allotment_class ?? '')));
                                 $sourceName = $sourceConfig->name ?? '';
                                 $sourceCode = $sourceConfig->code ?? '';
                                 $isCapitalOutlay = ($allClass === 'CO') ||
@@ -1485,11 +1870,48 @@ class FundController extends Controller
                                     (stripos($sourceCode, 'CO') !== false);
                             }
 
-                            $this->processApiRowData($rowData, $tracker, $particularsRow, $isCosSalary);
+                            if (!$isCancellationGroup) {
+                                $this->processApiRowData($rowData, $tracker, $particularsRow, $isCosSalary);
+                            }
                         }
 
                         if ($isCosSalary && $isCapitalOutlay) {
                             continue; 
+                        }
+
+                        // Handle RAODS Cancellation / Deobligation group separately
+                        if ($isCancellationGroup) {
+                            $existingFund = null;
+
+                            // Extract original ORS serial from "CANCELLED ORS NO 02-101101-2026-09-00085" if present
+                            if (preg_match('/02-\d+-\d{4}-\d{2}-\d+/i', $particulars, $matches)) {
+                                $origSerial = trim($matches[0]);
+                                $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
+                                    ->where('obligation_serial', $origSerial)
+                                    ->first();
+                            }
+
+                            if (!$existingFund && !empty($sheetDtrack)) {
+                                $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
+                                    ->where(function ($q) use ($sheetDtrack) {
+                                        $q->where('dtrack_no', $sheetDtrack)
+                                        ->orWhere('dtrack_no_new', $sheetDtrack);
+                                    })
+                                    ->first();
+                            }
+
+                            if ($existingFund) {
+                                $this->syncCancellationRecords($existingFund, $groupRows, $sourceConfig->id, $userId);
+                                $existingFund->update([
+                                    'status'      => 'Cancelled',
+                                    'status_date' => now(),
+                                ]);
+                                \App\Models\FundMultiActivity::where('fund_id', $existingFund->id)
+                                    ->update(['status' => 'Cancelled']);
+                                $this->syncFundDtrackLogs($existingFund, $groupRows, $rows);
+                            }
+
+                            continue;
                         }
 
                         $disbursedMonthCount = count($tracker['disbursements'] ?? []);
@@ -1564,7 +1986,44 @@ class FundController extends Controller
                                 ->first();
                         }
 
+                        // Check Procurement PO DTrack (procurement_transaction_items -> transaction() / procurement_transactions)
+                        if (!$existingFund && !empty($sheetDtrack)) {
+                            $parentFund = $this->syncProcurementPoFromRaods(
+                                $sheetDtrack,
+                                $tracker,
+                                $sheetSerial,
+                                $creditorName,
+                                $status
+                            );
+
+                            if ($parentFund) {
+                                $this->syncDisbursementRecords($parentFund, $tracker['disbursements'], false);
+                                $this->syncNorsaAdjustments($parentFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
+
+                                $matchingBulkRows = [];
+                                foreach ($rows as $rData) {
+                                    $rDtrack = isset($rData[0]) ? trim((string) $rData[0]) : '';
+                                    $rSerial = isset($rData[3]) ? trim((string) $rData[3]) : '';
+
+                                    if (($rDtrack === $sheetDtrack && !empty($sheetDtrack)) || (!empty($sheetSerial) && $rSerial === $sheetSerial)) {
+                                        $matchingBulkRows[] = $rData;
+                                    }
+                                }
+
+                                if (!empty($matchingBulkRows)) {
+                                    $this->syncFundDtrackLogs($parentFund, $matchingBulkRows, $rows);
+                                }
+
+                                continue;
+                            }
+                        }
+
                         if ($existingFund) {
+                            // Do NOT let an old obligated row overwrite a Cancelled transaction back to Obligated
+                            if (strtolower($existingFund->status) === 'cancelled') {
+                                continue;
+                            }
+
                             $isFinishedStatus = in_array($existingFund->status, [
                                 'Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed'
                             ]);
@@ -1632,15 +2091,15 @@ class FundController extends Controller
                             $targetFund = $existingFund;
                         }
 
-                        // SYNC DISBURSEMENTS, NORSA, AND LOGS ONLY (NO MULTI-ACTIVITY WRITES)
+                        // SYNC DISBURSEMENTS, NORSA, AND LOGS
                         if ($targetFund) {
                             $this->syncDisbursementRecords($targetFund, $tracker['disbursements'], $isCosSalary);
                             $this->syncNorsaAdjustments($targetFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
 
                             $matchingBulkRows = [];
                             foreach ($rows as $rData) {
-                                $rDtrack = isset($rData[0]) ? trim((string)$rData[0]) : '';
-                                $rSerial = isset($rData[3]) ? trim((string)$rData[3]) : '';
+                                $rDtrack = isset($rData[0]) ? trim((string) $rData[0]) : '';
+                                $rSerial = isset($rData[3]) ? trim((string) $rData[3]) : '';
                                 
                                 if (($rDtrack === $sheetDtrack && !empty($sheetDtrack)) || (!empty($sheetSerial) && $rSerial === $sheetSerial)) {
                                     $matchingBulkRows[] = $rData;
@@ -1670,6 +2129,167 @@ class FundController extends Controller
             'success'        => true,
             'imported_items' => $importedItems
         ]);
+    }
+
+    /**
+     * Helper: Sync matched RAODS PO DTrack into ProcurementTransactionItem -> transaction() (ProcurementTransaction) -> Fund
+     */
+    private function syncProcurementPoFromRaods(string $poDtrack, array $tracker, ?string $sheetSerial, ?string $creditorName, string $status): ?Fund
+    {
+        $matchedItems = \App\Models\ProcurementTransactionItem::with('transaction')
+            ->where('po_dtrack_no', $poDtrack)
+            ->get();
+
+        if ($matchedItems->isNotEmpty()) {
+            $procTransaction    = $matchedItems->first()->transaction;
+            $totalGroupPoAmount = (float) $matchedItems->sum('po_amount');
+            $fallbackTotal      = (float) $matchedItems->sum('item_amount');
+
+            foreach ($matchedItems as $item) {
+                $weight = $totalGroupPoAmount > 0
+                    ? ((float) $item->po_amount / $totalGroupPoAmount)
+                    : ($fallbackTotal > 0 ? ((float) $item->item_amount / $fallbackTotal) : (1 / $matchedItems->count()));
+
+                $item->update([
+                    'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : $item->obligation_serial,
+                    'obligation_amount'   => round($tracker['netOb'] * $weight, 2),
+                    'obligation_date'     => $tracker['latestObDate'] ?: $item->obligation_date,
+                    'disbursement_amount' => round($tracker['netDisb'] * $weight, 2),
+                    'disbursement_date'   => $tracker['latestDisbDate'] ?: $item->disbursement_date,
+                    'status'              => $status,
+                ]);
+            }
+        } else {
+            $procTransaction = \App\Models\ProcurementTransaction::where('po_dtrack_no', $poDtrack)->first();
+            if (!$procTransaction) {
+                return null;
+            }
+
+            $procTransaction->update([
+                'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : $procTransaction->obligation_serial,
+                'obligation_amount'   => $tracker['netOb'],
+                'obligation_date'     => $tracker['latestObDate'] ?: $procTransaction->obligation_date,
+                'disbursement_amount' => $tracker['netDisb'],
+                'disbursement_date'   => $tracker['latestDisbDate'] ?: $procTransaction->disbursement_date,
+                'status'              => $status,
+            ]);
+        }
+
+        if (!$procTransaction) {
+            return null;
+        }
+
+        // Roll up all items under this procurement_transaction
+        $allItems = \App\Models\ProcurementTransactionItem::where('procurement_transaction_id', $procTransaction->id)->get();
+
+        if ($allItems->isNotEmpty()) {
+            $totalObligated = (float) $allItems->sum('obligation_amount');
+            $totalDisbursed = (float) $allItems->sum('disbursement_amount');
+            $uniqueSerials  = $allItems->pluck('obligation_serial')->filter()->unique()->values()->all();
+            $latestObDate   = $allItems->pluck('obligation_date')->filter()->max();
+            $latestDisbDate = $allItems->pluck('disbursement_date')->filter()->max();
+
+            $totalItemCount     = $allItems->count();
+            $obligatedItemCount = $allItems->where('obligation_amount', '>', 0)->count();
+
+            if ($totalDisbursed > 0) {
+                $rolledStatus = ($totalObligated > 0 && $totalDisbursed < $totalObligated)
+                    ? 'Disbursed (with savings)'
+                    : 'Disbursed';
+            } elseif ($obligatedItemCount > 0 && $obligatedItemCount < $totalItemCount) {
+                $rolledStatus = 'Partially Obligated';
+            } elseif ($obligatedItemCount > 0) {
+                $rolledStatus = 'Obligated';
+            } else {
+                $rolledStatus = $procTransaction->status;
+            }
+
+            $procTransaction->update([
+                'obligation_serial'   => !empty($uniqueSerials) ? implode(', ', $uniqueSerials) : $procTransaction->obligation_serial,
+                'obligation_amount'   => $totalObligated,
+                'obligation_date'     => $latestObDate ?: $procTransaction->obligation_date,
+                'disbursement_amount' => $totalDisbursed,
+                'disbursement_date'   => $latestDisbDate ?: $procTransaction->disbursement_date,
+                'status'              => $rolledStatus,
+            ]);
+        } else {
+            $totalObligated = (float) $procTransaction->obligation_amount;
+            $totalDisbursed = (float) $procTransaction->disbursement_amount;
+            $uniqueSerials  = array_filter([$procTransaction->obligation_serial]);
+            $latestObDate   = $procTransaction->obligation_date;
+            $latestDisbDate = $procTransaction->disbursement_date;
+            $rolledStatus   = $procTransaction->status;
+        }
+
+        // Roll up to master `funds` row (`fund_transaction_id`)
+        $parentFund = Fund::find($procTransaction->fund_transaction_id);
+        if ($parentFund && strtolower($parentFund->status) !== 'cancelled') {
+            $distinctPoDtracks = $allItems->isNotEmpty()
+                ? $allItems->pluck('po_dtrack_no')->filter()->unique()->values()
+                : collect(array_filter([$procTransaction->po_dtrack_no]));
+
+            $parentFund->update([
+                'dtrack_no_new'       => $distinctPoDtracks->count() === 1 ? $distinctPoDtracks->first() : $parentFund->dtrack_no_new,
+                'creditor'            => $creditorName ?: $parentFund->creditor,
+                'obligation_serial'   => !empty($uniqueSerials) ? implode(', ', $uniqueSerials) : $parentFund->obligation_serial,
+                'obligation_amount'   => $totalObligated,
+                'obligation_date'     => $latestObDate ?: $parentFund->obligation_date,
+                'disbursement_amount' => $totalDisbursed,
+                'disbursement_date'   => $latestDisbDate ?: $parentFund->disbursement_date,
+                'status'              => $rolledStatus,
+                'status_date'         => now(),
+            ]);
+        }
+
+        return $parentFund;
+    }
+
+    /**
+     * Helper: Automatically capture RAODS Deobligation / Cancelled ORS entries into fund_cancellations
+     */
+    private function syncCancellationRecords(Fund $fund, array $cancellationRows, int $sourceOfFundId, int $userId): void
+    {
+        foreach ($cancellationRows as $rowData) {
+            $cancelSerial   = isset($rowData[3])  ? trim((string) $rowData[3])  : '';
+            $rawCancelDate  = isset($rowData[2])  ? trim((string) $rowData[2])  : '';
+            $rawCancelAmt   = isset($rowData[8])  ? trim((string) $rowData[8])  : (isset($rowData[6]) ? trim((string) $rowData[6]) : '0');
+            $particularsRow = isset($rowData[11]) ? trim((string) $rowData[11]) : '';
+
+            if (empty($cancelSerial)) continue;
+
+            // Parse RAODS amount (handles "(27,000.00)" or "-27000.00") as a positive deobligated amount
+            $cleanAmt = preg_replace('/[^0-9.\-]/', '', str_replace(['(', ')'], ['-', ''], $rawCancelAmt));
+            $cancelledAmount = abs((float) $cleanAmt);
+
+            if ($cancelledAmount <= 0) {
+                $cancelledAmount = (float) ($fund->obligation_amount > 0 ? $fund->obligation_amount : $fund->amount);
+            }
+
+            $cancelDate = now()->format('Y-m-d');
+            if (!empty($rawCancelDate)) {
+                try {
+                    $cancelDate = \Carbon\Carbon::parse($rawCancelDate)->format('Y-m-d');
+                } catch (\Exception $e) {
+                    $cancelDate = now()->format('Y-m-d');
+                }
+            }
+
+            \App\Models\FundCancellation::updateOrCreate(
+                [
+                    'fund_id'                        => $fund->id,
+                    'cancellation_obligation_serial' => $cancelSerial,
+                ],
+                [
+                    'source_of_fund_id'          => $sourceOfFundId,
+                    'dtrack_no'                  => $fund->dtrack_no,
+                    'original_obligation_serial' => $fund->obligation_serial,
+                    'cancellation_date'          => $cancelDate,
+                    'cancelled_amount'           => $cancelledAmount,
+                    'reason'                     => $particularsRow ?: $fund->remarks,
+                    'cancelled_by'               => $userId,
+                ]
+            );
+        }
     }
 
     /**

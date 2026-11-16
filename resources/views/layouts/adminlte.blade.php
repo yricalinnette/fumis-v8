@@ -111,6 +111,12 @@
                                     <p>By Transactions</p>
                                 </a>
                             </li>
+                            <li class="nav-item">
+                                <a href="{{ route('reports.uacs') }}" class="nav-link {{ request()->routeIs('reports.uacs') ? 'active' : '' }}">
+                                    <i class="far fa-circle nav-icon text-warning"></i>
+                                    <p>By UACS</p>
+                                </a>
+                            </li>
                         </ul>
                     </li>
 

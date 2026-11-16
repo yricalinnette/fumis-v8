@@ -6,6 +6,9 @@
     .card-navy.card-outline { border-top: 3px solid #001f3f; }
     .bg-navy-light { background-color: #f1f4f8; color: #001f3f; }
     .bg-soft-light { background-color: #f8f9fa; }
+    .row-cancelled { background-color: #fff5f5 !important; }
+    .row-cancelled td { color: #6c757d; }
+    .strike-cancelled { text-decoration: line-through; opacity: 0.75; }
     
     .section-banner {
         background: linear-gradient(135deg, #001f3f 0%, #003366 100%);
@@ -47,7 +50,7 @@
         </div>
     </div>
     <p class="text-muted small mb-4">
-        <i class="fas fa-info-circle text-info mr-1"></i> Obligations and Disbursements are strictly filtered based on transaction dates in the selected period.
+        <i class="fas fa-info-circle text-info mr-1"></i> Obligations, Cancellations, and Disbursements are strictly filtered based on transaction dates in the selected period.
     </p>
 
     {{-- FILTER & SEARCH TOOLBAR --}}
@@ -139,19 +142,29 @@
                             <table class="table table-bordered table-hover mb-0 text-xs">
                                 <thead class="bg-navy-light text-uppercase">
                                     <tr>
-                                        <th style="width: 28%;">Activity / Line Item</th>
-                                        <th class="text-right" style="width: 9%;">Alloted Budget</th>
+                                        <th style="width: 26%;">Activity / Line Item</th>
+                                        <th class="text-right" style="width: 9.5%;">Alloted Budget</th>
                                         <th class="text-right" style="width: 9%;">Pending</th>
-                                        <th class="text-right" style="width: 9%;">Obligated</th>
-                                        <th class="text-right" style="width: 8%;">NORSA</th>
-                                        <th class="text-right" style="width: 9%;">Disbursed</th>
-                                        <th class="text-right" style="width: 9%;">Savings</th>
-                                        <th class="text-right" style="width: 9%;">Unobligated</th>
+                                        <th class="text-right" style="width: 9.5%;">Obligated</th>
+                                        <th class="text-right" style="width: 8.5%;">NORSA</th>
+                                        <th class="text-right" style="width: 9.5%;">Disbursed</th>
+                                        <th class="text-right" style="width: 8.5%;">Savings</th>
+                                        <th class="text-right" style="width: 9.5%;">Unobligated</th>
                                         <th class="text-center" style="width: 10%;">Transactions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     @foreach($source['activities'] as $act)
+                                        @php
+                                            $cancelledCount = $act['transactions']->filter(function ($t) {
+                                                $storedOb = (float) ($t->obligation_amount ?? 0);
+                                                $norsaAmt = (float) ($t->norsa_amount ?? 0);
+                                                $baseOb   = !empty($t->is_multi_activity) ? ($storedOb + $norsaAmt) : $storedOb;
+                                                return !empty($t->is_cancelled)
+                                                    || strtolower((string) ($t->status ?? '')) === 'cancelled'
+                                                    || ($baseOb > 0 && abs($baseOb - $norsaAmt) < 0.01);
+                                            })->count();
+                                        @endphp
                                         <tr>
                                             <td class="align-middle font-weight-bold text-dark">
                                                 {{ $act['details']->name }}
@@ -176,6 +189,11 @@
                                                 <button class="btn btn-xs btn-outline-info font-weight-bold px-2" data-toggle="collapse" data-target="#trx-collapse-{{ $act['details']->id }}">
                                                     <i class="fas fa-list mr-1"></i> ({{ $act['transactions']->count() }})
                                                 </button>
+                                                @if($cancelledCount > 0)
+                                                    <span class="badge badge-danger d-block mx-auto mt-1" style="font-size: 0.62rem; width: fit-content;">
+                                                        {{ $cancelledCount }} Cancelled
+                                                    </span>
+                                                @endif
                                             </td>
                                         </tr>
 
@@ -196,7 +214,7 @@
                                                                 <th class="text-right border-left-info">Gross Obligated</th>
                                                                 <th class="text-right border-left-danger text-danger">NORSA</th>
                                                                 <th class="text-right border-left-success">Disbursed</th>
-                                                                <th class="text-center border-left-primary" style="width: 180px;">Status & Remarks</th>
+                                                                <th class="text-center border-left-primary" style="width: 195px;">Status & Remarks</th>
                                                             </tr>
                                                         </thead>
                                                         <tbody class="text-xs">
@@ -206,56 +224,140 @@
                                                                     if (!$creditorName && isset($tx->creditors) && $tx->creditors->isNotEmpty()) {
                                                                         $creditorName = $tx->creditors->map(fn($c) => $c->employeeDetail->fullname ?? $c->full_name ?? null)->filter()->implode(', ');
                                                                     }
-                                                                    $isCosSalary = (isset($tx->remarks_salary) && $tx->remarks_salary === 'Imported HR COS Salary/Wages') 
+
+                                                                    $txNorsaAmt  = (float) ($tx->norsa_amount ?? 0);
+                                                                    $storedOb    = (float) ($tx->obligation_amount ?? 0);
+                                                                    $baseGrossOb = !empty($tx->is_multi_activity) ? ($storedOb + $txNorsaAmt) : $storedOb;
+
+                                                                    // Detect explicit Cancelled OR 100% NORSA reversal
+                                                                    $isFullNorsaCancel = ($baseGrossOb > 0 && abs($baseGrossOb - $txNorsaAmt) < 0.01);
+                                                                    $isTxCancelled     = !empty($tx->is_cancelled)
+                                                                        || strtolower((string) ($tx->status ?? '')) === 'cancelled'
+                                                                        || $isFullNorsaCancel;
+
+                                                                    $txGrossOblig = $isTxCancelled
+                                                                        ? (float) ($tx->prior_gross_obligated ?? ($baseGrossOb > 0 ? $baseGrossOb : ($tx->amount ?? 0)))
+                                                                        : $baseGrossOb;
+
+                                                                    // COS Salary & Consolidated Salary Resolution
+                                                                    $isCosSalary = !empty($tx->is_cos_salary)
+                                                                        || (isset($tx->remarks_salary) && $tx->remarks_salary === 'Imported HR COS Salary/Wages')
+                                                                        || !empty($tx->cos_contract_id)
                                                                         || \Illuminate\Support\Str::contains(strtolower($tx->remarks ?? ''), ['cos', 'salary', 'wages', 'payroll']);
-                                                                    
-                                                                    $txGrossOblig = (float) $tx->obligation_amount;
-                                                                    if (!empty($tx->is_multi_activity) && ($tx->norsa_amount ?? 0) > 0) {
-                                                                        $txGrossOblig += (float) $tx->norsa_amount;
+
+                                                                    $cosDisbursements = $tx->cosSalaryDisbursements ?? collect();
+                                                                    $isCosConsolidated = !empty($tx->is_cos_consolidated) || $cosDisbursements->contains(function ($d) {
+                                                                        return ((int) ($d->months_covered ?? $d->months_count ?? 1) > 1)
+                                                                            || !empty($d->is_consolidated)
+                                                                            || \Illuminate\Support\Str::contains(strtolower((string) ($d->remarks ?? $d->notes ?? $d->period_label ?? '')), 'consolidated');
+                                                                    });
+
+                                                                    $displayStatus = $tx->status ?? 'N/A';
+                                                                    if ($isTxCancelled) {
+                                                                        $displayStatus = 'Cancelled';
+                                                                    } elseif ($isCosSalary) {
+                                                                        $effectiveMonthsPaid = $cosDisbursements->count() > 0
+                                                                            ? (int) $cosDisbursements->sum(function ($d) {
+                                                                                $m = (int) ($d->months_covered ?? $d->months_count ?? 0);
+                                                                                if ($m > 0) return $m;
+                                                                                return (!empty($d->is_consolidated) || \Illuminate\Support\Str::contains(strtolower((string) ($d->remarks ?? $d->notes ?? '')), 'consolidated')) ? 2 : 1;
+                                                                            })
+                                                                            : (int) ($tx->disbursed_months ?? 0);
+                                                                        $totalContractMonths = (int) ($tx->cosContract->total_months ?? 0);
+
+                                                                        $totalCosDisb = $cosDisbursements->count() > 0
+                                                                            ? (float) $cosDisbursements->sum('amount')
+                                                                            : (float) ($tx->disbursement_amount ?? 0);
+                                                                        $cosSavingsDiff = round($storedOb - $totalCosDisb, 2);
+
+                                                                        $isCosFullyDisbursed = in_array($displayStatus, ['Completed', 'Disbursed (with savings)'])
+                                                                            || ($tx->cosContract && $tx->cosContract->status === 'Completed')
+                                                                            || ($totalContractMonths > 0 && $effectiveMonthsPaid >= $totalContractMonths)
+                                                                            || ($totalContractMonths > 0 && (int) ($tx->disbursed_months ?? 0) >= $totalContractMonths)
+                                                                            || ($totalCosDisb > 0 && $txNorsaAmt > 0 && abs($cosSavingsDiff - $txNorsaAmt) < 0.01);
+
+                                                                        if ($isCosFullyDisbursed) {
+                                                                            $displayStatus = ($totalCosDisb > 0 && $cosSavingsDiff > 0.009)
+                                                                                ? 'Disbursed (with savings)'
+                                                                                : 'Completed';
+                                                                        }
                                                                     }
+
+                                                                    $displayRemarks = $isTxCancelled && !empty($tx->cancellation_remarks)
+                                                                        ? $tx->cancellation_remarks
+                                                                        : ($isFullNorsaCancel
+                                                                            ? ('Cancelled via Full NORSA' . (!empty($tx->remarks) ? ' — ' . $tx->remarks : ''))
+                                                                            : ($tx->remarks ?? $tx->manual_remarks ?? null));
                                                                 @endphp
-                                                                <tr>
+                                                                <tr class="{{ $isTxCancelled ? 'row-cancelled' : '' }}">
                                                                     <td class="align-middle text-nowrap">{{ !empty($tx->obligation_date) ? \Carbon\Carbon::parse($tx->obligation_date)->format('M d, Y') : '-' }}</td>
-                                                                    <td class="align-middle text-nowrap">{{ !empty($tx->disbursement_date) ? \Carbon\Carbon::parse($tx->disbursement_date)->format('M d, Y') : '-' }}</td>
+                                                                    <td class="align-middle text-nowrap">{{ !$isTxCancelled && !empty($tx->disbursement_date) ? \Carbon\Carbon::parse($tx->disbursement_date)->format('M d, Y') : '-' }}</td>
                                                                     <td class="align-middle text-nowrap">
-                                                                        @if(!empty($tx->dtrack_no))<div><span class="badge badge-light text-danger border">{{ $tx->dtrack_no }}</span></div>@endif
-                                                                        @if($tx->obligation_serial)<div class="text-primary financial-number" style="font-size: 0.68rem;"><i class="fas fa-barcode mr-1"></i>{{ $tx->obligation_serial }}</div>@endif
+                                                                        @if(!empty($tx->dtrack_no))
+                                                                            <div><span class="badge badge-light text-danger border">{{ $tx->dtrack_no }}</span></div>
+                                                                        @endif
+                                                                        @if(!empty($tx->dtrack_no_new))
+                                                                            <div class="mt-1"><span class="badge badge-light text-dark border">PO: {{ $tx->dtrack_no_new }}</span></div>
+                                                                        @endif
+                                                                        @if($tx->obligation_serial)
+                                                                            <div class="text-primary financial-number mt-1" style="font-size: 0.68rem;">
+                                                                                <i class="fas fa-barcode mr-1"></i>{{ $tx->obligation_serial }}
+                                                                            </div>
+                                                                        @endif
                                                                     </td>
                                                                     <td class="align-middle font-weight-bold">{{ $creditorName ?: '-' }}</td>
-                                                                    <td class="align-middle text-wrap">{{ $tx->particulars }}</td>
+                                                                    <td class="align-middle text-wrap {{ $isTxCancelled ? 'strike-cancelled' : '' }}">{{ $tx->particulars }}</td>
                                                                     
-                                                                    <td class="text-right align-middle financial-number font-weight-bold">
+                                                                    <td class="text-right align-middle financial-number font-weight-bold {{ $isTxCancelled ? 'strike-cancelled' : '' }}">
                                                                         ₱{{ number_format($tx->amount, 2) }}
                                                                     </td>
 
-                                                                    <td class="text-right align-middle font-weight-bold text-info border-left-info financial-number">
+                                                                    <td class="text-right align-middle font-weight-bold text-info border-left-info financial-number {{ $isTxCancelled ? 'strike-cancelled' : '' }}">
                                                                         ₱{{ number_format($txGrossOblig, 2) }}
                                                                     </td>
 
                                                                     <td class="text-right align-middle font-weight-bold text-danger border-left-danger financial-number">
-                                                                        @if(($tx->norsa_amount ?? 0) > 0)
-                                                                            (₱{{ number_format($tx->norsa_amount, 2) }})
+                                                                        @if($txNorsaAmt > 0)
+                                                                            (₱{{ number_format($txNorsaAmt, 2) }})
                                                                         @else
                                                                             -
                                                                         @endif
                                                                     </td>
 
                                                                     <td class="text-right align-middle font-weight-bold text-success border-left-success financial-number">
-                                                                        ₱{{ number_format($tx->disbursement_amount, 2) }}
+                                                                        {{ $isTxCancelled ? '-' : '₱'.number_format($tx->disbursement_amount, 2) }}
                                                                     </td>
 
                                                                     <td class="text-center align-middle bg-soft-light py-2 border-left-primary">
                                                                         <div>
                                                                             <span class="badge px-2 py-1 shadow-sm {{ 
-                                                                                in_array($tx->status, ['Disbursed', 'Completed']) ? 'badge-success' : 
-                                                                                ($tx->status == 'Disbursed (with savings)' ? 'badge-info' : 
-                                                                                ($tx->status == 'Cancelled' || $tx->status == 'Rejected' ? 'badge-danger' : 'badge-secondary')) }}">
-                                                                                {{ $tx->status ?? 'N/A' }}
+                                                                                in_array($displayStatus, ['Disbursed', 'Completed']) ? 'badge-success' : 
+                                                                                ($displayStatus == 'Disbursed (with savings)' ? 'badge-info' : 
+                                                                                ($isTxCancelled || $displayStatus == 'Rejected' ? 'badge-danger' : 'badge-secondary')) }}">
+                                                                                @if($isTxCancelled)
+                                                                                    <i class="fas fa-ban mr-1"></i>
+                                                                                @endif
+                                                                                {{ $displayStatus }}
                                                                             </span>
                                                                         </div>
-                                                                        @if(!empty($tx->remarks))
-                                                                            <div class="mt-1 text-left small border-left pl-2 {{ $isCosSalary ? 'border-warning text-dark' : 'border-secondary text-muted' }}" style="font-size: 0.65rem; font-style: italic;">
-                                                                                <strong>{{ $isCosSalary ? 'COS' : 'DTrack' }}:</strong> {{ $tx->remarks }}
+
+                                                                        @if(!$isTxCancelled && $isCosConsolidated)
+                                                                            <div class="mt-1">
+                                                                                <span class="badge badge-primary px-2 py-0" style="font-size: 0.62rem;">
+                                                                                    <i class="fas fa-layer-group mr-1"></i>Consolidated
+                                                                                </span>
+                                                                            </div>
+                                                                        @endif
+
+                                                                        @if($isTxCancelled && !empty($tx->status_date))
+                                                                            <div class="text-danger mt-1" style="font-size: 0.62rem;">
+                                                                                Cancelled: {{ \Carbon\Carbon::parse($tx->status_date)->format('M d, Y') }}
+                                                                            </div>
+                                                                        @endif
+
+                                                                        @if(!empty($displayRemarks))
+                                                                            <div class="mt-1 text-left small border-left pl-2 {{ $isTxCancelled ? 'border-danger text-danger' : ($isCosSalary ? 'border-warning text-dark' : 'border-secondary text-muted') }}" style="font-size: 0.65rem; font-style: italic;">
+                                                                                <strong>{{ $isTxCancelled ? 'Reason' : ($isCosSalary ? 'COS' : 'DTrack') }}:</strong> {{ $displayRemarks }}
                                                                             </div>
                                                                         @endif
                                                                     </td>

@@ -12,20 +12,27 @@ class ProcurementTransaction extends Model
     protected $table = 'procurement_transactions';
 
     protected $fillable = [
+        'fund_transaction_id',
         'source_of_fund_id',
         'activity_id',
         'item_name',
         'end_user',
         'abc_allotment',
-        'po_particulars',
         'pr_number',
+        'po_particulars',
         'po_number',
+        'po_dtrack_no',
+        'po_amount',
+        'po_date',
+        'obligation_serial',
+        'obligation_amount',
+        'obligation_date',
+        'disbursement_amount',
+        'disbursement_date',
+        'status',
         'remarks',
         'caf_status',
         'caf_date',
-        'po_dtrack_no',
-        'po_amount',
-        'fund_transaction_id', // Added to link to Fund model
     ];
 
     public function activity()

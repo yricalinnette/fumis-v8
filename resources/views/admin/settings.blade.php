@@ -917,16 +917,14 @@
                 <div class="modal-body">
                     <div class="row">
                         {{-- Budget Line Item --}}
-                        <div class="col-md-6">
-                            <div class="form-group">
-                                <label class="font-weight-bold">Budget Line Item</label>
-                                <select name="budget_line_item_id" class="form-control select2-modal budget-line-dropdown" required style="width: 100%;">
-                                    <option value="">-- Select Line Item --</option>
-                                    @foreach($budgetLineItems as $item)
-                                        <option value="{{ $item->id }}">{{ $item->budget_line_item_name }}</option>
-                                    @endforeach
-                                </select>
-                            </div>
+                        <div class="form-group col-md-6">
+                            <label class="font-weight-bold">Budget Line Item</label>
+                            <select name="budget_line_item_id" class="form-control select2-modal budget-line-dropdown" style="width: 100%;" required>
+                                <option value="">-- Select Budget Line Item --</option>
+                                @foreach($budgetLineItems as $item)
+                                    <option value="{{ $item->id }}">{{ $item->budget_line_item_name }}</option>
+                                @endforeach
+                            </select>
                         </div>
 
                         {{-- Fund Source --}}
@@ -1696,10 +1694,9 @@
         });
     }
 
-    // Global function to handle opening and populating the Edit WFP Modal
     function openEditWfpModal(activityId, hasTransactions) {
         $.ajax({
-            url: '/settings/activities/' + activityId + '/edit',
+            url: `{{ url('/settings/activities') }}/${activityId}/edit`,
             type: 'GET',
             dataType: 'json',
             success: function(data) {
@@ -1726,21 +1723,22 @@
                     modal.find('input[name="end_date"]').val(data.end_date.split(' ')[0]);
                 }
 
-                // Populate and trigger Select2 fields
-                modal.find('select[name="budget_line_item_id"]').val(data.budget_line_item_id).trigger('change');
-                
+                // --- FIX: Temporarily enable, set value, trigger select2 ---
+                var lineItemSelect = modal.find('select[name="budget_line_item_id"]');
                 var fundSourceDropdown = modal.find('select[name="source_of_fund_id"]');
-                fundSourceDropdown.prop('disabled', false).val(data.source_of_fund_id).trigger('change');
+                var uacsDropdown = modal.find('select[name="uacs_code_id"]');
 
-                modal.find('select[name="uacs_code_id"]').val(data.uacs_code_id).trigger('change');
+                lineItemSelect.prop('disabled', false).val(data.budget_line_item_id).trigger('change.select2');
+                fundSourceDropdown.prop('disabled', false).val(data.source_of_fund_id).trigger('change.select2');
+                uacsDropdown.prop('disabled', false).val(data.uacs_code_id).trigger('change.select2');
 
                 // Objective Select2 Tagging
                 var objSelect = modal.find('select[name="objective"]');
                 if (objSelect.find("option[value='" + data.objective + "']").length === 0) {
                     var newOption = new Option(data.objective, data.objective, true, true);
-                    objSelect.append(newOption).trigger('change');
+                    objSelect.append(newOption).trigger('change.select2');
                 } else {
-                    objSelect.val(data.objective).trigger('change');
+                    objSelect.val(data.objective).trigger('change.select2');
                 }
 
                 // Quarter Targets Reset
@@ -1764,16 +1762,20 @@
                     }
                 });
 
-                // Lock financial inputs if activity has transactions
+                // Lock financial inputs if activity has transactions AFTER values are set
                 if (hasTransactions) {
-                    modal.find('select[name="budget_line_item_id"], select[name="source_of_fund_id"], select[name="uacs_code_id"], input[name="budget_amount"]').prop('disabled', true);
+                    lineItemSelect.prop('disabled', true);
+                    fundSourceDropdown.prop('disabled', true);
+                    // uacsDropdown.prop('disabled', true);
+                    modal.find('input[name="budget_amount"]').prop('disabled', true);
                 } else {
-                    modal.find('select[name="budget_line_item_id"], select[name="uacs_code_id"], input[name="budget_amount"]').prop('disabled', false);
+                    modal.find('input[name="budget_amount"]').prop('disabled', false);
                 }
 
                 modal.modal('show');
             },
             error: function(xhr) {
+                console.error(xhr.responseText);
                 alert('Failed to fetch activity details.');
             }
         });

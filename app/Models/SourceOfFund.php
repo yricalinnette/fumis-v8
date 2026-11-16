@@ -57,4 +57,9 @@ class SourceOfFund extends Model
         return $this->hasMany(FundMultiActivity::class, 'source_of_fund_id');
     }
 
+    public function cancellations()
+    {
+        return $this->hasMany(FundCancellation::class, 'source_of_fund_id');
+    }
+
 }

@@ -563,37 +563,183 @@
                     </td>
                     
                     <td class="col-amount text-right">
+                        @php
+                            $fundIds = $fund->breakdown->pluck('id')->filter();
+                            $amountProcTransactions = $fundIds->isNotEmpty()
+                                ? DB::table('procurement_transactions')->whereIn('fund_transaction_id', $fundIds)->get()
+                                : collect();
+
+                            $amountProcItems = $amountProcTransactions->isNotEmpty()
+                                ? DB::table('procurement_transaction_items')->whereIn('procurement_transaction_id', $amountProcTransactions->pluck('id'))->get()
+                                : collect();
+
+                            // Fetch NORSA adjustments (column is `amount`, not `norsa_amount`)
+                            $groupNorsaRecords = $fundIds->isNotEmpty()
+                                ? DB::table('norsa_adjustments')->whereIn('fund_id', $fundIds)->get()
+                                : collect();
+
+                            // Fetch COS salary disbursements & contracts for all breakdown items in this group
+                            $groupCosDisbursements = $fundIds->isNotEmpty()
+                                ? DB::table('cos_salary_disbursements')->whereIn('fund_id', $fundIds)->orderBy('column_index')->get()->groupBy('fund_id')
+                                : collect();
+
+                            $cosContractIds = $fund->breakdown->pluck('cos_contract_id')->filter()->unique();
+                            $groupCosContracts = $cosContractIds->isNotEmpty()
+                                ? DB::table('cos_contracts')->whereIn('id', $cosContractIds)->get()->keyBy('id')
+                                : collect();
+
+                            $amtTotalProcItems     = $amountProcItems->count();
+                            $amtDisbursedProcItems = $amountProcItems->filter(function($pi) {
+                                return in_array(strtolower(trim((string)($pi->status ?? ''))), ['disbursed', 'disbursed (with savings)', 'completed'])
+                                    || (float)($pi->disbursement_amount ?? 0) > 0;
+                            })->count();
+                            $amtObligatedProcItems = $amountProcItems->filter(function($pi) {
+                                return in_array(strtolower(trim((string)($pi->status ?? ''))), ['obligated', 'disbursed', 'disbursed (with savings)', 'completed'])
+                                    || (float)($pi->obligation_amount ?? 0) > 0;
+                            })->count();
+
+                            $isAmtPartialDisb = ($amtTotalProcItems > 0 && $amtDisbursedProcItems > 0 && $amtDisbursedProcItems < $amtTotalProcItems);
+                            $isAmtPartialOb   = ($amtTotalProcItems > 0 && $amtDisbursedProcItems === 0 && $amtObligatedProcItems > 0 && $amtObligatedProcItems < $amtTotalProcItems);
+
+                            // Evaluate each breakdown item's effective status and display amount
+                            $computedItems = [];
+                            $activeGroupTotal = 0;
+                            $hasConsolidatedCosGroup = false;
+
+                            foreach ($fund->breakdown as $bItem) {
+                                $bObAmount    = (float) ($bItem->obligation_amount ?? 0);
+                                $bDisbAmount  = (float) ($bItem->disbursement_amount ?? 0);
+                                $bProcAmount  = (float) ($bItem->amount ?? 0);
+                                $bNorsaAmount = (float) ($bItem->norsa_amount ?? $groupNorsaRecords->where('fund_id', $bItem->id)->sum('amount'));
+
+                                $isItemNorsaCancelled = ($bNorsaAmount > 0 && $bObAmount > 0 && abs($bObAmount - $bNorsaAmount) < 0.01);
+
+                                $itemProcTxIds = $amountProcTransactions->where('fund_transaction_id', $bItem->id)->pluck('id');
+                                $itemProcRows  = $itemProcTxIds->isNotEmpty()
+                                    ? $amountProcItems->whereIn('procurement_transaction_id', $itemProcTxIds)
+                                    : collect();
+
+                                $iTotal = $itemProcRows->count();
+                                $iDisb  = $itemProcRows->filter(function($pi) {
+                                    return in_array(strtolower(trim((string)($pi->status ?? ''))), ['disbursed', 'disbursed (with savings)', 'completed'])
+                                        || (float)($pi->disbursement_amount ?? 0) > 0;
+                                })->count();
+                                $iOblig = $itemProcRows->filter(function($pi) {
+                                    return in_array(strtolower(trim((string)($pi->status ?? ''))), ['obligated', 'disbursed', 'disbursed (with savings)', 'completed'])
+                                        || (float)($pi->obligation_amount ?? 0) > 0;
+                                })->count();
+
+                                // Resolve COS salary & consolidated disbursement completion
+                                $bCosRows     = $groupCosDisbursements->get($bItem->id, collect());
+                                $bCosContract = !empty($bItem->cos_contract_id) ? $groupCosContracts->get($bItem->cos_contract_id) : null;
+                                $isCosSalaryItem = ($bItem->remarks_salary ?? '') === 'Imported HR COS Salary/Wages'
+                                    || !empty($bItem->cos_contract_id)
+                                    || $bCosRows->isNotEmpty()
+                                    || in_array($bItem->status, ['Disbursed (with savings)']);
+
+                                $totalContractMonths = (int) ($bCosContract->total_months ?? 0);
+                                $totalCosPaid = $bCosRows->isNotEmpty() ? (float) $bCosRows->sum('amount') : $bDisbAmount;
+                                if ($totalCosPaid > 0) {
+                                    $bDisbAmount = $totalCosPaid;
+                                }
+                                $cosSavingsDiff = round($bObAmount - $bDisbAmount, 2);
+
+                                // Detect consolidated salary: fewer disbursement rows than contract months when completed,
+                                // OR disbursement amount exceeds 1.5x expected monthly rate (obligation / total_months)
+                                $expectedMonthlyRate = ($totalContractMonths > 0 && $bObAmount > 0) ? ($bObAmount / $totalContractMonths) : 0;
+                                $hasLargeConsolidatedPayout = $expectedMonthlyRate > 0 && $bCosRows->contains(fn($d) => (float) $d->amount >= ($expectedMonthlyRate * 1.4));
+
+                                $isCosCompleted = false;
+                                if ($isCosSalaryItem) {
+                                    $isCosCompleted = in_array($bItem->status, ['Completed', 'Disbursed (with savings)'])
+                                        || ($bCosContract && ($bCosContract->status ?? '') === 'Completed')
+                                        || ($totalContractMonths > 0 && (int) ($bItem->disbursed_months ?? 0) >= $totalContractMonths)
+                                        || ($bDisbAmount > 0 && $bNorsaAmount > 0 && abs($cosSavingsDiff - $bNorsaAmount) < 0.01)
+                                        || ($totalContractMonths > 0 && $hasLargeConsolidatedPayout && ($bCosRows->count() + 1) >= $totalContractMonths);
+                                }
+
+                                $isItemConsolidated = $isCosSalaryItem && (
+                                    $hasLargeConsolidatedPayout
+                                    || ($isCosCompleted && $totalContractMonths > 0 && $bCosRows->count() > 0 && $bCosRows->count() < $totalContractMonths)
+                                );
+
+                                if ($isItemConsolidated) {
+                                    $hasConsolidatedCosGroup = true;
+                                }
+
+                                $bStatus = $bItem->status;
+                                if ($isItemNorsaCancelled || strcasecmp((string)$bStatus, 'Cancelled') === 0) {
+                                    $bStatus = 'Cancelled';
+                                    $bDisplayAmt = 0;
+                                } else {
+                                    if ($isCosSalaryItem && $isCosCompleted) {
+                                        $bStatus = ($bDisbAmount > 0 && $cosSavingsDiff > 0.009)
+                                            ? 'Disbursed (with savings)'
+                                            : 'Completed';
+                                    } elseif ($iTotal > 0 && $iDisb > 0 && $iDisb < $iTotal) {
+                                        $bStatus = 'Partially Disbursed';
+                                    } elseif ($iTotal > 0 && $iDisb === 0 && $iOblig > 0 && $iOblig < $iTotal) {
+                                        $bStatus = 'Partially Obligated';
+                                    }
+
+                                    if (in_array($bStatus, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Partially Disbursed', 'Completed']) && $bDisbAmount > 0) {
+                                        $bDisplayAmt = $bDisbAmount;
+                                    } elseif (in_array($bStatus, ['Obligated', 'Partially Obligated']) && $bObAmount > 0) {
+                                        $bDisplayAmt = $bObAmount;
+                                    } else {
+                                        $bDisplayAmt = $bProcAmount;
+                                    }
+                                }
+
+                                $activeGroupTotal += $bDisplayAmt;
+                                $computedItems[$bItem->id] = [
+                                    'status'          => $bStatus,
+                                    'display_amount'  => $bDisplayAmt,
+                                    'is_cancelled'    => ($bStatus === 'Cancelled'),
+                                    'is_consolidated' => $isItemConsolidated,
+                                ];
+                            }
+
+                            $nonCancelledItems = collect($computedItems)->reject(fn($c) => $c['is_cancelled']);
+                            $allItemsCancelled = count($computedItems) > 0 && $nonCancelledItems->isEmpty();
+
+                            $effectiveGroupStatus = $fund->group_status;
+                            if ($allItemsCancelled) {
+                                $effectiveGroupStatus = 'Cancelled';
+                            } elseif ($isAmtPartialDisb && $effectiveGroupStatus !== 'Cancelled') {
+                                $effectiveGroupStatus = 'Partially Disbursed';
+                            } elseif ($isAmtPartialOb && $effectiveGroupStatus !== 'Cancelled') {
+                                $effectiveGroupStatus = 'Partially Obligated';
+                            } elseif ($nonCancelledItems->isNotEmpty()) {
+                                $allFullyDisbursed = $nonCancelledItems->every(fn($c) => in_array($c['status'], ['Disbursed', 'Disbursed (with savings)', 'Completed']));
+                                $anyDisbursed      = $nonCancelledItems->contains(fn($c) => in_array($c['status'], ['Disbursed', 'Disbursed (with savings)', 'Completed', 'Disbursed (Partially)', 'Partially Disbursed']));
+
+                                if ($allFullyDisbursed) {
+                                    $hasSavings = $nonCancelledItems->contains(fn($c) => $c['status'] === 'Disbursed (with savings)');
+                                    $effectiveGroupStatus = $hasSavings ? 'Disbursed (with savings)' : 'Disbursed';
+                                } elseif ($anyDisbursed && in_array($effectiveGroupStatus, ['Obligated', 'Partially Obligated', 'Disbursed (Partially)', 'Partially Disbursed'])) {
+                                    $effectiveGroupStatus = 'Partially Disbursed';
+                                }
+                            }
+
+                            $displayGroupTotal = ($effectiveGroupStatus === 'Cancelled') ? 0 : $activeGroupTotal;
+                        @endphp
+
                         @if(count($fund->breakdown) > 1)
                             <div class="mb-1" style="border-bottom: 1px dashed #ddd; padding-bottom: 2px;">
                                 @foreach($fund->breakdown as $item)
+                                    @php
+                                        $cItem = $computedItems[$item->id] ?? ['status' => $item->status, 'display_amount' => $item->amount ?? 0, 'is_cancelled' => false, 'is_consolidated' => false];
+                                    @endphp
                                     <div class="text-muted" style="font-size: 0.7rem; line-height: 1;">
                                         {{ $item->source_name }}: 
-                                        <span class="font-italic">
-                                            @php
-                                                /**
-                                                 * Updated Logic Hierarchy:
-                                                 * 1. If status is Disbursed/Completed -> Priority: disbursed_amount
-                                                 * 2. If status is Obligated -> Priority: obligation_amount
-                                                 * 3. Fallback -> amount (Processed)
-                                                 */
-                                                $status = $item->status;
-                                                $valDisbursed = $item->disbursement_amount ?? 0;
-                                                $valObligated = $item->obligation_amount ?? 0;
-                                                $valProcessed = $item->amount ?? 0;
-
-                                                if (($status === 'Disbursed' || $status === 'Completed') && $valDisbursed > 0) {
-                                                    $displayAmount = $valDisbursed;
-                                                } elseif ($status === 'Obligated' && $valObligated > 0) {
-                                                    $displayAmount = $valObligated;
-                                                } else {
-                                                    $displayAmount = $valProcessed;
-                                                }
-                                            @endphp
-                                            ₱{{ number_format($displayAmount, 2) }}
+                                        <span class="font-italic {{ $cItem['is_cancelled'] ? 'text-danger' : '' }}">
+                                            ₱{{ number_format($cItem['display_amount'], 2) }}
+                                            @if($cItem['is_cancelled']) <small>(Cancelled)</small> @endif
+                                            @if(!$cItem['is_cancelled'] && $cItem['is_consolidated']) <small class="text-primary font-weight-bold">(Consolidated)</small> @endif
                                         </span>
 
-                                        {{-- Warning icon if it's Obligated but the amount hasn't synced yet --}}
-                                        @if($item->status == 'Obligated' && (!$item->obligation_amount || $item->obligation_amount <= 0))
+                                        @if(!$cItem['is_cancelled'] && in_array($cItem['status'], ['Obligated', 'Partially Obligated']) && (!$item->obligation_amount || $item->obligation_amount <= 0))
                                             <i class="fas fa-exclamation-circle text-danger" title="Pending Sync"></i>
                                         @endif
                                     </div>
@@ -602,20 +748,36 @@
                         @endif
 
                         <div class="font-weight-bold" style="font-size: 1rem;">
-                            {{-- Display Amount based on Status Color --}}
-                            @if($fund->group_status == 'Disbursed' || $fund->group_status == 'Completed')
-                                <span class="text-success">₱{{ number_format($fund->total_amount, 2) }}</span>
-                                <div class="text-xs text-muted" style="font-size: 0.6rem;">(DISBURSED)</div>
-                            @elseif($fund->group_status == 'Obligated')
-                                <span class="text-primary">₱{{ number_format($fund->total_amount, 2) }}</span>
+                            @if($effectiveGroupStatus === 'Cancelled')
+                                <span class="text-danger">₱0.00</span>
+                                <div class="text-xs text-danger font-weight-bold" style="font-size: 0.6rem;">(CANCELLED)</div>
+                            @elseif($effectiveGroupStatus === 'Disbursed (with savings)')
+                                <span class="text-success">₱{{ number_format($displayGroupTotal, 2) }}</span>
+                                <div class="text-xs text-info font-weight-bold" style="font-size: 0.6rem;">
+                                    (DISBURSED WITH SAVINGS{{ $hasConsolidatedCosGroup ? ' • CONSOLIDATED' : '' }})
+                                </div>
+                            @elseif(in_array($effectiveGroupStatus, ['Disbursed', 'Completed']))
+                                <span class="text-success">₱{{ number_format($displayGroupTotal, 2) }}</span>
+                                <div class="text-xs text-muted" style="font-size: 0.6rem;">
+                                    (DISBURSED{{ $hasConsolidatedCosGroup ? ' • CONSOLIDATED' : '' }})
+                                </div>
+                            @elseif(in_array($effectiveGroupStatus, ['Partially Disbursed', 'Disbursed (Partially)']))
+                                <span class="text-warning">₱{{ number_format($displayGroupTotal, 2) }}</span>
+                                <div class="text-xs text-warning font-weight-bold" style="font-size: 0.6rem;">
+                                    (PARTIALLY DISBURSED{{ $hasConsolidatedCosGroup ? ' • CONSOLIDATED' : '' }})
+                                </div>
+                            @elseif($effectiveGroupStatus == 'Obligated')
+                                <span class="text-primary">₱{{ number_format($displayGroupTotal, 2) }}</span>
                                 <div class="text-xs text-muted" style="font-size: 0.6rem;">(OBLIGATED)</div>
+                            @elseif($effectiveGroupStatus == 'Partially Obligated')
+                                <span class="text-warning">₱{{ number_format($displayGroupTotal, 2) }}</span>
+                                <div class="text-xs text-warning font-weight-bold" style="font-size: 0.6rem;">(PARTIALLY OBLIGATED)</div>
                             @else
-                                <span>₱{{ number_format($fund->total_amount, 2) }}</span>
+                                <span>₱{{ number_format($displayGroupTotal, 2) }}</span>
                                 <div class="text-xs text-muted" style="font-size: 0.6rem;">(Processed)</div>
                             @endif
 
-                            {{-- ALWAYS show Awaiting Sync if any part of the group needs it --}}
-                            @if(!$fund->is_fully_synced)
+                            @if(!$fund->is_fully_synced && $effectiveGroupStatus !== 'Cancelled')
                                 <div class="text-xs text-danger font-italic mt-1" style="font-size: 0.6rem;">
                                     <i class="fas fa-sync fa-spin"></i> Awaiting sync
                                 </div>
@@ -627,7 +789,7 @@
                         @php
                             // 1. Determine Merged vs. Detailed View Mode
                             $hasSignificantStatus = $fund->breakdown->contains(function($item) {
-                                return in_array($item->status, ['Obligated', 'Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed', 'Cancelled']);
+                                return in_array($item->status, ['Obligated', 'Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Partially Disbursed', 'Partially Obligated', 'Completed', 'Cancelled']);
                             });
                             $firstStatus = $fund->breakdown->first()->status ?? 'N/A';
                             $allSameStatus = $fund->breakdown->every('status', $firstStatus);
@@ -655,25 +817,53 @@
 
                         @if(!$hasSignificantStatus && $allSameStatus)
                             {{-- ================= MERGED VIEW (EARLY STAGE) ================= --}}
+                            @php
+                                $isDisbursedState = in_array($firstStatus, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Partially Disbursed', 'Completed']);
+                                $allProcurements = $fund->breakdown->flatMap(function($item) {
+                                    return DB::table('procurement_transactions')->where('fund_transaction_id', $item->id)->get();
+                                });
+
+                                // Fetch NORSA particulars for Merged View if applicable
+                                $mergedNorsaParticulars = collect();
+                                if (isset($fund->has_norsa) && $fund->has_norsa) {
+                                    $fundIds = $fund->breakdown->pluck('id')->filter()->all();
+                                    if (!empty($fundIds)) {
+                                        $mergedNorsaParticulars = DB::table('norsa_adjustments')
+                                            ->whereIn('fund_id', $fundIds)
+                                            ->pluck('particulars')
+                                            ->filter()
+                                            ->unique();
+                                    }
+                                }
+
+                                // Determine Overall Merged Status (Convert 'Routed' to 'Tagged as CAF' / 'Tagged as PO' if procurement exists)
+                                $overallMergedStatus = $firstStatus;
+                                if ($allProcurements->isNotEmpty() && in_array($firstStatus, ['Routed', 'For CAF/Obligation', 'N/A', ''])) {
+                                    $allMergedProcItems = $allProcurements->flatMap(function($pt) {
+                                        return DB::table('procurement_transaction_items')->where('procurement_transaction_id', $pt->id)->get();
+                                    });
+
+                                    $hasPo = $allProcurements->contains(function($pt) {
+                                        return ($pt->caf_status ?? '') === 'Tagged as PO' || !empty($pt->po_number) || (float)($pt->po_amount ?? 0) > 0;
+                                    }) || $allMergedProcItems->contains(function($pi) {
+                                        return !empty($pi->po_number) || (float)($pi->po_amount ?? 0) > 0 || strcasecmp(trim((string)($pi->status ?? '')), 'Tagged as PO') === 0;
+                                    });
+
+                                    $overallMergedStatus = $hasPo ? 'Tagged as PO' : 'Tagged as CAF';
+                                }
+                            @endphp
+
                             <div class="text-left">
                                 <span class="badge {{ 
-                                    $firstStatus == 'Routed' ? 'badge-primary' : 
-                                    ($firstStatus == 'For CAF/Obligation' ? 'badge-warning' : 'badge-info') 
+                                    $overallMergedStatus == 'Tagged as CAF' ? 'badge-warning' : 
+                                    ($overallMergedStatus == 'Tagged as PO' ? 'badge-info' : 
+                                    ($overallMergedStatus == 'Routed' ? 'badge-primary' : 
+                                    ($overallMergedStatus == 'For CAF/Obligation' ? 'badge-warning' : 'badge-info'))) 
                                 }}">
-                                    {{ $firstStatus }}
+                                    {{ $overallMergedStatus }}
                                 </span>
 
                                 {{-- Procurable / PO / CAF Tracking & Itemized Breakdown (Merged View) --}}
-                                @php
-                                    $isDisbursedState = in_array($firstStatus, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']);
-                                    $allProcurements = $fund->breakdown->flatMap(function($item) {
-                                        return DB::table('procurement_transactions')->where('fund_transaction_id', $item->id)->get();
-                                    });
-                                    $mergedPoCount = $allProcurements->where('caf_status', 'Tagged as PO')->count();
-                                    $mergedTotal = $allProcurements->count();
-                                    $mergedPoNumbers = $allProcurements->pluck('po_number')->filter()->unique()->implode(', ');
-                                    $mergedDtrackNos = $allProcurements->pluck('po_dtrack_no')->filter()->unique()->implode(', ');
-                                @endphp
                                 @if(!$isDisbursedState && $allProcurements->isNotEmpty())
                                     <div class="mt-2 p-2 bg-light border border-secondary rounded shadow-sm" style="max-width: 380px;">
                                         <div class="text-xs font-weight-bold text-navy mb-1 border-bottom pb-1">
@@ -701,10 +891,40 @@
                                                             <div class="pl-2 border-left border-secondary">
                                                                 @foreach($procItems as $pItem)
                                                                     @php
-                                                                        $isItemPo = (!empty($pItem->po_number) || (!empty($pItem->po_amount) && $pItem->po_amount > 0));
-                                                                        $itemStatusText = $isItemPo ? 'Tagged as PO' : 'Tagged as CAF';
-                                                                        $itemBadgeClass = $isItemPo ? 'badge-success' : 'badge-warning';
-                                                                        $displayItemAmount = $isItemPo ? $pItem->po_amount : ($pItem->item_amount ?? 0);
+                                                                        $pCafAmt  = (float) ($pItem->item_amount ?? 0);
+                                                                        $pPoAmt   = (float) ($pItem->po_amount ?? 0);
+                                                                        $pObAmt   = (float) ($pItem->obligation_amount ?? 0);
+                                                                        $pDisbAmt = (float) ($pItem->disbursement_amount ?? 0);
+                                                                        $rawItemStatus = trim((string) ($pItem->status ?? ''));
+
+                                                                        $isItemPo = (!empty($pItem->po_number) || $pPoAmt > 0 || strcasecmp($rawItemStatus, 'Tagged as PO') === 0);
+
+                                                                        if ($pDisbAmt > 0 || in_array(strtolower($rawItemStatus), ['disbursed', 'disbursed (with savings)', 'completed'])) {
+                                                                            $itemStatusText = ($pObAmt > 0 && $pDisbAmt < $pObAmt) ? 'Disbursed (with savings)' : 'Disbursed';
+                                                                            $itemBadgeClass = 'badge-success';
+                                                                        } elseif ($pObAmt > 0 || strcasecmp($rawItemStatus, 'Obligated') === 0) {
+                                                                            $itemStatusText = 'Obligated';
+                                                                            $itemBadgeClass = 'bg-orange text-white';
+                                                                        } elseif (strcasecmp($rawItemStatus, 'Cancelled') === 0) {
+                                                                            $itemStatusText = 'Cancelled';
+                                                                            $itemBadgeClass = 'badge-danger';
+                                                                        } elseif ($isItemPo) {
+                                                                            $itemStatusText = 'Tagged as PO';
+                                                                            $itemBadgeClass = 'badge-info';
+                                                                        } else {
+                                                                            $itemStatusText = 'Tagged as CAF';
+                                                                            $itemBadgeClass = 'badge-warning';
+                                                                        }
+
+                                                                        if ($pDisbAmt > 0) {
+                                                                            $displayItemAmount = $pDisbAmt;
+                                                                        } elseif ($pObAmt > 0) {
+                                                                            $displayItemAmount = $pObAmt;
+                                                                        } elseif ($isItemPo && $pPoAmt > 0) {
+                                                                            $displayItemAmount = $pPoAmt;
+                                                                        } else {
+                                                                            $displayItemAmount = $pCafAmt;
+                                                                        }
                                                                     @endphp
                                                                     <div class="mb-1 pb-1 border-bottom border-light-subtle">
                                                                         <div class="d-flex justify-content-between align-items-center text-dark">
@@ -716,7 +936,7 @@
                                                                                 @if(!empty($pItem->po_number)) PO: {{ $pItem->po_number }} @endif
                                                                                 @if(!empty($pItem->po_dtrack_no)) | DTrack: {{ $pItem->po_dtrack_no }} @endif
                                                                             </span>
-                                                                            <span class="badge {{ $itemBadgeClass }}" style="font-size: 0.50rem;">
+                                                                            <span class="badge {{ $itemBadgeClass }}" style="font-size: 0.52rem;">
                                                                                 {{ $itemStatusText }}
                                                                             </span>
                                                                         </div>
@@ -731,9 +951,19 @@
                                                         </li>
                                                     @else
                                                         @php
-                                                            $isSinglePo = ($parentCafStatus === 'Tagged as PO' || !empty($pt->po_number));
-                                                            $singleStatusText = $isSinglePo ? 'Tagged as PO' : 'Tagged as CAF';
-                                                            $singleBadgeClass = $isSinglePo ? 'badge-success' : 'badge-warning';
+                                                            $rawSingleStatus = trim((string) ($pt->status ?? ''));
+                                                            $isSinglePo = ($parentCafStatus === 'Tagged as PO' || !empty($pt->po_number) || (!empty($pt->po_amount) && $pt->po_amount > 0) || strcasecmp($rawSingleStatus, 'Tagged as PO') === 0);
+                                                            
+                                                            if (strcasecmp($rawSingleStatus, 'Cancelled') === 0) {
+                                                                $singleStatusText = 'Cancelled';
+                                                                $singleBadgeClass = 'badge-danger';
+                                                            } elseif ($isSinglePo) {
+                                                                $singleStatusText = 'Tagged as PO';
+                                                                $singleBadgeClass = 'badge-info';
+                                                            } else {
+                                                                $singleStatusText = 'Tagged as CAF';
+                                                                $singleBadgeClass = 'badge-warning';
+                                                            }
                                                             $displaySingleAmount = (!empty($pt->po_amount) && $pt->po_amount > 0) ? $pt->po_amount : ($pt->abc_allotment ?? 0);
                                                         @endphp
                                                         <li class="mb-1.5 pb-1 border-bottom border-light d-flex justify-content-between align-items-center">
@@ -768,6 +998,12 @@
                                             <i class="fas fa-file-invoice-dollar mr-1"></i> NORSA Savings (₱{{ number_format($fund->total_norsa, 2) }})
                                         </span>
                                     </div>
+                                    @foreach($mergedNorsaParticulars as $norsaPart)
+                                        <div class="mt-1 text-danger small border-left border-danger pl-2" style="font-style: italic; background-color: #fff8f8;">
+                                            <i class="fas fa-file-invoice-dollar mr-1 text-danger" style="font-size: 0.7rem;"></i>
+                                            <strong class="text-danger">NORSA Remarks:</strong> {{ $norsaPart }}
+                                        </div>
+                                    @endforeach
                                 @endif
 
                                 {{-- COS Contract Duration Badge (Merged View) --}}
@@ -830,16 +1066,36 @@
                                     $obDate = $item->obligation_date ?? $fund->obligation_date ?? null;
                                     $disbDate = $item->disbursement_date ?? $fund->disbursement_date ?? null;
                                     
-                                    // Saved obligation_amount in DB (which is already net of NORSA)
-                                    $dbObAmount = $item->obligation_amount ?? $fund->obligation_amount ?? 0;
-                                    $disbAmount = $item->disbursement_amount ?? $fund->disbursement_amount ?? 0;
-                                    $norsaAmount = $item->norsa_amount ?? $fund->total_norsa ?? 0;
-                                    $hasNorsa = (isset($item->has_norsa) && $item->has_norsa) || (isset($fund->has_norsa) && $fund->has_norsa);
+                                    // Saved obligation_amount in DB is the gross/actual obligated amount
+                                    $dbObAmount = (float) ($item->obligation_amount ?? $fund->obligation_amount ?? 0);
+                                    $disbAmount = (float) ($item->disbursement_amount ?? $fund->disbursement_amount ?? 0);
 
-                                    // Original Gross Obligation before NORSA deduction
-                                    $originalObAmount = $hasNorsa ? ($dbObAmount + $norsaAmount) : $dbObAmount;
-                                    // Net Obligation after NORSA deobligation
-                                    $netObAmount = $dbObAmount;
+                                    // Query NORSA records for this breakdown item (column is `amount`)
+                                    $norsaQuery = DB::table('norsa_adjustments')->where('fund_id', $item->id);
+                                    if (!empty($item->obligation_serial)) {
+                                        $norsaQuery->orWhere('obligation_serial', $item->obligation_serial);
+                                    }
+                                    $itemNorsaRows = $norsaQuery->get();
+
+                                    $norsaAmount = (float) ($item->norsa_amount ?? $itemNorsaRows->sum('amount') ?? $fund->total_norsa ?? 0);
+                                    $hasNorsa = ((isset($item->has_norsa) && $item->has_norsa) || (isset($fund->has_norsa) && $fund->has_norsa) || $norsaAmount > 0);
+
+                                    // Check if NORSA equals Obligation Amount (100% deobligated / Cancelled)
+                                    $isCancelledByNorsa = ($hasNorsa && $norsaAmount > 0 && $dbObAmount > 0 && abs($dbObAmount - $norsaAmount) < 0.01);
+
+                                    // Fetch NORSA Particulars from norsa_adjustments
+                                    $itemNorsaParticulars = $hasNorsa
+                                        ? $itemNorsaRows->pluck('particulars')->filter()->unique()
+                                        : collect();
+
+                                    // Original Gross Obligation (from funds.obligation_amount) & Net Obligation (Obligation - NORSA)
+                                    if ($isCancelledByNorsa) {
+                                        $originalObAmount = $dbObAmount;
+                                        $netObAmount = 0;
+                                    } else {
+                                        $originalObAmount = $dbObAmount;
+                                        $netObAmount = $hasNorsa ? max(0, round($dbObAmount - $norsaAmount, 2)) : $dbObAmount;
+                                    }
 
                                     // -------------------------------------------------------------
                                     // PRE-COMPUTE ACCURATE MONTH DISBURSEMENT SPAN BEFORE BADGES
@@ -895,13 +1151,84 @@
                                         $isFullyDisbursedContract = false;
                                     }
 
+                                    // -------------------------------------------------------------
+                                    // FETCH PROCUREMENT TRANSACTIONS & ITEMS EARLY TO DETERMINE PARTIAL STATUS & SAVINGS
+                                    // -------------------------------------------------------------
+                                    $procTransactions = DB::table('procurement_transactions')
+                                        ->where('fund_transaction_id', $item->id)
+                                        ->get();
+
+                                    $allBreakdownProcItems = $procTransactions->flatMap(function($pt) {
+                                        return DB::table('procurement_transaction_items')
+                                            ->where('procurement_transaction_id', $pt->id)
+                                            ->get();
+                                    });
+
+                                    $totalProcItemsCount     = $allBreakdownProcItems->count();
+                                    $disbursedProcItemsCount = $allBreakdownProcItems->filter(function($pi) {
+                                        return in_array($pi->status, ['Disbursed', 'Disbursed (with savings)', 'Completed']) || (float)($pi->disbursement_amount ?? 0) > 0;
+                                    })->count();
+                                    $obligatedProcItemsCount = $allBreakdownProcItems->filter(function($pi) {
+                                        return in_array($pi->status, ['Obligated', 'Disbursed', 'Disbursed (with savings)', 'Completed']) || (float)($pi->obligation_amount ?? 0) > 0;
+                                    })->count();
+
+                                    $isPartialProcDisbursement = ($totalProcItemsCount > 0 && $disbursedProcItemsCount > 0 && $disbursedProcItemsCount < $totalProcItemsCount);
+                                    $isPartialProcObligation   = ($totalProcItemsCount > 0 && $disbursedProcItemsCount === 0 && $obligatedProcItemsCount > 0 && $obligatedProcItemsCount < $totalProcItemsCount);
+
                                     // Dynamically evaluate status for badges
                                     $displayStatus = $item->status;
-                                    if ($isCosItem && $isFullyDisbursedContract && in_array($item->status, ['Disbursed (Partially)', 'Disbursed'])) {
+                                    if ($isCancelledByNorsa || strcasecmp((string)$displayStatus, 'Cancelled') === 0) {
+                                        $displayStatus = 'Cancelled';
+                                    } elseif ($isPartialProcDisbursement) {
+                                        $displayStatus = 'Partially Disbursed';
+                                    } elseif ($isPartialProcObligation) {
+                                        $displayStatus = 'Partially Obligated';
+                                    } elseif ($isCosItem && $isFullyDisbursedContract && in_array($item->status, ['Disbursed (Partially)', 'Disbursed'])) {
                                         $displayStatus = $hasNorsa ? 'Disbursed (with savings)' : 'Disbursed';
+                                    } elseif ($procTransactions->isNotEmpty() && in_array($displayStatus, ['Routed', 'For CAF/Obligation', ''])) {
+                                        $hasItemPo = $procTransactions->contains(function($pt) {
+                                            return ($pt->caf_status ?? '') === 'Tagged as PO' || !empty($pt->po_number) || (float)($pt->po_amount ?? 0) > 0;
+                                        }) || $allBreakdownProcItems->contains(function($pi) {
+                                            return !empty($pi->po_number) || (float)($pi->po_amount ?? 0) > 0 || strcasecmp(trim((string)($pi->status ?? '')), 'Tagged as PO') === 0;
+                                        });
+                                        $displayStatus = $hasItemPo ? 'Tagged as PO' : 'Tagged as CAF';
                                     }
 
-                                    $isItemDisbursed = in_array($displayStatus, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']);
+                                    $isItemCancelled = ($displayStatus === 'Cancelled');
+                                    $isItemDisbursed = in_array($displayStatus, ['Disbursed', 'Disbursed (with savings)', 'Disbursed (Partially)', 'Partially Disbursed', 'Completed']);
+
+                                    // Compute CAF & Obligation Savings for Processed Procurement Items (Zero if Cancelled)
+                                    $procCafSavings   = 0.0;
+                                    $procObligSavings = 0.0;
+                                    if (!$isItemCancelled) {
+                                        if ($totalProcItemsCount > 0) {
+                                            foreach ($allBreakdownProcItems as $pi) {
+                                                $piCaf  = (float) ($pi->item_amount ?? 0);
+                                                $piOb   = (float) ($pi->obligation_amount ?? 0);
+                                                $piDisb = (float) ($pi->disbursement_amount ?? 0);
+
+                                                if ($piOb > 0 && $piCaf > $piOb) {
+                                                    $procCafSavings += ($piCaf - $piOb);
+                                                }
+                                                if ($piDisb > 0 && $piOb > $piDisb) {
+                                                    $procObligSavings += ($piOb - $piDisb);
+                                                }
+                                            }
+                                        } elseif ($procTransactions->isNotEmpty()) {
+                                            foreach ($procTransactions as $pt) {
+                                                $ptCaf  = (float) ($pt->abc_allotment ?? $item->routed_amount ?? $item->amount ?? 0);
+                                                $ptOb   = (float) ($pt->obligation_amount ?? $netObAmount);
+                                                $ptDisb = (float) ($pt->disbursement_amount ?? $disbAmount);
+
+                                                if ($ptOb > 0 && $ptCaf > $ptOb) {
+                                                    $procCafSavings += ($ptCaf - $ptOb);
+                                                }
+                                                if ($ptDisb > 0 && $ptOb > $ptDisb) {
+                                                    $procObligSavings += ($ptOb - $ptDisb);
+                                                }
+                                            }
+                                        }
+                                    }
                                 @endphp
 
                                 <div class="allocation-row {{ !$loop->last ? 'mb-3 border-bottom pb-2' : '' }}">
@@ -913,113 +1240,22 @@
                                     <span class="badge {{ 
                                         in_array($displayStatus, ['Disbursed', 'Completed']) ? 'badge-success' : 
                                         ($displayStatus == 'Disbursed (with savings)' ? 'badge-info' : 
-                                        ($displayStatus == 'Disbursed (Partially)' ? 'badge-warning' : 
+                                        (in_array($displayStatus, ['Disbursed (Partially)', 'Partially Disbursed', 'Partially Obligated', 'Tagged as CAF']) ? 'badge-warning' : 
                                         ($displayStatus == 'Cancelled' ? 'badge-danger' : 
                                         ($displayStatus == 'Routed' ? 'badge-primary' : 
                                         ($displayStatus == 'For CAF/Obligation' ? 'badge-warning' : 
                                         ($displayStatus == 'Obligated' ? 'bg-orange text-white' : 'badge-info'))))))
                                     }}">
                                         {{ $displayStatus }}
+                                        @if(!$isItemCancelled && $totalProcItemsCount > 0 && ($isPartialProcDisbursement || $isPartialProcObligation))
+                                            ({{ $disbursedProcItemsCount > 0 ? $disbursedProcItemsCount : $obligatedProcItemsCount }}/{{ $totalProcItemsCount }} items)
+                                        @endif
                                     </span>
 
-                                    {{-- Procurable / CAF / PO Transactions & Items Breakdown --}}
-                                    @php
-                                        $procTransactions = DB::table('procurement_transactions')
-                                            ->where('fund_transaction_id', $item->id)
-                                            ->get();
-                                    @endphp
-
-                                    @if(!$isItemDisbursed && $procTransactions->isNotEmpty())
-                                        <div class="mt-2 p-2 bg-light border border-secondary rounded shadow-sm" style="max-width: 380px;">
-                                            <div class="text-xs font-weight-bold text-navy mb-1 border-bottom pb-1">
-                                                <i class="fas fa-boxes mr-1"></i> Procurement Items Breakdown
-                                            </div>
-                                            
-                                            <div class="mt-1 text-xs">
-                                                <ul class="list-unstyled mb-0 pl-2 border-left border-primary">
-                                                    @foreach($procTransactions as $pt)
-                                                        @php
-                                                            $parentCafStatus = $pt->caf_status ?? 'Tagged as CAF';
-                                                            
-                                                            $procItems = DB::table('procurement_transaction_items')
-                                                                ->where('procurement_transaction_id', $pt->id)
-                                                                ->get();
-                                                        @endphp
-
-                                                        @if($procItems->isNotEmpty())
-                                                            <li class="mb-2 pb-1 border-bottom border-light">
-                                                                <div class="d-flex justify-content-between align-items-center mb-1">
-                                                                    <span class="font-weight-bold text-dark">
-                                                                        <i class="fas fa-file-alt text-muted mr-1"></i> {{ $pt->item_name ?? $pt->pr_number ?? 'Procurement Ref' }}
-                                                                    </span>
-                                                                </div>
-                                                                <div class="pl-2 border-left border-secondary">
-                                                                    @foreach($procItems as $pItem)
-                                                                        @php
-                                                                            $isItemPo = (!empty($pItem->po_number) || (!empty($pItem->po_amount) && $pItem->po_amount > 0));
-                                                                            $itemStatusText = $isItemPo ? 'Tagged as PO' : 'Tagged as CAF';
-                                                                            $itemBadgeClass = $isItemPo ? 'badge-success' : 'badge-warning';
-                                                                            $displayItemAmount = $isItemPo ? $pItem->po_amount : ($pItem->item_amount ?? 0);
-                                                                        @endphp
-                                                                        <div class="mb-1 pb-1 border-bottom border-light-subtle">
-                                                                            <div class="d-flex justify-content-between align-items-center text-dark">
-                                                                                <span><i class="fas fa-cube mr-1 text-muted"></i> {{ $pItem->pr_item_name ?? 'Item' }}</span>
-                                                                                <span class="font-weight-bold">₱{{ number_format($displayItemAmount, 2) }}</span>
-                                                                            </div>
-                                                                            <div class="d-flex justify-content-between align-items-center mt-0.5" style="font-size: 0.60rem;">
-                                                                                <span class="text-muted">
-                                                                                    @if(!empty($pItem->po_number)) PO: {{ $pItem->po_number }} @endif
-                                                                                    @if(!empty($pItem->po_dtrack_no)) | DTrack: {{ $pItem->po_dtrack_no }} @endif
-                                                                                </span>
-                                                                                <span class="badge {{ $itemBadgeClass }}" style="font-size: 0.50rem;">
-                                                                                    {{ $itemStatusText }}
-                                                                                </span>
-                                                                            </div>
-                                                                        </div>
-                                                                    @endforeach
-                                                                </div>
-                                                                @if(!empty($pt->po_dtrack_no))
-                                                                    <div class="text-muted mt-0.5 pl-2" style="font-size: 0.62rem;">
-                                                                        <i class="fas fa-route text-secondary mr-1"></i> DTrack: {{ $pt->po_dtrack_no }}
-                                                                    </div>
-                                                                @endif
-                                                            </li>
-                                                        @else
-                                                            @php
-                                                                $isSinglePo = ($parentCafStatus === 'Tagged as PO' || !empty($pt->po_number));
-                                                                $singleStatusText = $isSinglePo ? 'Tagged as PO' : 'Tagged as CAF';
-                                                                $singleBadgeClass = $isSinglePo ? 'badge-success' : 'badge-warning';
-                                                                $displaySingleAmount = (!empty($pt->po_amount) && $pt->po_amount > 0) ? $pt->po_amount : ($pt->abc_allotment ?? 0);
-                                                            @endphp
-                                                            <li class="mb-1.5 pb-1 border-bottom border-light d-flex justify-content-between align-items-center">
-                                                                <div>
-                                                                    <span class="font-weight-bold text-dark">
-                                                                        <i class="fas fa-cube text-muted mr-1"></i> {{ $pt->item_name ?? 'Procurement Item' }}
-                                                                    </span>
-                                                                    <div class="text-muted pl-3" style="font-size: 0.62rem;">
-                                                                        <i class="fas fa-route text-secondary mr-0.5"></i> DTrack: {{ $pt->po_dtrack_no ?? 'N/A' }}
-                                                                    </div>
-                                                                </div>
-                                                                <div class="text-right">
-                                                                    <span class="badge {{ $singleBadgeClass }} d-block mb-0.5" style="font-size: 0.55rem;">
-                                                                        {{ $singleStatusText }} @if(!empty($pt->po_number)) (PO: {{ $pt->po_number }}) @endif
-                                                                    </span>
-                                                                    <span class="font-weight-bold text-dark" style="font-size: 0.7rem;">
-                                                                        ₱{{ number_format($displaySingleAmount, 2) }}
-                                                                    </span>
-                                                                </div>
-                                                            </li>
-                                                        @endif
-                                                    @endforeach
-                                                </ul>
-                                            </div>
-                                        </div>
-                                    @endif
-
-                                    {{-- NORSA SAVINGS BADGE TAG --}}
+                                    {{-- NORSA BADGE TAG --}}
                                     @if($hasNorsa)
-                                        <span class="badge badge-danger shadow-sm ml-1" title="NORSA savings adjustment recorded">
-                                            <i class="fas fa-file-invoice-dollar mr-1"></i> NORSA: (₱{{ number_format($norsaAmount, 2) }})
+                                        <span class="badge badge-danger shadow-sm ml-1" title="{{ $isCancelledByNorsa ? 'Full obligation cancelled via NORSA' : 'NORSA savings adjustment recorded' }}">
+                                            <i class="fas fa-file-invoice-dollar mr-1"></i> {{ $isCancelledByNorsa ? 'NORSA Cancelled' : 'NORSA' }}: (₱{{ number_format($norsaAmount, 2) }})
                                         </span>
                                     @endif
 
@@ -1039,8 +1275,24 @@
                                     @endif
 
                                     <div class="small mt-1">
-                                        {{-- OBLIGATED STATE --}}
-                                        @if($displayStatus == 'Obligated')
+                                        {{-- CANCELLED STATE --}}
+                                        @if($isItemCancelled)
+                                            @if($obDate)
+                                                <div class="text-muted" style="font-size: 0.72rem;">
+                                                    <i class="far fa-calendar-times mr-1"></i> Prior Oblig: {{ \Carbon\Carbon::parse($obDate)->format('M d, Y') }}
+                                                </div>
+                                            @endif
+                                            @if($originalObAmount > 0)
+                                                <div class="text-muted mt-0.5" style="font-size: 0.72rem;">
+                                                    Prior Obligation: <del>₱{{ number_format($originalObAmount, 2) }}</del>
+                                                </div>
+                                                <div class="text-danger font-weight-bold mt-0.5" style="font-size: 0.72rem;">
+                                                    Net Obligation: ₱0.00 (Cancelled via NORSA)
+                                                </div>
+                                            @endif
+
+                                        {{-- OBLIGATED / PARTIALLY OBLIGATED STATE --}}
+                                        @elseif(in_array($displayStatus, ['Obligated', 'Partially Obligated']))
                                             @if(empty($originalObAmount) || $originalObAmount == 0)
                                                 <div class="text-danger font-italic">
                                                     <i class="fas fa-sync fa-spin mr-1" style="font-size: 0.7rem;"></i> Awaiting sync to RAODS
@@ -1058,12 +1310,18 @@
 
                                                 @if($hasNorsa)
                                                     <div class="text-info font-weight-bold mt-0.5" style="font-size: 0.72rem;">
-                                                        Net Obligation: ₱{{ number_format($netObAmount, 2) }}
+                                                        Net Obligation (After NORSA): ₱{{ number_format($netObAmount, 2) }}
+                                                    </div>
+                                                @endif
+
+                                                @if($procCafSavings > 0)
+                                                    <div class="text-success font-weight-bold mt-0.5" style="font-size: 0.72rem;">
+                                                        <i class="fas fa-piggy-bank mr-1"></i> CAF Savings: ₱{{ number_format($procCafSavings, 2) }}
                                                     </div>
                                                 @endif
                                             @endif
 
-                                        {{-- DISBURSED / DISBURSED (WITH SAVINGS) / DISBURSED (PARTIALLY) / COMPLETED STATES --}}
+                                        {{-- DISBURSED / DISBURSED (WITH SAVINGS) / PARTIALLY DISBURSED / COMPLETED STATES --}}
                                         @elseif($isItemDisbursed)
                                             @if($obDate)
                                                 <div class="text-primary font-weight-bold" style="font-size: 0.72rem;">
@@ -1102,24 +1360,32 @@
                                                 @endif
                                             @endif
 
-                                            {{-- DYNAMIC SAVINGS CALCULATION --}}
+                                            {{-- DYNAMIC SAVINGS CALCULATION (Net Obligation minus Disbursed) --}}
                                             @php
                                                 $savings = 0;
                                                 if ($isCosItem && $itemContract) {
                                                     if ($calculatedDisbursedMonths >= $totalMonths || in_array($displayStatus, ['Completed', 'Disbursed (with savings)'])) {
-                                                        $savings = max(0, $netObAmount - $disbAmount);
+                                                        $savings = max(0, round($netObAmount - $disbAmount, 2));
                                                     } else {
                                                         $expectedDisbursement = $expectedPerMonth * $calculatedDisbursedMonths;
-                                                        $savings = max(0, $expectedDisbursement - $disbAmount);
+                                                        $savings = max(0, round($expectedDisbursement - $disbAmount, 2));
                                                     }
+                                                } elseif ($procTransactions->isNotEmpty()) {
+                                                    $savings = $procObligSavings;
                                                 } else {
-                                                    $savings = max(0, $netObAmount - $disbAmount);
+                                                    $savings = max(0, round($netObAmount - $disbAmount, 2));
                                                 }
                                             @endphp
 
-                                            @if($savings > 0 && in_array($displayStatus, ['Disbursed (with savings)', 'Disbursed (Partially)', 'Completed']))
-                                                <div class="text-success font-weight-bold mt-1" style="font-size: 0.75rem;">
-                                                    <i class="fas fa-piggy-bank mr-1"></i> Savings: ₱{{ number_format($savings, 2) }}
+                                            @if($procTransactions->isNotEmpty() && $procCafSavings > 0)
+                                                <div class="text-success font-weight-bold mt-1" style="font-size: 0.72rem;">
+                                                    <i class="fas fa-piggy-bank mr-1"></i> CAF Savings (CAF - Oblig): ₱{{ number_format($procCafSavings, 2) }}
+                                                </div>
+                                            @endif
+
+                                            @if($savings > 0 && in_array($displayStatus, ['Disbursed (with savings)', 'Disbursed (Partially)', 'Partially Disbursed', 'Completed']))
+                                                <div class="text-success font-weight-bold mt-0.5" style="font-size: 0.72rem;">
+                                                    <i class="fas fa-piggy-bank mr-1"></i> Oblig Savings (Net Oblig - Disb): ₱{{ number_format($savings, 2) }}
                                                 </div>
                                             @endif
 
@@ -1209,6 +1475,222 @@
                                         @endif
                                     </div>
 
+                                    {{-- ================= PROCURABLE / CAF / PO TRANSACTIONS & ITEMS BREAKDOWN ================= --}}
+                                    @if($procTransactions->isNotEmpty())
+                                        <div class="mt-2 p-2 bg-light border border-secondary rounded shadow-sm" style="max-width: 400px;">
+                                            <div class="text-xs font-weight-bold text-navy mb-1 border-bottom pb-1 d-flex justify-content-between align-items-center">
+                                                <span><i class="fas fa-boxes mr-1"></i> Procurement Items Breakdown</span>
+                                                @if(!$isItemCancelled && $totalProcItemsCount > 0)
+                                                    <span class="badge {{ $disbursedProcItemsCount === $totalProcItemsCount ? 'badge-success' : ($disbursedProcItemsCount > 0 ? 'badge-warning' : 'badge-secondary') }}" style="font-size: 0.58rem;">
+                                                        {{ $disbursedProcItemsCount }}/{{ $totalProcItemsCount }} Disbursed
+                                                    </span>
+                                                @endif
+                                            </div>
+
+                                            @if(!$isItemCancelled && ($procCafSavings > 0 || $procObligSavings > 0))
+                                                <div class="d-flex flex-wrap justify-content-between bg-white border rounded px-2 py-1 mb-1.5" style="font-size: 0.63rem;">
+                                                    @if($procCafSavings > 0)
+                                                        <span class="text-success font-weight-bold">
+                                                            <i class="fas fa-piggy-bank mr-1"></i> CAF Savings: ₱{{ number_format($procCafSavings, 2) }}
+                                                        </span>
+                                                    @endif
+                                                    @if($procObligSavings > 0)
+                                                        <span class="text-info font-weight-bold">
+                                                            <i class="fas fa-coins mr-1"></i> Oblig Savings: ₱{{ number_format($procObligSavings, 2) }}
+                                                        </span>
+                                                    @endif
+                                                </div>
+                                            @endif
+                                            
+                                            <div class="mt-1 text-xs">
+                                                <ul class="list-unstyled mb-0 pl-2 border-left border-primary">
+                                                    @foreach($procTransactions as $pt)
+                                                        @php
+                                                            $parentCafStatus = $pt->caf_status ?? 'Tagged as CAF';
+                                                            
+                                                            $procItems = DB::table('procurement_transaction_items')
+                                                                ->where('procurement_transaction_id', $pt->id)
+                                                                ->get();
+                                                        @endphp
+
+                                                        @if($procItems->isNotEmpty())
+                                                            <li class="mb-2 pb-1 border-bottom border-light">
+                                                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                                                    <span class="font-weight-bold text-dark">
+                                                                        <i class="fas fa-file-alt text-muted mr-1"></i> {{ $pt->item_name ?? $pt->pr_number ?? 'Procurement Ref' }}
+                                                                    </span>
+                                                                </div>
+                                                                <div class="pl-2 border-left border-secondary">
+                                                                    @foreach($procItems as $pItem)
+                                                                        @php
+                                                                            $pCafAmt  = (float) ($pItem->item_amount ?? 0);
+                                                                            $pPoAmt   = (float) ($pItem->po_amount ?? 0);
+                                                                            $pObAmt   = (float) ($pItem->obligation_amount ?? 0);
+                                                                            $pDisbAmt = (float) ($pItem->disbursement_amount ?? 0);
+                                                                            
+                                                                            $rawItemStatus = trim((string) ($pItem->status ?? ''));
+                                                                            $isItemPo = (!empty($pItem->po_number) || $pPoAmt > 0 || strcasecmp($rawItemStatus, 'Tagged as PO') === 0);
+
+                                                                            if ($isItemCancelled || strcasecmp($rawItemStatus, 'Cancelled') === 0) {
+                                                                                $itemStatusText = 'Cancelled';
+                                                                                $itemBadgeClass = 'badge-danger';
+                                                                            } elseif ($pDisbAmt > 0 || in_array(strtolower($rawItemStatus), ['disbursed', 'disbursed (with savings)', 'completed'])) {
+                                                                                $itemStatusText = ($pObAmt > 0 && $pDisbAmt < $pObAmt) ? 'Disbursed (with savings)' : 'Disbursed';
+                                                                                $itemBadgeClass = 'badge-success';
+                                                                            } elseif ($pObAmt > 0 || strcasecmp($rawItemStatus, 'Obligated') === 0) {
+                                                                                $itemStatusText = 'Obligated';
+                                                                                $itemBadgeClass = 'bg-orange text-white';
+                                                                            } elseif ($isItemPo) {
+                                                                                $itemStatusText = 'Tagged as PO';
+                                                                                $itemBadgeClass = 'badge-info';
+                                                                            } else {
+                                                                                $itemStatusText = 'Tagged as CAF';
+                                                                                $itemBadgeClass = 'badge-warning';
+                                                                            }
+
+                                                                            if ($pDisbAmt > 0) {
+                                                                                $displayItemAmount = $pDisbAmt;
+                                                                            } elseif ($pObAmt > 0) {
+                                                                                $displayItemAmount = $pObAmt;
+                                                                            } elseif ($isItemPo && $pPoAmt > 0) {
+                                                                                $displayItemAmount = $pPoAmt;
+                                                                            } else {
+                                                                                $displayItemAmount = $pCafAmt;
+                                                                            }
+
+                                                                            $itemCafSaving   = (!$isItemCancelled && $pObAmt > 0 && $pCafAmt > $pObAmt) ? ($pCafAmt - $pObAmt) : 0;
+                                                                            $itemObligSaving = (!$isItemCancelled && $pDisbAmt > 0 && $pObAmt > $pDisbAmt) ? ($pObAmt - $pDisbAmt) : 0;
+                                                                        @endphp
+                                                                        <div class="mb-1.5 pb-1 border-bottom border-light-subtle">
+                                                                            <div class="d-flex justify-content-between align-items-center text-dark">
+                                                                                <span class="pr-1"><i class="fas fa-cube mr-1 text-muted"></i> {{ $pItem->pr_item_name ?? 'Item' }}</span>
+                                                                                <span class="font-weight-bold text-nowrap">₱{{ number_format($displayItemAmount, 2) }}</span>
+                                                                            </div>
+                                                                            <div class="d-flex justify-content-between align-items-center mt-0.5" style="font-size: 0.60rem;">
+                                                                                <span class="text-muted">
+                                                                                    @if(!empty($pItem->po_number)) PO: {{ $pItem->po_number }} @endif
+                                                                                    @if(!empty($pItem->po_dtrack_no)) | DTrack: {{ $pItem->po_dtrack_no }} @endif
+                                                                                </span>
+                                                                                <span class="badge {{ $itemBadgeClass }}" style="font-size: 0.52rem;">
+                                                                                    {{ $itemStatusText }}
+                                                                                </span>
+                                                                            </div>
+                                                                            @if(!empty($pItem->obligation_serial) || !empty($pItem->disbursement_date) || !empty($pItem->obligation_date))
+                                                                                <div class="text-muted mt-0.5" style="font-size: 0.58rem;">
+                                                                                    @if(!empty($pItem->obligation_serial))
+                                                                                        <span class="text-primary font-weight-bold mr-1">{{ $pItem->obligation_serial }}</span>
+                                                                                    @endif
+                                                                                    @if(!empty($pItem->disbursement_date))
+                                                                                        <span class="text-success">Disb: {{ \Carbon\Carbon::parse($pItem->disbursement_date)->format('M d, Y') }}</span>
+                                                                                    @elseif(!empty($pItem->obligation_date))
+                                                                                        <span class="text-primary">Oblig: {{ \Carbon\Carbon::parse($pItem->obligation_date)->format('M d, Y') }}</span>
+                                                                                    @endif
+                                                                                </div>
+                                                                            @endif
+                                                                            @if($itemCafSaving > 0 || $itemObligSaving > 0)
+                                                                                <div class="mt-0.5" style="font-size: 0.58rem;">
+                                                                                    @if($itemCafSaving > 0)
+                                                                                        <span class="text-success font-weight-bold mr-2">
+                                                                                            <i class="fas fa-piggy-bank mr-0.5"></i> CAF Savings: ₱{{ number_format($itemCafSaving, 2) }} (CAF: ₱{{ number_format($pCafAmt, 2) }})
+                                                                                        </span>
+                                                                                    @endif
+                                                                                    @if($itemObligSaving > 0)
+                                                                                        <span class="text-info font-weight-bold">
+                                                                                            <i class="fas fa-coins mr-0.5"></i> Oblig Savings: ₱{{ number_format($itemObligSaving, 2) }}
+                                                                                        </span>
+                                                                                    @endif
+                                                                                </div>
+                                                                            @endif
+                                                                        </div>
+                                                                    @endforeach
+                                                                </div>
+                                                                @if(!empty($pt->po_dtrack_no))
+                                                                    <div class="text-muted mt-0.5 pl-2" style="font-size: 0.62rem;">
+                                                                        <i class="fas fa-route text-secondary mr-1"></i> DTrack: {{ $pt->po_dtrack_no }}
+                                                                    </div>
+                                                                @endif
+                                                            </li>
+                                                        @else
+                                                            @php
+                                                                $ptCafAmt  = (float) ($pt->abc_allotment ?? 0);
+                                                                $ptPoAmt   = (float) ($pt->po_amount ?? 0);
+                                                                $ptObAmt   = (float) ($pt->obligation_amount ?? 0);
+                                                                $ptDisbAmt = (float) ($pt->disbursement_amount ?? 0);
+                                                                $rawSingleStatus = trim((string) ($pt->status ?? ''));
+                                                                $isSinglePo = ($parentCafStatus === 'Tagged as PO' || !empty($pt->po_number) || $ptPoAmt > 0 || strcasecmp($rawSingleStatus, 'Tagged as PO') === 0);
+
+                                                                if ($isItemCancelled || strcasecmp($rawSingleStatus, 'Cancelled') === 0) {
+                                                                    $singleStatusText = 'Cancelled';
+                                                                    $singleBadgeClass = 'badge-danger';
+                                                                    $displaySingleAmount = $ptObAmt > 0 ? $ptObAmt : ($ptPoAmt > 0 ? $ptPoAmt : $ptCafAmt);
+                                                                } elseif ($ptDisbAmt > 0 || in_array($rawSingleStatus, ['Disbursed', 'Disbursed (with savings)', 'Completed'])) {
+                                                                    $singleStatusText = ($ptObAmt > 0 && $ptDisbAmt < $ptObAmt) ? 'Disbursed (with savings)' : 'Disbursed';
+                                                                    $singleBadgeClass = 'badge-success';
+                                                                    $displaySingleAmount = $ptDisbAmt;
+                                                                } elseif ($ptObAmt > 0 || $rawSingleStatus === 'Obligated') {
+                                                                    $singleStatusText = 'Obligated';
+                                                                    $singleBadgeClass = 'bg-orange text-white';
+                                                                    $displaySingleAmount = $ptObAmt;
+                                                                } else {
+                                                                    $singleStatusText = $isSinglePo ? 'Tagged as PO' : 'Tagged as CAF';
+                                                                    $singleBadgeClass = $isSinglePo ? 'badge-info' : 'badge-warning';
+                                                                    $displaySingleAmount = $ptPoAmt > 0 ? $ptPoAmt : $ptCafAmt;
+                                                                }
+
+                                                                $singleCafSaving   = (!$isItemCancelled && $ptObAmt > 0 && $ptCafAmt > $ptObAmt) ? ($ptCafAmt - $ptObAmt) : 0;
+                                                                $singleObligSaving = (!$isItemCancelled && $ptDisbAmt > 0 && $ptObAmt > $ptDisbAmt) ? ($ptObAmt - $ptDisbAmt) : 0;
+                                                            @endphp
+                                                            <li class="mb-1.5 pb-1 border-bottom border-light">
+                                                                <div class="d-flex justify-content-between align-items-center">
+                                                                    <div>
+                                                                        <span class="font-weight-bold text-dark">
+                                                                            <i class="fas fa-cube text-muted mr-1"></i> {{ $pt->item_name ?? 'Procurement Item' }}
+                                                                        </span>
+                                                                        <div class="text-muted pl-3" style="font-size: 0.62rem;">
+                                                                            <i class="fas fa-route text-secondary mr-0.5"></i> DTrack: {{ $pt->po_dtrack_no ?? 'N/A' }}
+                                                                        </div>
+                                                                    </div>
+                                                                    <div class="text-right">
+                                                                        <span class="badge {{ $singleBadgeClass }} d-block mb-0.5" style="font-size: 0.55rem;">
+                                                                            {{ $singleStatusText }} @if(!empty($pt->po_number)) (PO: {{ $pt->po_number }}) @endif
+                                                                        </span>
+                                                                        <span class="font-weight-bold text-dark" style="font-size: 0.7rem;">
+                                                                            ₱{{ number_format($displaySingleAmount, 2) }}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                                @if($singleCafSaving > 0 || $singleObligSaving > 0)
+                                                                    <div class="pl-3 mt-0.5" style="font-size: 0.58rem;">
+                                                                        @if($singleCafSaving > 0)
+                                                                            <span class="text-success font-weight-bold mr-2">
+                                                                                <i class="fas fa-piggy-bank mr-0.5"></i> CAF Savings: ₱{{ number_format($singleCafSaving, 2) }}
+                                                                            </span>
+                                                                        @endif
+                                                                        @if($singleObligSaving > 0)
+                                                                            <span class="text-info font-weight-bold">
+                                                                                <i class="fas fa-coins mr-0.5"></i> Oblig Savings: ₱{{ number_format($singleObligSaving, 2) }}
+                                                                            </span>
+                                                                        @endif
+                                                                    </div>
+                                                                @endif
+                                                            </li>
+                                                        @endif
+                                                    @endforeach
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    @endif
+
+                                    {{-- NORSA Adjustment Particulars / Cancellation Reason --}}
+                                    @if($itemNorsaParticulars->isNotEmpty())
+                                        @foreach($itemNorsaParticulars as $norsaPart)
+                                            <div class="mt-1 {{ $isItemCancelled ? 'text-danger border-danger' : 'text-info border-info' }} small border-left pl-2" style="font-style: italic; background-color: {{ $isItemCancelled ? '#fff8f8' : '#f4f9fc' }};">
+                                                <i class="fas fa-file-invoice-dollar mr-1" style="font-size: 0.7rem;"></i> 
+                                                <strong>{{ $isItemCancelled ? 'NORSA Cancellation Remarks:' : 'NORSA Particulars:' }}</strong> {{ $norsaPart }}
+                                            </div>
+                                        @endforeach
+                                    @endif
+
                                     {{-- Classified Individual Synced Remark --}}
                                     @if($itemRemarkInfo)
                                         <div class="mt-1 text-muted small border-left pl-2 {{ $itemRemarkInfo['class'] }}" style="font-style: italic; background-color: #fcfcfc;">
@@ -1242,31 +1724,79 @@
                     <td class="text-center">
                         @php 
                             // 1. Get the entire group for this DTrack
-                            // We fetch this once to avoid multiple queries
                             $groupItems = \App\Models\Fund::where('dtrack_no', $fund->dtrack_no)->get();
-                            
+                            $groupFundIds = $groupItems->pluck('id')->filter();
+
+                            // Fetch NORSA adjustments for this DTrack group
+                            $groupNorsaRecords = $groupFundIds->isNotEmpty()
+                                ? DB::table('norsa_adjustments')->whereIn('fund_id', $groupFundIds)->get()
+                                : collect();
+
+                            // Evaluate each item in the group for Cancelled (explicit or via 100% NORSA) and Disbursed states
                             $totalInGroup = $groupItems->count();
-                            $disbursedInGroup = $groupItems->where('status', 'Disbursed')->count();
+                            $disbursedInGroup = 0;
+                            $cancelledInGroup = 0;
 
-                            // 2. Button Lock: ONLY lock if EVERY fund source in the group is 'Disbursed'
-                            // We removed $hasAnySerial because DTrack is now our unique key to fetch data.
-                            $isFullyDisbursed = ($totalInGroup > 0 && $totalInGroup === $disbursedInGroup);
+                            foreach ($groupItems as $gItem) {
+                                $gObAmt    = (float) ($gItem->obligation_amount ?? 0);
+                                $gNorsaAmt = (float) ($gItem->norsa_amount ?? $groupNorsaRecords->where('fund_id', $gItem->id)->sum('norsa_amount'));
+                                $isItemNorsaCancelled = ($gNorsaAmt > 0 && $gObAmt > 0 && abs($gObAmt - $gNorsaAmt) < 0.01);
 
-                            // 3. Action Logic: Edit/Delete are usually disabled if ANY item has moved past 'Routed'
-                            // This protects the data integrity once Budget/Accounting starts processing.
-                            $firstItem = $groupItems->first();
-                            $isActionDisabled = ($firstItem && $firstItem->status !== 'Routed');
+                                if ($isItemNorsaCancelled || strcasecmp(trim((string)($gItem->status ?? '')), 'Cancelled') === 0) {
+                                    $cancelledInGroup++;
+                                } elseif (in_array(strtolower(trim((string)($gItem->status ?? ''))), ['disbursed', 'disbursed (with savings)', 'completed'])) {
+                                    $disbursedInGroup++;
+                                }
+                            }
+
+                            $isGroupCancelled = ($totalInGroup > 0 && $totalInGroup === $cancelledInGroup);
+
+                            // 2. Check if this DTrack has procurement items that are only partially disbursed / obligated
+                            $actionProcTx = $groupFundIds->isNotEmpty()
+                                ? DB::table('procurement_transactions')->whereIn('fund_transaction_id', $groupFundIds)->get()
+                                : collect();
+
+                            $actionProcItems = $actionProcTx->isNotEmpty()
+                                ? DB::table('procurement_transaction_items')->whereIn('procurement_transaction_id', $actionProcTx->pluck('id'))->get()
+                                : collect();
+
+                            $actionTotalProcItems = $actionProcItems->count();
+                            $actionDisbProcItems  = $actionProcItems->filter(function($pi) {
+                                return in_array(strtolower(trim((string)($pi->status ?? ''))), ['disbursed', 'disbursed (with savings)', 'completed'])
+                                    || (float)($pi->disbursement_amount ?? 0) > 0;
+                            })->count();
+                            $actionObligProcItems = $actionProcItems->filter(function($pi) {
+                                return in_array(strtolower(trim((string)($pi->status ?? ''))), ['obligated', 'disbursed', 'disbursed (with savings)', 'completed'])
+                                    || (float)($pi->obligation_amount ?? 0) > 0;
+                            })->count();
+
+                            $hasPartialProcurement = !$isGroupCancelled && $actionTotalProcItems > 0 && (
+                                ($actionDisbProcItems > 0 && $actionDisbProcItems < $actionTotalProcItems) ||
+                                ($actionDisbProcItems === 0 && $actionObligProcItems > 0 && $actionObligProcItems < $actionTotalProcItems)
+                            );
+
+                            // 3. Button Lock: Lock if Cancelled OR every active fund source in the group is Disbursed with no pending procurement items
+                            $activeCountInGroup = $totalInGroup - $cancelledInGroup;
+                            $isFullyDisbursed = !$isGroupCancelled && ($activeCountInGroup > 0 && $activeCountInGroup === $disbursedInGroup) && !$hasPartialProcurement;
+                            $isLockedTerminal = ($isGroupCancelled || $isFullyDisbursed);
+
+                            // 4. Action Logic: Edit/Delete disabled if Cancelled or if ANY item has moved past 'Routed'
+                            $hasNonRoutedItem = $groupItems->contains(function($gi) {
+                                return strcasecmp(trim((string)($gi->status ?? '')), 'Routed') !== 0;
+                            });
+                            $isActionDisabled = ($isGroupCancelled || $hasNonRoutedItem);
                             
-                            // 4. Status Check: Disable DTrack status updates only if fully finished
-                            $isStatusUpdateDisabled = ($isFullyDisbursed || in_array($firstItem->status ?? '', ['Completed']));
+                            // 5. Status Check: Disable DTrack status updates if Cancelled or fully finished
+                            $firstItem = $groupItems->first();
+                            $isStatusUpdateDisabled = ($isLockedTerminal || (in_array($firstItem->status ?? '', ['Completed']) && !$hasPartialProcurement));
                         @endphp
 
                         {{-- 1. Update Status / History Button --}}
                         <button type="button" class="btn btn-sm btn-default btn-flat shadow-sm btn-update-status"
-                            style="border-left: 3px solid #17a2b8;"
+                            style="border-left: 3px solid {{ $isStatusUpdateDisabled ? '#6c757d' : '#17a2b8' }};"
                             data-id="{{ $fund->id }}" data-dtrack="{{ $fund->dtrack_no }}"
                             {{ $isStatusUpdateDisabled ? 'disabled' : '' }}
-                            data-toggle="tooltip" title="Update Status">
+                            data-toggle="tooltip" title="{{ $isGroupCancelled ? 'Transaction Cancelled' : ($isStatusUpdateDisabled ? 'Status Completed' : 'Update Status') }}">
                             <i class="fas fa-history {{ $isStatusUpdateDisabled ? 'text-muted' : 'text-info' }}"></i> 
                         </button>
 
@@ -1275,25 +1805,19 @@
                             data-id="{{ $fund->id }}"
                             {{ $isActionDisabled ? 'disabled' : '' }}
                             data-toggle="tooltip" 
-                            title="{{ $isActionDisabled ? 'Locked: Only Routed transactions can be edited' : 'Edit Transaction' }}">
+                            title="{{ $isGroupCancelled ? 'Locked: Transaction is Cancelled' : ($isActionDisabled ? 'Locked: Only Routed transactions can be edited' : 'Edit Transaction') }}">
                             <i class="fas fa-edit {{ $isActionDisabled ? 'text-muted' : 'text-warning' }}"></i> 
                         </button>
 
-                        {{-- 3. Sync Button (UPDATED) --}}
+                        {{-- 3. Sync Button --}}
                         <button type="button" 
-                            class="btn btn-sm {{ $isFullyDisbursed ? 'btn-outline-secondary' : 'btn-outline-info' }} btn-sync-sheet" 
+                            class="btn btn-sm {{ $isLockedTerminal ? 'btn-outline-secondary' : 'btn-outline-info' }} btn-sync-sheet" 
                             data-id="{{ $fund->id }}"
                             data-dtrack="{{ $fund->dtrack_no }}"
-                            {{-- 
-                                The button is ONLY disabled if ALL items in the group are Disbursed. 
-                                We no longer disable it based on the lack of a serial number 
-                                because the system now fetches the serial for us using DTrack.
-                            --}}
-                            {{ $isFullyDisbursed ? 'disabled' : '' }}
+                            {{ $isLockedTerminal ? 'disabled' : '' }}
                             data-toggle="tooltip" 
-                            title="{{ $isFullyDisbursed ? 'All items for this DTrack are fully Disbursed' : 'Sync with RAODS Google Sheet' }}">
-                            
-                            <i class="fas {{ $isFullyDisbursed ? 'fa-check-double' : 'fa-sync-alt' }} {{ !$isFullyDisbursed ? 'fa-spin-hover' : '' }}"></i>
+                            title="{{ $isGroupCancelled ? 'Locked: Transaction is Cancelled' : ($isFullyDisbursed ? 'All items for this DTrack are fully Disbursed' : 'Sync with RAODS Google Sheet') }}">
+                            <i class="fas {{ $isGroupCancelled ? 'fa-ban' : ($isFullyDisbursed ? 'fa-check-double' : 'fa-sync-alt fa-spin-hover') }}"></i>
                         </button>
 
                         {{-- 4. Delete Button --}}
@@ -1302,7 +1826,7 @@
                             data-id="{{ $fund->id }}" 
                             {{ $isActionDisabled ? 'disabled' : '' }}
                             data-toggle="tooltip"
-                            title="{{ $isActionDisabled ? 'Locked: Only Routed transactions can be deleted' : 'Delete Transaction' }}">
+                            title="{{ $isGroupCancelled ? 'Locked: Transaction is Cancelled' : ($isActionDisabled ? 'Locked: Only Routed transactions can be deleted' : 'Delete Transaction') }}">
                             <i class="fas fa-trash {{ $isActionDisabled ? 'text-muted' : 'text-danger' }}"></i>
                         </button>
                     </td>
@@ -1317,9 +1841,12 @@
 
 {{-- Status Update Modal --}}
 <div class="modal fade" id="statusModal" tabindex="-1" role="dialog">
-    <div class="modal-dialog modal-lg" role="document"> <div class="modal-content">
-            <div class="modal-header bg-info">
-                <h5 class="modal-title">Update Status: <span id="display_dtrack"></span></h5>
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+            <div class="modal-header bg-info text-white">
+                <h5 class="modal-title">
+                    <i class="fas fa-edit mr-1"></i> Update Status: <span id="display_dtrack"></span>
+                </h5>
                 <button type="button" class="close text-white" data-dismiss="modal"><span>&times;</span></button>
             </div>
             <form id="status-update-form">
@@ -1329,27 +1856,40 @@
                
                 <div class="modal-body">
                     <div class="row">
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <div class="form-group">
                                 <label class="required"><i class="fas fa-calendar-alt mr-1"></i> Status Date</label>
                                 <input type="date" name="status_date" id="modal_status_date" class="form-control" value="{{ date('Y-m-d') }}" required>
                             </div>
                         </div>
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <div class="form-group">
                                 <label class="required">Transaction Status</label>
                                 <select name="status" id="modal_status_select" class="form-control" required>
                                     <option value="For Signature">For Signature</option>
+                                    <option value="Partially Obligated">Partially Obligated</option>
                                     <option value="Obligated">Obligated</option>
+                                    <option value="Partially Disbursed">Partially Disbursed</option>
+                                    <option value="Disbursed">Disbursed</option>
                                     <option value="Cancelled">Cancelled</option>
                                 </select>
                             </div>
                         </div>
+                        <div class="col-md-4">
+                            <div class="form-group">
+                                <label><i class="fas fa-exchange-alt mr-1 text-primary"></i> PO / New DTrack No. <small class="text-muted">(For RAODS Sync)</small></label>
+                                <input type="text" name="dtrack_no_new" id="modal_dtrack_no_new" class="form-control" placeholder="e.g. 2026-041234">
+                                <small class="form-text text-muted">Enter PO DTrack if different from PR DTrack.</small>
+                            </div>
+                        </div>
                     </div>
 
+                    {{-- Obligation Reference Serial Numbers (Existing Fund Sources) --}}
                     <div id="serial_no_section" style="display: none;">
                         <hr>
-                        <label class="text-primary font-weight-bold"><i class="fas fa-barcode mr-1"></i> Obligation Reference Serial Numbers</label>
+                        <label class="text-primary font-weight-bold">
+                            <i class="fas fa-barcode mr-1"></i> Obligation Reference Serial Numbers
+                        </label>
                         <div class="table-responsive">
                             <table class="table table-sm table-bordered">
                                 <thead class="bg-light">
@@ -1360,9 +1900,42 @@
                                     </tr>
                                 </thead>
                                 <tbody id="serial_inputs_container">
-                                    </tbody>
+                                </tbody>
                             </table>
                         </div>
+                    </div>
+
+                    {{-- Procurement Items Breakdown Selection (Shown when transaction has procurement items) --}}
+                    <div id="procurement_items_section" style="display: none;">
+                        <hr>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <label class="text-navy font-weight-bold mb-0">
+                                <i class="fas fa-boxes mr-1"></i> Procurement Items to Update
+                            </label>
+                            <div class="custom-control custom-checkbox">
+                                <input type="checkbox" class="custom-control-input" id="select_all_proc_items">
+                                <label class="custom-control-label small font-weight-bold text-primary" for="select_all_proc_items">Select All Pending Items</label>
+                            </div>
+                        </div>
+                        <div class="table-responsive" style="max-height: 260px; overflow-y: auto;">
+                            <table class="table table-sm table-bordered table-hover mb-0">
+                                <thead class="bg-light sticky-top">
+                                    <tr class="small">
+                                        <th style="width: 35px;" class="text-center">#</th>
+                                        <th>Item Description</th>
+                                        <th style="width: 110px;">Current Status</th>
+                                        <th style="width: 125px;">PO / DTrack</th>
+                                        <th style="width: 130px;">Serial No.</th>
+                                        <th style="width: 120px;" class="text-right">Amount</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="procurement_items_container" class="small">
+                                </tbody>
+                            </table>
+                        </div>
+                        <small class="form-text text-muted mt-1">
+                            Check the specific item(s) included in this Obligation/Disbursement batch. Unchecked items will keep their current status.
+                        </small>
                     </div>
 
                     <div class="form-group mt-3">
@@ -1453,14 +2026,14 @@
     <div class="modal-dialog modal-dialog-centered" role="document">
         <div class="modal-content border-0 shadow">
             <div class="modal-body p-4 text-center">
-                <i class="fas fa-check-circle text-success fa-3x mb-3"></i>
-                <h4>Sync Complete</h4>
+                <i id="rs-icon" class="fas fa-check-circle text-success fa-3x mb-3"></i>
+                <h4 id="rs-title">Sync Complete</h4>
                 <p class="text-muted">DTrack: <span id="rs-serial" class="font-weight-bold"></span></p>
 
                 <div class="text-left bg-light p-3 border rounded mb-3" style="max-height: 250px; overflow-y: auto;">
                     <small class="text-muted text-uppercase d-block mb-2" style="font-size: 0.7rem; letter-spacing: 1px;">Update Details per Source:</small>
                     <div id="rs-fund-list" style="font-size: 0.8rem;">
-                        </div>
+                    </div>
                 </div>
 
                 <div class="row">
@@ -1887,14 +2460,19 @@
 
     $(document).on('click', '.btn-sync-sheet', function (e) {
         e.preventDefault();
-        const $btn =$(this);
+        const $btn = $(this);
+        if ($btn.is(':disabled')) return;
+
         const fundId = $btn.data('id');
         const dtrackNo = $btn.data('dtrack'); 
         
-        const $groupButtons =$(`.btn-sync-sheet[data-dtrack="${dtrackNo}"]`);
-        const $groupIcons =$groupButtons.find('i');
+        const $groupButtons = $(`.btn-sync-sheet[data-dtrack="${dtrackNo}"]`);
+        const $groupIcons = $groupButtons.find('i');
 
-        $groupButtons.prop('disabled', true);$groupIcons.attr('class', 'fas fa-circle-notch fa-spin text-warning');
+        $groupButtons.prop('disabled', true);
+        $groupIcons.attr('class', 'fas fa-circle-notch fa-spin text-warning');
+
+        let lockedTerminalState = null; // 'cancelled' | 'disbursed' | null
 
         $.ajax({
             url: `/funds/${fundId}/sync`,
@@ -1910,30 +2488,80 @@
                     const details = response.details || {};
                     $('#rs-serial').text(details.dtrack_no || dtrackNo);
                     
-                    const $list =$('#rs-fund-list');
+                    const $list = $('#rs-fund-list');
                     $list.empty();
+
+                    let cancelledCount = 0;
+                    let disbursedCount = 0;
+                    const syncedItems = details.synced_items || [];
                     
-                    if (details.synced_items && details.synced_items.length > 0) {
-                        details.synced_items.forEach(item => {
-                            const statusBadge = item.status === 'Disbursed' ? 'badge-success' : 'badge-info';
+                    if (syncedItems.length > 0) {
+                        syncedItems.forEach(item => {
+                            const rawStatus = String(item.status || '').trim();
+                            const lowerStatus = rawStatus.toLowerCase();
+                            const isCancelled = lowerStatus === 'cancelled' || Boolean(item.is_cancelled_by_norsa);
+                            const isDisbursed = ['disbursed', 'disbursed (with savings)', 'completed'].includes(lowerStatus);
+
+                            if (isCancelled) cancelledCount++;
+                            if (isDisbursed) disbursedCount++;
+
+                            let statusBadge = 'badge-info';
+                            if (isCancelled) {
+                                statusBadge = 'badge-danger';
+                            } else if (isDisbursed) {
+                                statusBadge = 'badge-success';
+                            } else if (lowerStatus === 'obligated') {
+                                statusBadge = 'bg-orange text-white';
+                            }
+
+                            const displayAmountHtml = isCancelled
+                                ? `<span class="text-danger font-weight-bold">₱0.00</span>${item.prior_amount ? ` <del class="text-muted">(₱${item.prior_amount})</del>` : ''}`
+                                : `<span>₱${item.amount}</span>`;
+
+                            const norsaNoteHtml = (item.norsa_particulars || item.remarks) && isCancelled
+                                ? `<div class="text-danger mt-1 pt-1 border-top" style="font-size: 0.7rem; font-style: italic;">
+                                        <i class="fas fa-file-invoice-dollar mr-1"></i> ${item.norsa_particulars || item.remarks}
+                                   </div>`
+                                : '';
                             
                             $list.append(`
                                 <div class="border-bottom pb-2 mb-2">
                                     <div class="d-flex justify-content-between align-items-start">
                                         <span class="font-weight-bold text-dark">${item.name}</span>
-                                        <span class="badge ${statusBadge}">${item.status}</span>
+                                        <span class="badge ${statusBadge}">${isCancelled ? 'Cancelled' : rawStatus}</span>
                                     </div>
-                                    <div class="d-flex justify-content-between text-muted" style="font-size: 0.75rem;">
-                                        <span>Serial: ${item.serial}</span>
-                                        <span>Amount: ₱${item.amount}</span>
+                                    <div class="d-flex justify-content-between text-muted mt-1" style="font-size: 0.75rem;">
+                                        <span>Serial: ${item.serial || 'N/A'}</span>
+                                        <span>Amount: ${displayAmountHtml}</span>
                                     </div>
+                                    ${norsaNoteHtml}
                                 </div>
                             `);
                         });
                     }
 
-                    $('#rs-amount').text(`${details.count || 0} Record(s)`);
-                    $('#rs-status').text('Sync Successful').removeClass('badge-danger').addClass('badge-success');
+                    const allCancelled = syncedItems.length > 0 && cancelledCount === syncedItems.length;
+                    const allDisbursed = syncedItems.length > 0 && disbursedCount === syncedItems.length;
+
+                    if (allCancelled) {
+                        lockedTerminalState = 'cancelled';
+                        $('#rs-icon').attr('class', 'fas fa-ban text-danger fa-3x mb-3');
+                        $('#rs-title').text('Transaction Cancelled (NORSA)');
+                        $('#rs-status')
+                            .text('Cancelled')
+                            .removeClass('badge-success badge-info badge-warning')
+                            .addClass('badge-danger');
+                    } else {
+                        if (allDisbursed) lockedTerminalState = 'disbursed';
+                        $('#rs-icon').attr('class', 'fas fa-check-circle text-success fa-3x mb-3');
+                        $('#rs-title').text('Sync Complete');
+                        $('#rs-status')
+                            .text('Sync Successful')
+                            .removeClass('badge-danger badge-info badge-warning')
+                            .addClass('badge-success');
+                    }
+
+                    $('#rs-amount').text(`${details.count || syncedItems.length || 0} Record(s)`);
                     $('#syncResultModal').modal('show');
                 } else {
                     alert('Sync Failed: ' + (response.message || 'Error syncing data.'));
@@ -1943,7 +2571,16 @@
                 alert('Error: ' + (xhr.responseJSON?.message || 'Server Error'));
             },
             complete: function() {
-                $groupButtons.prop('disabled', false);$groupIcons.attr('class', 'fas fa-sync-alt');
+                if (lockedTerminalState === 'cancelled') {
+                    $groupButtons.prop('disabled', true).removeClass('btn-outline-info').addClass('btn-outline-secondary');
+                    $groupIcons.attr('class', 'fas fa-ban');
+                } else if (lockedTerminalState === 'disbursed') {
+                    $groupButtons.prop('disabled', true).removeClass('btn-outline-info').addClass('btn-outline-secondary');
+                    $groupIcons.attr('class', 'fas fa-check-double');
+                } else {
+                    $groupButtons.prop('disabled', false);
+                    $groupIcons.attr('class', 'fas fa-sync-alt');
+                }
             }
         });
     });
@@ -2608,6 +3245,7 @@
                         
                         $('#modal_status_select').val(firstAlloc.status);
                         $('#modal_remarks_input').val(firstAlloc.remarks || '');
+                        $('#modal_dtrack_no_new').val(firstAlloc.dtrack_no_new || '');
                         
                         // 2. Fix the date formatting
                         if (firstAlloc.status === 'Obligated' && firstAlloc.status_date) {
@@ -3020,22 +3658,21 @@
 
     $(document).ready(function() {
         function updateCreditorStatus() {
-            let isRequiredByAnyRow = false;
+            let isEnabledByAnyRow = false;
 
             // Loop through every activity select in the table
             $('.activity-select').each(function() {
                 const $selectedOption = $(this).find("option:selected");
                 
-                // Only check if an option is actually selected
                 if ($selectedOption.val()) {
                     const activityText = $selectedOption.text().toLowerCase();
                     
-                    // Check against keywords
                     if (activityText.includes('salary') || 
+                        activityText.includes('tev') || 
                         activityText.includes('provision of tev') || 
                         activityText.includes('provision of plane tickets')) {
-                        isRequiredByAnyRow = true;
-                        return false; // Break the .each() loop early
+                        isEnabledByAnyRow = true;
+                        return false; // Break early
                     }
                 }
             });
@@ -3043,33 +3680,30 @@
             const $creditorSelect = $('#creditor_select');
             const $label = $creditorSelect.closest('.form-group').find('label');
 
-            if (isRequiredByAnyRow) {
-                // Enable and make required if at least one row matches keywords
-                $creditorSelect.prop('disabled', false).attr('required', true);
-                $label.addClass('required');
+            // Never required for any activity
+            $creditorSelect.prop('required', false);
+            $label.removeClass('required');
+
+            if (isEnabledByAnyRow) {
+                $creditorSelect.prop('disabled', false);
                 $creditorSelect.closest('.form-group').css('opacity', '1');
             } else {
-                // Disable and clear if NO rows match the keywords
-                $creditorSelect.val(null).prop('disabled', true).attr('required', false);
-                $label.removeClass('required');
+                $creditorSelect.val(null).prop('disabled', true);
                 $creditorSelect.closest('.form-group').css('opacity', '0.6');
             }
 
-            // Essential for Select2 to update its visual state
             $creditorSelect.trigger('change');
         }
 
-        // 1. Listen for changes on any activity dropdown (existing or future rows)
         $(document).on('change', '.activity-select', function() {
             updateCreditorStatus();
         });
 
-        // 2. Also trigger check when a row is removed 
-        // (If the row requiring a creditor is deleted, we should disable the field)
         $(document).on('click', '.remove-row', function() {
-            // Small delay to allow the row to be removed from DOM before checking
             setTimeout(updateCreditorStatus, 50);
         });
+
+        updateCreditorStatus();
     });
 
     function updateGrandTotal() {
