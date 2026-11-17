@@ -20,6 +20,8 @@
     $activeSectionName = !empty(request('section_id')) && isset($sectionOptions[request('section_id')])
         ? $sectionOptions[request('section_id')]
         : null;
+
+    $hasCustomDateRange = !empty(request('date_from')) || !empty(request('date_to'));
 @endphp
 
 <style>
@@ -214,7 +216,14 @@
                     @if(request('source_type'))
                         | Type: <span class="text-uppercase text-info font-weight-bold">{{ request('source_type') }}</span>
                     @endif
-                    @if(request('month'))
+                    @if($hasCustomDateRange)
+                        | Date Range:
+                        <span class="badge badge-info font-weight-bold px-2 py-1">
+                            {{ request('date_from') ? \Carbon\Carbon::parse(request('date_from'))->format('M d, Y') : 'Start of FY' }}
+                            &ndash;
+                            {{ request('date_to') ? \Carbon\Carbon::parse(request('date_to'))->format('M d, Y') : 'Present' }}
+                        </span>
+                    @elseif(request('month'))
                         | Month: <strong>{{ date('F', mktime(0, 0, 0, request('month'), 1)) }}</strong>
                     @elseif(!empty(request('quarters')))
                         | Quarters: <strong>{{ implode(', ', array_map(fn($q) => 'Q'.$q, (array)request('quarters'))) }}</strong>
@@ -287,80 +296,105 @@
         </div>
     </div>
 
-    {{-- Filter Card --}}
+    {{-- Filter Card (Single-Row Layout) --}}
     <div class="collapse show filter-section" id="filterCard">
         <div class="card shadow-sm mb-3 border-navy">
-            <div class="card-body py-3 bg-white">
-                <form action="{{ route('reports.by_source') }}" method="GET" class="row align-items-end">
-                    {{-- Section / Unit Dropdown (Shown for Budget, Admin, and Division Users) --}}
-                    @if(!empty($canFilterSection) && $canFilterSection)
-                        <div class="col-lg-3 col-md-6 mb-2">
-                            <label class="text-xs font-weight-bold text-muted text-uppercase mb-1">Unit / Section</label>
-                            <select name="section_id" class="form-control form-control-sm border-navy">
-                                <option value="">All Units / Sections</option>
-                                @foreach($sectionOptions ?? [] as $secId => $secName)
-                                    <option value="{{ $secId }}" {{ (string)request('section_id') === (string)$secId ? 'selected' : '' }}>
-                                        {{ $secName }}
-                                    </option>
+            <div class="card-body py-2 px-3 bg-white">
+                <form action="{{ route('reports.by_source') }}" method="GET" id="bySourceFilterForm">
+                    <div class="d-flex flex-wrap flex-xl-nowrap align-items-end" style="gap: 8px;">
+                        {{-- Section / Unit Dropdown --}}
+                        @if(!empty($canFilterSection) && $canFilterSection)
+                            <div class="flex-grow-1" style="min-width: 170px;">
+                                <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Unit / Section</label>
+                                <select name="section_id" class="form-control form-control-sm border-navy">
+                                    <option value="">All Units / Sections</option>
+                                    @foreach($sectionOptions ?? [] as $secId => $secName)
+                                        <option value="{{ $secId }}" {{ (string)request('section_id') === (string)$secId ? 'selected' : '' }}>
+                                            {{ $secName }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                            </div>
+                        @endif
+
+                        {{-- Source Type --}}
+                        <div style="min-width: 115px; flex: 0 1 130px;">
+                            <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Source Type</label>
+                            <select name="source_type" class="form-control form-control-sm border-navy text-uppercase">
+                                <option value="">All Types</option>
+                                @foreach($sourceTypes ?? ['saa', 'regular', 'continuing'] as $type)
+                                    <option value="{{ $type }}" {{ request('source_type') == $type ? 'selected' : '' }}>{{ $type }}</option>
                                 @endforeach
                             </select>
                         </div>
-                    @endif
 
-                    {{-- Cumulative Quarters Checkboxes --}}
-                    <div class="{{ (!empty($canFilterSection) && $canFilterSection) ? 'col-lg-3' : 'col-lg-4' }} col-md-6 mb-2">
-                        <label class="text-xs font-weight-bold text-muted text-uppercase d-block mb-1">
-                            Cumulative Quarters
-                        </label>
-                        @php
-                            $selectedQuarters = (array) request('quarters', []);
-                            if (empty($selectedQuarters) && request()->has('quarter') && request('quarter') !== '') {
-                                $selectedQuarters = [request('quarter')];
-                            }
-                        @endphp
-                        <div class="quarter-checkbox-group">
-                            @foreach([1 => 'Q1', 2 => 'Q2', 3 => 'Q3', 4 => 'Q4'] as $qVal => $qLabel)
-                                <label class="quarter-checkbox-item">
-                                    <input type="checkbox" name="quarters[]" value="{{ $qVal }}" {{ in_array($qVal, $selectedQuarters) ? 'checked' : '' }}>
-                                    {{ $qLabel }}
-                                </label>
-                            @endforeach
+                        {{-- Cumulative Quarters Checkboxes --}}
+                        <div style="min-width: 195px; flex: 0 0 auto;">
+                            <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Cumulative Quarters</label>
+                            @php
+                                $selectedQuarters = (array) request('quarters', []);
+                                if (empty($selectedQuarters) && request()->has('quarter') && request('quarter') !== '') {
+                                    $selectedQuarters = [request('quarter')];
+                                }
+                            @endphp
+                            <div class="quarter-checkbox-group px-2" style="gap: 8px;">
+                                @foreach([1 => 'Q1', 2 => 'Q2', 3 => 'Q3', 4 => 'Q4'] as $qVal => $qLabel)
+                                    <label class="quarter-checkbox-item mb-0">
+                                        <input type="checkbox" name="quarters[]" class="js-quarter-checkbox" value="{{ $qVal }}" {{ in_array($qVal, $selectedQuarters) ? 'checked' : '' }}>
+                                        {{ $qLabel }}
+                                    </label>
+                                @endforeach
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="col-lg-2 col-md-4 mb-2">
-                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1">Source Type</label>
-                        <select name="source_type" class="form-control form-control-sm border-navy text-uppercase">
-                            <option value="">All Types</option>
-                            @foreach($sourceTypes ?? ['saa', 'regular', 'continuing'] as $type)
-                                <option value="{{ $type }}" {{ request('source_type') == $type ? 'selected' : '' }}>{{ $type }}</option>
-                            @endforeach
-                        </select>
-                    </div>
+                        {{-- Specific Month --}}
+                        <div style="min-width: 120px; flex: 0 1 135px;">
+                            <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Specific Month</label>
+                            <select name="month" id="filterMonth" class="form-control form-control-sm border-navy">
+                                <option value="">All Months</option>
+                                @foreach(range(1, 12) as $m)
+                                    <option value="{{ $m }}" {{ request('month') == $m ? 'selected' : '' }}>{{ date('F', mktime(0, 0, 0, $m, 1)) }}</option>
+                                @endforeach
+                            </select>
+                        </div>
 
-                    <div class="col-lg-2 col-md-4 mb-2">
-                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1">Specific Month</label>
-                        <select name="month" class="form-control form-control-sm border-navy">
-                            <option value="">All Months</option>
-                            @foreach(range(1, 12) as $m)
-                                <option value="{{ $m }}" {{ request('month') == $m ? 'selected' : '' }}>{{ date('F', mktime(0, 0, 0, $m, 1)) }}</option>
-                            @endforeach
-                        </select>
-                    </div>
-
-                    <div class="{{ (!empty($canFilterSection) && $canFilterSection) ? 'col-lg-2' : 'col-lg-2' }} col-md-4 mb-2">
-                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1">Fiscal Year</label>
-                        <div class="d-flex">
-                            <select name="year" class="form-control form-control-sm border-navy mr-2" style="min-width: 78px;">
+                        {{-- Fiscal Year --}}
+                        <div style="min-width: 82px; flex: 0 0 86px;">
+                            <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Fiscal Year</label>
+                            <select name="year" id="filterYear" class="form-control form-control-sm border-navy">
                                 @php $currentYear = date('Y'); @endphp
                                 @foreach(range($currentYear, $currentYear - 4) as $yearOption)
                                     <option value="{{ $yearOption }}" {{ request('year', $currentYear) == $yearOption ? 'selected' : '' }}>{{ $yearOption }}</option>
                                 @endforeach
                             </select>
-                            <button type="submit" class="btn btn-sm text-white px-2 shadow-sm text-nowrap" style="background-color: #001f3f;">
+                        </div>
+
+                        {{-- Date Range (From & To) --}}
+                        <div style="min-width: 132px; flex: 0 0 136px;">
+                            <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Date From</label>
+                            <input type="date" name="date_from" id="filterDateFrom"
+                                   value="{{ request('date_from') }}"
+                                   class="form-control form-control-sm border-navy px-2">
+                        </div>
+
+                        <div style="min-width: 132px; flex: 0 0 136px;">
+                            <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Date To</label>
+                            <input type="date" name="date_to" id="filterDateTo"
+                                   value="{{ request('date_to') }}"
+                                   class="form-control form-control-sm border-navy px-2">
+                        </div>
+
+                        {{-- Action Buttons --}}
+                        <div class="d-flex align-items-center flex-shrink-0" style="gap: 4px;">
+                            @if($hasCustomDateRange)
+                                <button type="button" id="clearDateRangeBtn" class="btn btn-sm btn-outline-danger px-2 text-nowrap" title="Clear Date Range">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            @endif
+                            <button type="submit" class="btn btn-sm text-white px-3 shadow-sm font-weight-bold text-nowrap" style="background-color: #001f3f;">
                                 <i class="fas fa-search mr-1"></i> Apply
                             </button>
-                            <a href="{{ route('reports.by_source') }}" class="btn btn-sm btn-light border ml-1 text-muted" title="Reset Filters">
+                            <a href="{{ route('reports.by_source') }}" class="btn btn-sm btn-light border px-2 text-muted text-nowrap" title="Reset All Filters">
                                 <i class="fas fa-undo"></i>
                             </a>
                         </div>
@@ -477,9 +511,9 @@
                                     $percP  = $currentAdjusted > 0 ? ($budgetP / $currentAdjusted) * 100 : 0;
                                     $percNP = $currentAdjusted > 0 ? ($budgetNP / $currentAdjusted) * 100 : 0;
 
-                                    $unpaid                 = max(0, $currentObligated - $currentDisbursed);
-                                    $unobligAllotmentBal    = $data['unobligated_allotment_balance'] ?? max(0, $currentGross - $currentObligated);
-                                    $unobligMinusPending    = $data['total_unobligated'] ?? max(0, $currentAdjusted - ($currentObligated + $currentPending));
+                                    $unpaid                = max(0, $currentObligated - $currentDisbursed);
+                                    $unobligAllotmentBal   = $data['unobligated_allotment_balance'] ?? max(0, $currentGross - $currentObligated);
+                                    $unobligMinusPending   = $data['total_unobligated'] ?? max(0, $currentAdjusted - ($currentObligated + $currentPending));
 
                                     // Update Section Totals
                                     $sectionTotals['gross_allotted']            += $currentGross;
@@ -657,6 +691,63 @@
     $(document).ready(function() {
         $('[data-toggle="tooltip"]').tooltip({
             html: true
+        });
+
+        const $dateFrom = $('#filterDateFrom');
+        const $dateTo   = $('#filterDateTo');
+        const $month    = $('#filterMonth');
+        const $quarters = $('.js-quarter-checkbox');
+
+        // Keep Date To >= Date From and clear Month/Quarter overrides when using a custom date range
+        $dateFrom.on('change', function() {
+            const fromVal = $(this).val();
+            if (fromVal) {
+                $dateTo.attr('min', fromVal);
+                if ($dateTo.val() && $dateTo.val() < fromVal) {
+                    $dateTo.val(fromVal);
+                }
+                $month.val('');
+                $quarters.prop('checked', false);
+            } else {
+                $dateTo.removeAttr('min');
+            }
+        });
+
+        $dateTo.on('change', function() {
+            const toVal = $(this).val();
+            if (toVal) {
+                $dateFrom.attr('max', toVal);
+                if ($dateFrom.val() && $dateFrom.val() > toVal) {
+                    $dateFrom.val(toVal);
+                }
+                $month.val('');
+                $quarters.prop('checked', false);
+            } else {
+                $dateFrom.removeAttr('max');
+            }
+        });
+
+        // Clear custom date range if user picks a specific Month or Quarter
+        $month.on('change', function() {
+            if ($(this).val()) {
+                $dateFrom.val('').removeAttr('max');
+                $dateTo.val('').removeAttr('min');
+                $quarters.prop('checked', false);
+            }
+        });
+
+        $quarters.on('change', function() {
+            if ($quarters.is(':checked')) {
+                $dateFrom.val('').removeAttr('max');
+                $dateTo.val('').removeAttr('min');
+                $month.val('');
+            }
+        });
+
+        $('#clearDateRangeBtn').on('click', function() {
+            $dateFrom.val('').removeAttr('max');
+            $dateTo.val('').removeAttr('min');
+            $('#bySourceFilterForm').submit();
         });
     });
 </script>

@@ -1,19 +1,23 @@
 @extends('layouts.adminlte')
 
 @section('content')
+@php
+    $hasCustomDateRange = !empty(request('date_from')) || !empty(request('date_to'));
+@endphp
+
 <style>
     .financial-number { font-family: 'Consolas', 'Courier New', Courier, monospace; font-weight: 600; letter-spacing: -0.3px; }
     .card-navy.card-outline { border-top: 3px solid #001f3f; }
     .bg-navy-light { background-color: #f1f4f8; color: #001f3f; }
     .bg-soft-light { background-color: #f8f9fa; }
-    
+
     .section-banner {
         background: linear-gradient(135deg, #001f3f 0%, #003366 100%);
         color: #ffffff;
         border-radius: 6px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.08);
     }
-    @media print { .filter-section { display: none !important; } }
+    @media print { .filter-section, .btn-group { display: none !important; } }
 </style>
 
 <div class="container-fluid py-3">
@@ -25,14 +29,21 @@
             </h4>
             <p class="text-muted small mb-0">
                 Financial Performance Analysis for Fiscal Year <strong>{{ request('year', $year ?? date('Y')) }}</strong>
-                @if(request('month'))
+                @if($hasCustomDateRange)
+                    | Date Range:
+                    <span class="badge badge-info font-weight-bold px-2 py-1">
+                        {{ request('date_from') ? \Carbon\Carbon::parse(request('date_from'))->format('M d, Y') : 'Start of FY' }}
+                        &ndash;
+                        {{ request('date_to') ? \Carbon\Carbon::parse(request('date_to'))->format('M d, Y') : 'Present' }}
+                    </span>
+                @elseif(request('month'))
                     | Month: <strong>{{ date('F', mktime(0, 0, 0, request('month'), 1)) }}</strong>
                 @elseif(!empty($quarters))
                     | Quarters: <strong>Q{{ implode(', Q', (array)$quarters) }} (Cumulative)</strong>
                 @endif
             </p>
         </div>
-        
+
         <div class="btn-group shadow-sm">
             <a href="{{ route('reports.by_line_item.export', request()->all()) }}" class="btn btn-sm btn-success">
                 <i class="fas fa-file-excel mr-1"></i> Export Excel
@@ -52,16 +63,31 @@
         <i class="fas fa-info-circle text-info mr-1"></i> Obligations and Disbursements are strictly filtered based on transaction dates in the selected period.
     </p>
 
-    {{-- FILTER & SEARCH TOOLBAR --}}
+    {{-- FILTER & SEARCH TOOLBAR (Single-Row Layout with Date Range) --}}
     <div class="card card-default filter-section collapse show shadow-sm mb-4" id="filterCard">
-        <div class="card-body p-3">
+        <div class="card-body py-2 px-3">
             <form method="GET" action="{{ route('reports.by_line_item') }}" id="filterForm">
-                <div class="row align-items-center">
-                    <div class="col-md-5 col-12 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1 d-block">
-                            CUMULATIVE QUARTERS <span class="text-muted font-weight-normal" style="font-size: 0.65rem;">(SELECT MULTIPLE FOR CUMULATIVE REPORT)</span>
+                <div class="d-flex flex-wrap flex-xl-nowrap align-items-end" style="gap: 8px;">
+                    {{-- Fiscal Year --}}
+                    <div style="min-width: 92px; flex: 0 0 96px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Fiscal Year</label>
+                        <select name="year" class="form-control form-control-sm">
+                            @php
+                                $currentYear  = date('Y');
+                                $selectedYear = request('year', $year ?? $currentYear);
+                            @endphp
+                            @foreach(range($currentYear + 1, $currentYear - 4) as $y)
+                                <option value="{{ $y }}" {{ $selectedYear == $y ? 'selected' : '' }}>FY {{ $y }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+
+                    {{-- Cumulative Quarters --}}
+                    <div style="min-width: 215px; flex: 0 0 220px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">
+                            Cumulative Quarters
                         </label>
-                        <div class="d-flex align-items-center flex-wrap bg-white border rounded px-2 py-1" style="gap: 12px; height: 31px;">
+                        <div class="d-flex align-items-center justify-content-between bg-white border rounded px-2" style="height: 31px;">
                             @foreach([1 => 'Q1', 2 => 'Q2', 3 => 'Q3', 4 => 'Q4'] as $qVal => $qLabel)
                                 <div class="custom-control custom-checkbox custom-control-inline m-0">
                                     <input type="checkbox" name="quarters[]" value="{{ $qVal }}" id="q_{{ $qVal }}" class="custom-control-input quarter-checkbox"
@@ -71,8 +97,10 @@
                             @endforeach
                         </div>
                     </div>
-                    <div class="col-md-3 col-12 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1">SPECIFIC MONTH</label>
+
+                    {{-- Specific Month --}}
+                    <div class="flex-grow-1" style="min-width: 135px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Specific Month</label>
                         <select name="month" id="monthSelect" class="form-control form-control-sm">
                             <option value="">All Months</option>
                             @foreach(range(1, 12) as $m)
@@ -82,20 +110,31 @@
                             @endforeach
                         </select>
                     </div>
-                    <div class="col-md-2 col-6 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1">FISCAL YEAR</label>
-                        <select name="year" class="form-control form-control-sm">
-                            @php
-                                $currentYear = date('Y');
-                                $selectedYear = request('year', $currentYear);
-                            @endphp
-                            @foreach(range($currentYear, $currentYear - 4) as $y)
-                                <option value="{{ $y }}" {{ $selectedYear == $y ? 'selected' : '' }}>{{ $y }}</option>
-                            @endforeach
-                        </select>
+
+                    {{-- Date From --}}
+                    <div style="min-width: 132px; flex: 0 0 136px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Date From</label>
+                        <input type="date" name="date_from" id="lineItemDateFrom"
+                               value="{{ request('date_from') }}"
+                               class="form-control form-control-sm px-2">
                     </div>
-                    <div class="col-md-2 col-6 text-right">
-                        <label class="small font-weight-bold mb-1 d-block">&nbsp;</label>
+
+                    {{-- Date To --}}
+                    <div style="min-width: 132px; flex: 0 0 136px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Date To</label>
+                        <input type="date" name="date_to" id="lineItemDateTo"
+                               value="{{ request('date_to') }}"
+                               class="form-control form-control-sm px-2">
+                    </div>
+
+                    {{-- Action Buttons --}}
+                    <div class="text-nowrap" style="flex: 0 0 auto;">
+                        <label class="text-xs font-weight-bold mb-1 d-block">&nbsp;</label>
+                        @if($hasCustomDateRange)
+                            <button type="button" id="lineItemClearDatesBtn" class="btn btn-sm btn-outline-danger mr-1" title="Clear Date Range">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        @endif
                         <button type="submit" class="btn btn-sm btn-navy font-weight-bold px-3 mr-1" style="background-color: #001f3f; color: #fff;">
                             <i class="fas fa-sync-alt mr-1"></i> Apply Filter
                         </button>
@@ -122,20 +161,19 @@
             @foreach($sources as $source)
                 <div class="card card-navy card-outline mb-4 shadow-sm">
                     @php
-                        $netSourceBudget     = $source['total_activity_budget']; 
+                        $netSourceBudget     = $source['total_activity_budget'];
                         $totalGrossObligated = $source['total_gross_obligated'] ?? 0;
                         $totalNorsa          = $source['total_norsa'] ?? 0;
-                        $totalObligated      = $source['total_obligated'] ?? 0; 
+                        $totalObligated      = $source['total_obligated'] ?? 0;
                         $totalDisbursed      = $source['total_disbursed'] ?? 0;
-                        $totalPending        = $source['total_pending'] ?? 0; 
-                        $totalSavings        = $source['total_savings'] ?? 0; 
-                        
+                        $totalPending        = $source['total_pending'] ?? 0;
+                        $totalSavings        = $source['total_savings'] ?? 0;
+
                         $overallObligRate = $netSourceBudget > 0 ? ($totalObligated / $netSourceBudget) * 100 : 0;
                         $overallDisbRate  = $totalObligated > 0 ? ($totalDisbursed / $totalObligated) * 100 : 0;
 
-                        // Calculate total pooled amount across line items for this fund source summary
                         $totalPooledSource = 0;
-                        foreach($source['line_items'] as $li) {
+                        foreach ($source['line_items'] as $li) {
                             $totalPooledSource += ($li['pooled_amount'] ?? 0);
                         }
                     @endphp
@@ -144,7 +182,7 @@
                     <div class="card-header bg-white py-2 px-3 border-bottom">
                         <div class="d-flex justify-content-between align-items-center">
                             <h6 class="card-title text-navy font-weight-bold mb-0" style="font-size: 0.95rem;">
-                                <i class="fas fa-folder text-warning mr-2"></i>{{ $source['source_name'] }} 
+                                <i class="fas fa-folder text-warning mr-2"></i>{{ $source['source_name'] }}
                                 <span class="text-muted ml-3 font-weight-normal">TOTAL ALLOTTED FUND: <strong class="text-dark financial-number">₱{{ number_format($source['source_total'] ?? 0, 2) }}</strong></span>
                             </h6>
                             <div>
@@ -157,7 +195,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     {{-- Executive Summary Strip --}}
                     <div class="card-body p-0">
                         <div class="py-3 px-3 bg-soft-light border-bottom">
@@ -236,12 +274,12 @@
                                             $norsa       = $item['norsa_amount'] ?? 0;
                                             $netOb       = $item['obligated_amount'];
                                             $disbursed   = $item['disbursed_amount'];
-                                            $pending     = $item['pending_amount']; 
+                                            $pending     = $item['pending_amount'];
                                             $savings     = $item['savings_amount'] ?? 0;
-                                            
+
                                             $rowUnpaid   = max(0, $netOb - $disbursed);
-                                            $pooled      = $item['pooled_amount'] ?? 0; 
-                                            
+                                            $pooled      = $item['pooled_amount'] ?? 0;
+
                                             $untouched   = $item['untouched_amount'] ?? ($netBudget - ($netOb + $pending));
                                             $untouched   = $untouched > 0 ? $untouched : 0;
 
@@ -296,7 +334,7 @@
                                         </tr>
                                     @endforelse
                                 </tbody>
-                                
+
                                 @if(count($source['line_items']) > 0)
                                     <tfoot class="bg-navy-light font-weight-bold text-uppercase" style="font-size: 0.72rem;">
                                         <tr>
@@ -329,17 +367,60 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
     $(document).ready(function() {
-        // Auto Reset: Clear month when quarter checkboxes are picked & vice versa
+        const $dateFrom = $('#lineItemDateFrom');
+        const $dateTo   = $('#lineItemDateTo');
+
+        // Auto Reset: Clear month & custom dates when quarter checkboxes are picked
         $(document).on('change', '.quarter-checkbox', function() {
             if ($(this).is(':checked')) {
                 $('#monthSelect').val('');
+                $dateFrom.val('').removeAttr('max');
+                $dateTo.val('').removeAttr('min');
             }
         });
 
+        // Clear quarters & custom dates when a specific month is picked
         $(document).on('change', '#monthSelect', function() {
             if ($(this).val()) {
                 $('.quarter-checkbox').prop('checked', false);
+                $dateFrom.val('').removeAttr('max');
+                $dateTo.val('').removeAttr('min');
             }
+        });
+
+        // Date Range min/max sync + clear quarters & month when date range is selected
+        $dateFrom.on('change', function() {
+            const fromVal = $(this).val();
+            if (fromVal) {
+                $('.quarter-checkbox').prop('checked', false);
+                $('#monthSelect').val('');
+                $dateTo.attr('min', fromVal);
+                if ($dateTo.val() && $dateTo.val() < fromVal) {
+                    $dateTo.val(fromVal);
+                }
+            } else {
+                $dateTo.removeAttr('min');
+            }
+        });
+
+        $dateTo.on('change', function() {
+            const toVal = $(this).val();
+            if (toVal) {
+                $('.quarter-checkbox').prop('checked', false);
+                $('#monthSelect').val('');
+                $dateFrom.attr('max', toVal);
+                if ($dateFrom.val() && $dateFrom.val() > toVal) {
+                    $dateFrom.val(toVal);
+                }
+            } else {
+                $dateFrom.removeAttr('max');
+            }
+        });
+
+        $('#lineItemClearDatesBtn').on('click', function() {
+            $dateFrom.val('').removeAttr('max');
+            $dateTo.val('').removeAttr('min');
+            $('#filterForm').submit();
         });
 
         // Expand All / Collapse All Toggle functionality
@@ -347,14 +428,14 @@
         $('#expandAllBtn').on('click', function() {
             isExpanded = !isExpanded;
             if (isExpanded) {
-                $('.card').each(function() {
+                $('.card:not(#filterCard)').each(function() {
                     if ($(this).hasClass('collapsed-card')) {
                         $(this).CardWidget('Expand');
                     }
                 });
                 $(this).html('<i class="fas fa-compress-arrows-alt mr-1"></i> Collapse All');
             } else {
-                $('.card').each(function() {
+                $('.card:not(#filterCard)').each(function() {
                     if (!$(this).hasClass('collapsed-card')) {
                         $(this).CardWidget('Collapse');
                     }

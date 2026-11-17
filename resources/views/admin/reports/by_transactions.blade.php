@@ -157,9 +157,8 @@
                                     @foreach($source['activities'] as $act)
                                         @php
                                             $cancelledCount = $act['transactions']->filter(function ($t) {
-                                                $storedOb = (float) ($t->obligation_amount ?? 0);
+                                                $baseOb   = (float) ($t->gross_obligated ?? $t->obligation_amount ?? 0);
                                                 $norsaAmt = (float) ($t->norsa_amount ?? 0);
-                                                $baseOb   = !empty($t->is_multi_activity) ? ($storedOb + $norsaAmt) : $storedOb;
                                                 return !empty($t->is_cancelled)
                                                     || strtolower((string) ($t->status ?? '')) === 'cancelled'
                                                     || ($baseOb > 0 && abs($baseOb - $norsaAmt) < 0.01);
@@ -176,7 +175,7 @@
                                             </td>
                                             <td class="text-right align-middle financial-number">₱{{ number_format($act['net_budget'], 2) }}</td>
                                             <td class="text-right align-middle financial-number text-warning">₱{{ number_format($act['pending'], 2) }}</td>
-                                            <td class="text-right align-middle financial-number text-info">₱{{ number_format($act['gross_obligated'], 2) }}</td>
+                                            <td class="text-right align-middle financial-number text-info">₱{{ number_format($act['obligated'], 2) }}</td>
                                             <td class="text-right align-middle financial-number text-danger">
                                                 {{ ($act['norsa_amount'] ?? 0) > 0 ? '(₱'.number_format($act['norsa_amount'], 2).')' : '-' }}
                                             </td>
@@ -211,7 +210,7 @@
                                                                 <th>Payee / Creditor</th>
                                                                 <th>Particulars</th>
                                                                 <th class="text-right">Amount</th>
-                                                                <th class="text-right border-left-info">Gross Obligated</th>
+                                                                <th class="text-right border-left-info">Net Obligated</th>
                                                                 <th class="text-right border-left-danger text-danger">NORSA</th>
                                                                 <th class="text-right border-left-success">Disbursed</th>
                                                                 <th class="text-center border-left-primary" style="width: 195px;">Status & Remarks</th>
@@ -227,7 +226,7 @@
 
                                                                     $txNorsaAmt  = (float) ($tx->norsa_amount ?? 0);
                                                                     $storedOb    = (float) ($tx->obligation_amount ?? 0);
-                                                                    $baseGrossOb = !empty($tx->is_multi_activity) ? ($storedOb + $txNorsaAmt) : $storedOb;
+                                                                    $baseGrossOb = (float) ($tx->gross_obligated ?? (!empty($tx->ob_is_net_of_norsa) ? ($storedOb + $txNorsaAmt) : $storedOb));
 
                                                                     // Detect explicit Cancelled OR 100% NORSA reversal
                                                                     $isFullNorsaCancel = ($baseGrossOb > 0 && abs($baseGrossOb - $txNorsaAmt) < 0.01);
@@ -235,9 +234,9 @@
                                                                         || strtolower((string) ($tx->status ?? '')) === 'cancelled'
                                                                         || $isFullNorsaCancel;
 
-                                                                    $txGrossOblig = $isTxCancelled
-                                                                        ? (float) ($tx->prior_gross_obligated ?? ($baseGrossOb > 0 ? $baseGrossOb : ($tx->amount ?? 0)))
-                                                                        : $baseGrossOb;
+                                                                    $txNetOblig = $isTxCancelled
+                                                                        ? 0.00
+                                                                        : (float) ($tx->net_obligated ?? max(0.00, $baseGrossOb - $txNorsaAmt));
 
                                                                     // COS Salary & Consolidated Salary Resolution
                                                                     $isCosSalary = !empty($tx->is_cos_salary)
@@ -313,7 +312,7 @@
                                                                     </td>
 
                                                                     <td class="text-right align-middle font-weight-bold text-info border-left-info financial-number {{ $isTxCancelled ? 'strike-cancelled' : '' }}">
-                                                                        ₱{{ number_format($txGrossOblig, 2) }}
+                                                                        ₱{{ number_format($txNetOblig, 2) }}
                                                                     </td>
 
                                                                     <td class="text-right align-middle font-weight-bold text-danger border-left-danger financial-number">

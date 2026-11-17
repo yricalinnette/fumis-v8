@@ -128,7 +128,7 @@
     {{-- Header Section --}}
     <table class="header-table">
         <tr>
-            <td width="20%"><img src="data:image/png;base64,{{ base64_encode(file_get_contents(public_path('images\doh_seal.png'))) }}" class="logo"></td>
+            <td width="20%"><img src="data:image/png;base64,{{ base64_encode(file_get_contents(public_path('images/doh_seal.png'))) }}" class="logo"></td>
             <td width="60%" align="center">
                 Republic of the Philippines<br>
                 <strong>Department of Health</strong><br><br>

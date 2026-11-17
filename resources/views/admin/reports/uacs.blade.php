@@ -1,6 +1,10 @@
 @extends('layouts.adminlte')
 
 @section('content')
+@php
+    $hasCustomDateRange = !empty(request('date_from')) || !empty(request('date_to'));
+@endphp
+
 <style>
     .financial-number { font-family: 'Consolas', 'Courier New', Courier, monospace; font-weight: 600; letter-spacing: -0.3px; }
     .card-navy.card-outline { border-top: 3px solid #001f3f; }
@@ -30,6 +34,14 @@
                 UACS Utilization Breakdown for Fiscal Year <strong>{{ request('year', $year ?? date('Y')) }}</strong>
                 @if(request('section')) | Section: <strong>{{ request('section') }}</strong> @endif
                 @if(request('fund_source')) | Fund Source: <strong>{{ request('fund_source') }}</strong> @endif
+                @if($hasCustomDateRange)
+                    | Date Range:
+                    <span class="badge badge-info font-weight-bold px-2 py-1">
+                        {{ request('date_from') ? \Carbon\Carbon::parse(request('date_from'))->format('M d, Y') : 'Start of FY' }}
+                        &ndash;
+                        {{ request('date_to') ? \Carbon\Carbon::parse(request('date_to'))->format('M d, Y') : 'Present' }}
+                    </span>
+                @endif
             </p>
         </div>
 
@@ -46,18 +58,18 @@
         </div>
     </div>
     <p class="text-muted small mb-4">
-        <i class="fas fa-info-circle text-info mr-1"></i> Grouped by Section/Unit and Fund Source so you can easily identify UACS allocations, obligations, NORSA adjustments, and disbursements.
+        <i class="fas fa-info-circle text-info mr-1"></i> Grouped by Section/Unit and Fund Source so you can easily identify UACS allocations, obligations, NORSA adjustments, disbursements, and unpaid obligations.
     </p>
 
-    {{-- FILTER & SEARCH TOOLBAR --}}
+    {{-- FILTER & SEARCH TOOLBAR (Single-Row Layout) --}}
     <div class="card card-default filter-section collapse show shadow-sm mb-4" id="filterCard">
-        <div class="card-body p-3">
+        <div class="card-body py-2 px-3">
             <form method="GET" action="{{ url()->current() }}" id="filterForm">
-                <div class="row align-items-center">
+                <div class="d-flex flex-wrap flex-xl-nowrap align-items-end" style="gap: 8px;">
                     {{-- Fiscal Year --}}
-                    <div class="col-md-2 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1">Fiscal Year</label>
-                        <select name="year" class="form-control form-control-sm" onchange="this.form.submit()">
+                    <div style="min-width: 92px; flex: 0 0 96px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Fiscal Year</label>
+                        <select name="year" id="uacsFilterYear" class="form-control form-control-sm" onchange="this.form.submit()">
                             @foreach(range(date('Y') + 1, 2022) as $y)
                                 <option value="{{ $y }}" {{ ($year ?? date('Y')) == $y ? 'selected' : '' }}>FY {{ $y }}</option>
                             @endforeach
@@ -65,8 +77,8 @@
                     </div>
 
                     {{-- Filter Section --}}
-                    <div class="col-md-3 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1">Filter Section / Unit</label>
+                    <div class="flex-grow-1" style="min-width: 165px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Section / Unit</label>
                         <select name="section" class="form-control form-control-sm" onchange="this.form.submit()">
                             <option value="">-- All Sections --</option>
                             @foreach($groupedReport as $sec)
@@ -78,8 +90,8 @@
                     </div>
 
                     {{-- Filter Fund Source --}}
-                    <div class="col-md-3 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1">Filter Fund Source</label>
+                    <div class="flex-grow-1" style="min-width: 165px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Fund Source</label>
                         <select name="fund_source" class="form-control form-control-sm" onchange="this.form.submit()">
                             <option value="">-- All Fund Sources --</option>
                             @foreach($allFundSources as $srcName)
@@ -91,8 +103,8 @@
                     </div>
 
                     {{-- Allotment Class --}}
-                    <div class="col-md-2 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1">Allotment Class</label>
+                    <div style="min-width: 115px; flex: 0 1 130px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Allotment Class</label>
                         <select name="allotment_class" class="form-control form-control-sm" onchange="this.form.submit()">
                             <option value="">-- All Classes --</option>
                             @foreach($allotmentClasses as $class)
@@ -103,14 +115,34 @@
                         </select>
                     </div>
 
-                    {{-- Search Keywords --}}
-                    <div class="col-md-2">
-                        <label class="small font-weight-bold mb-1">Search UACS</label>
+                    {{-- Date Range (From & To) --}}
+                    <div style="min-width: 130px; flex: 0 0 134px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Date From</label>
+                        <input type="date" name="date_from" id="uacsDateFrom"
+                               value="{{ request('date_from') }}"
+                               class="form-control form-control-sm px-2">
+                    </div>
+
+                    <div style="min-width: 130px; flex: 0 0 134px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Date To</label>
+                        <input type="date" name="date_to" id="uacsDateTo"
+                               value="{{ request('date_to') }}"
+                               class="form-control form-control-sm px-2">
+                    </div>
+
+                    {{-- Search Keywords & Actions --}}
+                    <div style="min-width: 195px; flex: 0 1 225px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Search UACS</label>
                         <div class="input-group input-group-sm">
                             <input type="text" name="search" class="form-control" placeholder="Code or Title..." value="{{ $search ?? '' }}">
                             <div class="input-group-append">
-                                <button type="submit" class="btn btn-primary" title="Search"><i class="fas fa-search"></i></button>
-                                <a href="{{ url()->current() }}" class="btn btn-secondary" title="Reset"><i class="fas fa-undo"></i></a>
+                                @if($hasCustomDateRange)
+                                    <button type="button" id="uacsClearDatesBtn" class="btn btn-outline-danger" title="Clear Date Range">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                @endif
+                                <button type="submit" class="btn btn-primary" title="Apply Filters"><i class="fas fa-search"></i></button>
+                                <a href="{{ url()->current() }}" class="btn btn-secondary" title="Reset All"><i class="fas fa-undo"></i></a>
                             </div>
                         </div>
                     </div>
@@ -153,22 +185,26 @@
                             <table class="table table-bordered table-hover mb-0 text-xs">
                                 <thead class="bg-navy-light text-uppercase">
                                     <tr>
-                                        <th style="width: 11%;">UACS Code</th>
-                                        <th style="width: 23%;">Account Title</th>
+                                        <th style="width: 10%;">UACS Code</th>
+                                        <th style="width: 21%;">Account Title</th>
                                         <th class="text-center" style="width: 5%;">Class</th>
-                                        <th class="text-right" style="width: 9.5%;">Allotted</th>
-                                        <th class="text-right" style="width: 8.5%;">Pending</th>
-                                        <th class="text-right" style="width: 9.5%;">Gross Oblig.</th>
-                                        <th class="text-right" style="width: 8%;">NORSA</th>
-                                        <th class="text-right" style="width: 9.5%;">Net Oblig.</th>
-                                        <th class="text-right" style="width: 9.5%;">Disbursed</th>
-                                        <th class="text-right" style="width: 9.5%;">Unobligated</th>
-                                        <th class="text-center" style="width: 7%;">Txns</th>
+                                        <th class="text-right" style="width: 8.5%;">Allotted</th>
+                                        <th class="text-right" style="width: 8%;">Pending</th>
+                                        <th class="text-right" style="width: 8.5%;">Gross Oblig.</th>
+                                        <th class="text-right" style="width: 7.5%;">NORSA</th>
+                                        <th class="text-right" style="width: 8.5%;">Net Oblig.</th>
+                                        <th class="text-right" style="width: 8.5%;">Disbursed</th>
+                                        <th class="text-right" style="width: 8.5%;">Unpaid Oblig.</th>
+                                        <th class="text-right" style="width: 8.5%;">Unobligated</th>
+                                        <th class="text-center" style="width: 6.5%;">Txns</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     @foreach($source['uacs_items'] as $uIdx => $uacs)
-                                        @php $collapseId = "uacs-trx-{$secIdx}-{$srcIdx}-{$uIdx}"; @endphp
+                                        @php
+                                            $collapseId = "uacs-trx-{$secIdx}-{$srcIdx}-{$uIdx}";
+                                            $uacsUnpaid = $uacs['unpaid'] ?? max(0, round(($uacs['net_obligated'] ?? 0) - ($uacs['disbursed'] ?? 0), 2));
+                                        @endphp
                                         <tr>
                                             <td class="align-middle font-weight-bold text-navy financial-number text-nowrap">
                                                 {{ $uacs['uacs_code'] }}
@@ -187,6 +223,9 @@
                                             </td>
                                             <td class="text-right align-middle financial-number text-primary">₱{{ number_format($uacs['net_obligated'], 2) }}</td>
                                             <td class="text-right align-middle financial-number text-success">₱{{ number_format($uacs['disbursed'], 2) }}</td>
+                                            <td class="text-right align-middle financial-number {{ $uacsUnpaid > 0 ? 'text-orange font-weight-bold' : 'text-muted' }}" style="{{ $uacsUnpaid > 0 ? 'color: #d97706;' : '' }}">
+                                                ₱{{ number_format($uacsUnpaid, 2) }}
+                                            </td>
                                             <td class="text-right align-middle financial-number text-dark">₱{{ number_format($uacs['unobligated'], 2) }}</td>
                                             <td class="text-center align-middle">
                                                 <button class="btn btn-xs btn-outline-info font-weight-bold px-2" data-toggle="collapse" data-target="#{{ $collapseId }}">
@@ -197,7 +236,7 @@
 
                                         {{-- Inline Collapsible Transaction Breakdown --}}
                                         <tr class="collapse bg-soft-light" id="{{ $collapseId }}">
-                                            <td colspan="11" class="p-3">
+                                            <td colspan="12" class="p-3">
                                                 <div class="border rounded bg-white p-2">
                                                     <div class="d-flex justify-content-between align-items-center mb-2">
                                                         <span class="font-weight-bold text-navy">
@@ -210,10 +249,13 @@
                                                     </div>
 
                                                     @forelse($uacs['activities'] as $actItem)
+                                                        @php
+                                                            $actUnpaid = $actItem['unpaid'] ?? max(0, round(($actItem['net_obligated'] ?? 0) - ($actItem['disbursed'] ?? 0), 2));
+                                                        @endphp
                                                         <div class="border rounded mb-3 overflow-hidden">
                                                             {{-- Activity Header Strip with Per-Activity Totals --}}
                                                             <div class="bg-navy-light px-3 py-2 border-bottom d-flex flex-wrap justify-content-between align-items-center" style="gap: 8px;">
-                                                                <div class="font-weight-bold text-dark" style="font-size: 0.78rem; max-width: 52%;">
+                                                                <div class="font-weight-bold text-dark" style="font-size: 0.78rem; max-width: 48%;">
                                                                     <i class="fas fa-tag text-primary mr-1"></i> {{ $actItem['activity_name'] }}
                                                                 </div>
                                                                 <div class="d-flex flex-wrap align-items-center text-xs" style="gap: 12px;">
@@ -224,6 +266,7 @@
                                                                         <span>NORSA: <strong class="financial-number text-danger">(₱{{ number_format($actItem['norsa_amount'], 2) }})</strong></span>
                                                                     @endif
                                                                     <span>Disbursed: <strong class="financial-number text-success">₱{{ number_format($actItem['disbursed'], 2) }}</strong></span>
+                                                                    <span>Unpaid: <strong class="financial-number" style="color: #d97706;">₱{{ number_format($actUnpaid, 2) }}</strong></span>
                                                                     <span>Unobligated: <strong class="financial-number text-dark">₱{{ number_format($actItem['unobligated'], 2) }}</strong></span>
                                                                     <span class="badge badge-secondary">{{ $actItem['transactions']->count() }} txns</span>
                                                                 </div>
@@ -235,12 +278,12 @@
                                                                     <tr>
                                                                         <th style="width: 13%;">DTrack / OBRN</th>
                                                                         <th style="width: 18%;">Payee / Creditor</th>
-                                                                        <th style="width: 31%;">Particulars</th>
-                                                                        <th class="text-right" style="width: 9%;">Routed / Amt</th>
-                                                                        <th class="text-right" style="width: 9%;">Gross Oblig.</th>
+                                                                        <th style="width: 27%;">Particulars</th>
+                                                                        <th class="text-right" style="width: 8.5%;">Routed / Amt</th>
+                                                                        <th class="text-right" style="width: 8.5%;">Net Oblig.</th>
                                                                         <th class="text-right text-danger" style="width: 7%;">NORSA</th>
-                                                                        <th class="text-right" style="width: 9%;">Disbursed</th>
-                                                                        <th class="text-center" style="width: 10%;">Status</th>
+                                                                        <th class="text-right" style="width: 8.5%;">Disbursed</th>
+                                                                        <th class="text-center" style="width: 9.5%;">Status</th>
                                                                     </tr>
                                                                 </thead>
                                                                 <tbody class="text-xs">
@@ -254,6 +297,8 @@
                                                                             $isTxCancelled     = !empty($tx->is_cancelled)
                                                                                 || strtolower((string) ($tx->status ?? '')) === 'cancelled'
                                                                                 || $isFullNorsaCancel;
+
+                                                                            $netObligAmt = $isTxCancelled ? 0.00 : max(0.00, $baseGrossOb - $txNorsaAmt);
 
                                                                             $isCosSalary = !empty($tx->is_cos_salary)
                                                                                 || (isset($tx->remarks_salary) && $tx->remarks_salary === 'Imported HR COS Salary/Wages')
@@ -289,7 +334,7 @@
                                                                                 @endif
                                                                             </td>
                                                                             <td class="text-right financial-number">₱{{ number_format($tx->routed_amount, 2) }}</td>
-                                                                            <td class="text-right financial-number text-info">₱{{ number_format($baseGrossOb, 2) }}</td>
+                                                                            <td class="text-right financial-number text-primary">₱{{ number_format($netObligAmt, 2) }}</td>
                                                                             <td class="text-right financial-number text-danger">{{ $txNorsaAmt > 0 ? '(₱' . number_format($txNorsaAmt, 2) . ')' : '-' }}</td>
                                                                             <td class="text-right financial-number text-success">{{ $isTxCancelled ? '-' : '₱' . number_format($tx->disbursement_amount, 2) }}</td>
                                                                             <td class="text-center align-middle">
@@ -332,6 +377,9 @@
                                     @endforeach
                                 </tbody>
                                 {{-- Fund Source Subtotal Footer --}}
+                                @php
+                                    $srcUnpaid = $source['total_unpaid'] ?? max(0, round(($source['total_net_oblig'] ?? 0) - ($source['total_disbursed'] ?? 0), 2));
+                                @endphp
                                 <tfoot class="bg-light font-weight-bold">
                                     <tr>
                                         <td colspan="3" class="text-right text-uppercase">Subtotal ({{ $source['source_name'] }}):</td>
@@ -343,6 +391,7 @@
                                         </td>
                                         <td class="text-right financial-number text-primary">₱{{ number_format($source['total_net_oblig'], 2) }}</td>
                                         <td class="text-right financial-number text-success">₱{{ number_format($source['total_disbursed'], 2) }}</td>
+                                        <td class="text-right financial-number" style="color: #d97706;">₱{{ number_format($srcUnpaid, 2) }}</td>
                                         <td class="text-right financial-number text-dark">₱{{ number_format($source['total_unobligated'], 2) }}</td>
                                         <td></td>
                                     </tr>
@@ -374,6 +423,39 @@
                 $('.collapse:not(#filterCard)').collapse('hide');
                 $(this).html('<i class="fas fa-expand-arrows-alt mr-1"></i> Expand All');
             }
+        });
+
+        const $dateFrom = $('#uacsDateFrom');
+        const $dateTo   = $('#uacsDateTo');
+
+        $dateFrom.on('change', function() {
+            const fromVal = $(this).val();
+            if (fromVal) {
+                $dateTo.attr('min', fromVal);
+                if ($dateTo.val() && $dateTo.val() < fromVal) {
+                    $dateTo.val(fromVal);
+                }
+            } else {
+                $dateTo.removeAttr('min');
+            }
+        });
+
+        $dateTo.on('change', function() {
+            const toVal = $(this).val();
+            if (toVal) {
+                $dateFrom.attr('max', toVal);
+                if ($dateFrom.val() && $dateFrom.val() > toVal) {
+                    $dateFrom.val(toVal);
+                }
+            } else {
+                $dateFrom.removeAttr('max');
+            }
+        });
+
+        $('#uacsClearDatesBtn').on('click', function() {
+            $dateFrom.val('').removeAttr('max');
+            $dateTo.val('').removeAttr('min');
+            $('#filterForm').submit();
         });
     });
 </script>

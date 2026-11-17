@@ -55,6 +55,18 @@ class ReportController extends Controller
         $month         = $request->get('month');
         $sourceType    = $request->get('source_type');
         $sectionFilter = $request->get('section_id');
+        $dateFrom      = $request->get('date_from');
+        $dateTo        = $request->get('date_to');
+        $hasDateRange  = !empty($dateFrom) || !empty($dateTo);
+
+        // Parse normalized boundary dates if a custom range is active
+        $parsedDateFrom = !empty($dateFrom) ? \Carbon\Carbon::parse($dateFrom)->startOfDay() : null;
+        $parsedDateTo   = !empty($dateTo)   ? \Carbon\Carbon::parse($dateTo)->endOfDay()     : null;
+
+        // If user picks a date range spanning a different year (and didn't explicitly lock year), align fiscal_year if single-year
+        if ($hasDateRange && !$request->filled('year')) {
+            $year = ($parsedDateFrom ?? $parsedDateTo)->year;
+        }
 
         $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
         $isDivision      = \Illuminate\Support\Facades\Gate::allows('division-access');
@@ -66,10 +78,10 @@ class ReportController extends Controller
         }
 
         $quarterMonthsMap = [
-            1 => [1, 2, 3], 
-            2 => [4, 5, 6], 
-            3 => [7, 8, 9], 
-            4 => [10, 11, 12]
+            1 => [1, 2, 3],
+            2 => [4, 5, 6],
+            3 => [7, 8, 9],
+            4 => [10, 11, 12],
         ];
 
         $selectedMonths = [];
@@ -113,54 +125,47 @@ class ReportController extends Controller
             }
         }
 
+        // Reusable SQL date constraint closure for any date column
+        $applySqlPeriod = function ($q, string $column) use ($year, $month, $selectedMonths, $hasDateRange, $dateFrom, $dateTo) {
+            if ($hasDateRange) {
+                if (!empty($dateFrom)) {
+                    $q->whereDate($column, '>=', $dateFrom);
+                }
+                if (!empty($dateTo)) {
+                    $q->whereDate($column, '<=', $dateTo);
+                }
+            } else {
+                $q->whereYear($column, $year);
+                if ($month) {
+                    $q->whereMonth($column, $month);
+                } elseif (!empty($selectedMonths)) {
+                    $q->whereIn(\DB::raw("MONTH({$column})"), $selectedMonths);
+                }
+            }
+        };
+
         $sources = $query->with([
             'activities',
             'cancellations',
-            'funds' => function ($query) use ($year, $month, $selectedMonths) {
-                $query->where(function ($q) use ($year, $month, $selectedMonths) {
-                    $q->where(function ($obligQ) use ($year, $month, $selectedMonths) {
-                        $obligQ->whereYear('obligation_date', $year);
-                        if ($month) {
-                            $obligQ->whereMonth('obligation_date', $month);
-                        } elseif (!empty($selectedMonths)) {
-                            $obligQ->whereIn(\DB::raw('MONTH(obligation_date)'), $selectedMonths);
-                        }
+            'funds' => function ($query) use ($applySqlPeriod) {
+                $query->where(function ($q) use ($applySqlPeriod) {
+                    $q->where(function ($obligQ) use ($applySqlPeriod) {
+                        $applySqlPeriod($obligQ, 'obligation_date');
                     })
-                    ->orWhere(function ($disbQ) use ($year, $month, $selectedMonths) {
-                        $disbQ->whereYear('disbursement_date', $year);
-                        if ($month) {
-                            $disbQ->whereMonth('disbursement_date', $month);
-                        } elseif (!empty($selectedMonths)) {
-                            $disbQ->whereIn(\DB::raw('MONTH(disbursement_date)'), $selectedMonths);
-                        }
+                    ->orWhere(function ($disbQ) use ($applySqlPeriod) {
+                        $applySqlPeriod($disbQ, 'disbursement_date');
                     })
-                    ->orWhereHas('cosSalaryDisbursements', function ($cosQ) use ($year, $month, $selectedMonths) {
-                        $cosQ->whereYear('disbursement_date', $year);
-                        if ($month) {
-                            $cosQ->whereMonth('disbursement_date', $month);
-                        } elseif (!empty($selectedMonths)) {
-                            $cosQ->whereIn(\DB::raw('MONTH(disbursement_date)'), $selectedMonths);
-                        }
+                    ->orWhereHas('cosSalaryDisbursements', function ($cosQ) use ($applySqlPeriod) {
+                        $applySqlPeriod($cosQ, 'disbursement_date');
                     })
-                    ->orWhere(function ($cancelQ) use ($year, $month, $selectedMonths) {
-                        $cancelQ->where('status', 'Cancelled')
-                                ->whereYear('status_date', $year);
-                        if ($month) {
-                            $cancelQ->whereMonth('status_date', $month);
-                        } elseif (!empty($selectedMonths)) {
-                            $cancelQ->whereIn(\DB::raw('MONTH(status_date)'), $selectedMonths);
-                        }
+                    ->orWhere(function ($cancelQ) use ($applySqlPeriod) {
+                        $cancelQ->where('status', 'Cancelled');
+                        $applySqlPeriod($cancelQ, 'status_date');
                     })
-                    ->orWhere(function ($subYear) use ($year, $month, $selectedMonths) {
+                    ->orWhere(function ($subYear) use ($applySqlPeriod) {
                         $subYear->whereNull('obligation_date')
-                                ->whereNull('disbursement_date')
-                                ->whereYear('created_at', $year);
-
-                        if ($month) {
-                            $subYear->whereMonth('created_at', $month);
-                        } elseif (!empty($selectedMonths)) {
-                            $subYear->whereIn(\DB::raw('MONTH(created_at)'), $selectedMonths);
-                        }
+                                ->whereNull('disbursement_date');
+                        $applySqlPeriod($subYear, 'created_at');
                     });
                 })
                 // Include Cancelled so prior obligations & cancellations reflect accurately, only exclude Rejected
@@ -172,10 +177,17 @@ class ReportController extends Controller
             'funds.cancellations',
         ])->get();
 
-        // Date filter helper for adjustment/cancellation records
-        $matchesPeriod = function ($dateVal) use ($year, $month, $selectedMonths) {
+        // Date filter helper for adjustment/cancellation/transaction records
+        $matchesPeriod = function ($dateVal) use ($year, $month, $selectedMonths, $hasDateRange, $parsedDateFrom, $parsedDateTo) {
             if (empty($dateVal)) return true;
             $d = \Carbon\Carbon::parse($dateVal);
+
+            if ($hasDateRange) {
+                if ($parsedDateFrom && $d->lt($parsedDateFrom)) return false;
+                if ($parsedDateTo   && $d->gt($parsedDateTo))   return false;
+                return true;
+            }
+
             if ($d->year != $year) return false;
             if ($month && $d->month != $month) return false;
             if (!empty($selectedMonths) && !in_array($d->month, $selectedMonths)) return false;
@@ -183,10 +195,9 @@ class ReportController extends Controller
         };
 
         $reportData = $sources->map(function ($source) use ($allSections, $matchesPeriod) {
-            
             $pooledActivities = $source->activities->filter(fn($act) => ($act->pooled_amount ?? 0) > 0 || !empty($act->is_pooled));
             $totalPooled = (float) $pooledActivities->sum('pooled_amount');
-            
+
             $pooledReasonsFormatted = $pooledActivities->map(function ($act) {
                 $reason = $act->pooled_remarks ?? $act->pooled_reason ?? $act->remarks ?? 'Pooled by Management';
                 return '• ' . $act->name . ': ₱' . number_format($act->pooled_amount, 2) . ' (' . $reason . ')';
@@ -297,7 +308,7 @@ class ReportController extends Controller
                 ->sum(fn($activity) => ($activity->budget_adjusted ?? $activity->budget) - $activity->pooled_amount);
 
             // Exclude Cancelled funds from Pending (their allotment returns to Unobligated Balance)
-            $pending = (float) $source->funds->filter(fn($f) => 
+            $pending = (float) $source->funds->filter(fn($f) =>
                 !in_array($f->id, $cancelledFundIds) &&
                 (empty($f->obligation_date) || $f->obligation_amount <= 0) &&
                 ($f->disbursement_amount <= 0)
@@ -306,13 +317,13 @@ class ReportController extends Controller
             // 7. COS SALARY SAVINGS (Exclude Cancelled)
             $cosSavings = (float) $source->funds->filter(function ($fund) use ($cancelledFundIds) {
                 if (in_array($fund->id, $cancelledFundIds)) return false;
-                return $fund->remarks_salary === 'Imported HR COS Salary/Wages' || 
+                return $fund->remarks_salary === 'Imported HR COS Salary/Wages' ||
                     $fund->status === 'Disbursed (with savings)';
             })->sum(function ($fund) {
                 $isFullyDisbursed = false;
 
                 if ($fund->cosContract && $fund->cosContract->total_months > 0) {
-                    $isFullyDisbursed = ($fund->disbursed_months >= $fund->cosContract->total_months) || 
+                    $isFullyDisbursed = ($fund->disbursed_months >= $fund->cosContract->total_months) ||
                                         ($fund->cosContract->status === 'Completed');
                 } else {
                     $isFullyDisbursed = in_array($fund->status, ['Completed', 'Disbursed (with savings)']);
@@ -377,7 +388,7 @@ class ReportController extends Controller
                 'total_obligated'               => $netObligated,
                 'total_disbursed'               => $disbursed,
                 'total_unpaid'                  => $unpaidObligations,
-                'total_pending'                 => $pending, 
+                'total_pending'                 => $pending,
                 'total_savings'                 => $totalSavings,
                 'procurable_budget_total'       => $procurableBudget,
                 'non_procurable_budget_total'   => $nonProcurableBudget,
@@ -433,9 +444,19 @@ class ReportController extends Controller
      */
     public function getBudgetByLineItemData(Request $request)
     {
-        $year  = $request->get('year', date('Y'));
-        $month = $request->get('month');
-        
+        $year         = $request->get('year', date('Y'));
+        $month        = $request->get('month');
+        $dateFrom     = $request->get('date_from');
+        $dateTo       = $request->get('date_to');
+        $hasDateRange = !empty($dateFrom) || !empty($dateTo);
+
+        $parsedDateFrom = !empty($dateFrom) ? \Carbon\Carbon::parse($dateFrom)->startOfDay() : null;
+        $parsedDateTo   = !empty($dateTo)   ? \Carbon\Carbon::parse($dateTo)->endOfDay()     : null;
+
+        if ($hasDateRange && !$request->filled('year')) {
+            $year = ($parsedDateFrom ?? $parsedDateTo)->year;
+        }
+
         $quarters = (array) $request->get('quarters', []);
         if (empty($quarters) && $request->has('quarter') && $request->get('quarter') !== '') {
             $quarters = [$request->get('quarter')];
@@ -446,9 +467,9 @@ class ReportController extends Controller
         $user            = auth()->user();
 
         $quarterMonthsMap = [
-            1 => [1, 2, 3], 
-            2 => [4, 5, 6], 
-            3 => [7, 8, 9], 
+            1 => [1, 2, 3],
+            2 => [4, 5, 6],
+            3 => [7, 8, 9],
             4 => [10, 11, 12],
         ];
 
@@ -462,61 +483,53 @@ class ReportController extends Controller
 
         $sectionNames = \DB::connection('db_common')->table('tbl_section')->pluck('secname', 'secid');
 
+        // Reusable SQL period/date-range constraint
+        $applySqlPeriod = function ($q, string $column) use ($year, $month, $selectedMonths, $hasDateRange, $dateFrom, $dateTo) {
+            if ($hasDateRange) {
+                if (!empty($dateFrom)) {
+                    $q->whereDate($column, '>=', $dateFrom);
+                }
+                if (!empty($dateTo)) {
+                    $q->whereDate($column, '<=', $dateTo);
+                }
+            } else {
+                $q->whereYear($column, $year);
+                if ($month) {
+                    $q->whereMonth($column, $month);
+                } elseif (!empty($selectedMonths)) {
+                    $q->whereIn(\DB::raw("MONTH({$column})"), $selectedMonths);
+                }
+            }
+        };
+
         $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
             ->with([
-                'activities', 
-                'funds' => function ($q) use ($year, $month, $selectedMonths) {
-                    $q->where(function ($sub) use ($year, $month, $selectedMonths) {
-                        $sub->where(function ($obligQ) use ($year, $month, $selectedMonths) {
-                            $obligQ->whereYear('obligation_date', $year);
-                            if ($month) {
-                                $obligQ->whereMonth('obligation_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $obligQ->whereIn(\DB::raw('MONTH(obligation_date)'), $selectedMonths);
-                            }
+                'activities',
+                'funds' => function ($q) use ($applySqlPeriod) {
+                    $q->where(function ($sub) use ($applySqlPeriod) {
+                        $sub->where(function ($obligQ) use ($applySqlPeriod) {
+                            $applySqlPeriod($obligQ, 'obligation_date');
                         })
-                        ->orWhere(function ($disbQ) use ($year, $month, $selectedMonths) {
-                            $disbQ->whereYear('disbursement_date', $year);
-                            if ($month) {
-                                $disbQ->whereMonth('disbursement_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $disbQ->whereIn(\DB::raw('MONTH(disbursement_date)'), $selectedMonths);
-                            }
+                        ->orWhere(function ($disbQ) use ($applySqlPeriod) {
+                            $applySqlPeriod($disbQ, 'disbursement_date');
                         })
-                        ->orWhereHas('cosSalaryDisbursements', function ($cosQ) use ($year, $month, $selectedMonths) {
-                            $cosQ->whereYear('disbursement_date', $year);
-                            if ($month) {
-                                $cosQ->whereMonth('disbursement_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $cosQ->whereIn(\DB::raw('MONTH(disbursement_date)'), $selectedMonths);
-                            }
+                        ->orWhereHas('cosSalaryDisbursements', function ($cosQ) use ($applySqlPeriod) {
+                            $applySqlPeriod($cosQ, 'disbursement_date');
                         })
-                        ->orWhere(function ($cancelQ) use ($year, $month, $selectedMonths) {
-                            $cancelQ->where('status', 'Cancelled')
-                                    ->whereYear('status_date', $year);
-                            if ($month) {
-                                $cancelQ->whereMonth('status_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $cancelQ->whereIn(\DB::raw('MONTH(status_date)'), $selectedMonths);
-                            }
+                        ->orWhere(function ($cancelQ) use ($applySqlPeriod) {
+                            $cancelQ->where('status', 'Cancelled');
+                            $applySqlPeriod($cancelQ, 'status_date');
                         })
-                        ->orWhere(function ($subYear) use ($year, $month, $selectedMonths) {
+                        ->orWhere(function ($subYear) use ($applySqlPeriod) {
                             $subYear->whereNull('obligation_date')
-                                    ->whereNull('disbursement_date')
-                                    ->whereYear('created_at', $year);
-
-                            if ($month) {
-                                $subYear->whereMonth('created_at', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $subYear->whereIn(\DB::raw('MONTH(created_at)'), $selectedMonths);
-                            }
+                                    ->whereNull('disbursement_date');
+                            $applySqlPeriod($subYear, 'created_at');
                         });
                     })
-                    // Include Cancelled so prior obligations & cancellations reflect accurately, only exclude Rejected
                     ->where('status', '!=', 'Rejected');
-                }, 
-                'funds.cosContract', 
-                'funds.cosSalaryDisbursements', 
+                },
+                'funds.cosContract',
+                'funds.cosSalaryDisbursements',
                 'funds.norsaAdjustments',
                 'funds.cancellations',
                 'funds.multiActivities',
@@ -543,20 +556,26 @@ class ReportController extends Controller
         $sources = $query->get();
 
         // Period matcher helper
-        $matchesPeriod = function ($dateVal) use ($year, $month, $selectedMonths) {
+        $matchesPeriod = function ($dateVal) use ($year, $month, $selectedMonths, $hasDateRange, $parsedDateFrom, $parsedDateTo) {
             if (empty($dateVal)) return true;
             $d = \Carbon\Carbon::parse($dateVal);
+
+            if ($hasDateRange) {
+                if ($parsedDateFrom && $d->lt($parsedDateFrom)) return false;
+                if ($parsedDateTo   && $d->gt($parsedDateTo))   return false;
+                return true;
+            }
+
             if ($d->year != $year) return false;
             if ($month && $d->month != $month) return false;
             if (!empty($selectedMonths) && !in_array($d->month, $selectedMonths)) return false;
             return true;
         };
 
-        return $sources->map(function ($source) use ($year, $month, $selectedMonths, $sectionNames, $matchesPeriod) {
+        return $sources->map(function ($source) use ($sectionNames, $matchesPeriod) {
             $originalSourceTotal = (float) $source->total_amount;
-            
-            $lineItems = $source->activities->map(function ($activity) use ($source, $matchesPeriod) {
 
+            $lineItems = $source->activities->map(function ($activity) use ($source, $matchesPeriod) {
                 // 1. Single activity funds assigned directly to this specific transaction_type_id
                 $directFunds = $source->funds
                     ->where('transaction_type_id', $activity->id)
@@ -568,13 +587,13 @@ class ReportController extends Controller
                     return $f->multiActivities->contains('transaction_type_id', $activity->id);
                 });
 
-                $grossObligated       = 0.00;
-                $norsaAmount          = 0.00;
-                $cancelledAmount      = 0.00;
-                $overlapNorsaCancel   = 0.00;
-                $disbursed            = 0.00;
-                $cancelledDirectIds   = [];
-                $cancelledMultiIds    = [];
+                $grossObligated     = 0.00;
+                $norsaAmount        = 0.00;
+                $cancelledAmount    = 0.00;
+                $overlapNorsaCancel = 0.00;
+                $disbursed          = 0.00;
+                $cancelledDirectIds = [];
+                $cancelledMultiIds  = [];
 
                 // Direct Funds: Gross Obligation, NORSA, & Cancellations (including Full-NORSA Cancellations)
                 foreach ($directFunds as $f) {
@@ -629,12 +648,12 @@ class ReportController extends Controller
                     }
                 }
 
-                // Multi-Activity Line Items: Gross Obligation, NORSA, & Cancellations (including Full-NORSA Cancellations)
+                // Multi-Activity Line Items: Gross Obligation, NORSA, & Cancellations
                 foreach ($multiFunds as $f) {
-                    $matchedItems      = $f->multiActivities->where('transaction_type_id', $activity->id);
-                    $totalRoutedAll    = (float) $f->multiActivities->sum('routed_amount');
-                    $matchedRouted     = (float) $matchedItems->sum('routed_amount');
-                    $shareRatio        = $totalRoutedAll > 0 ? ($matchedRouted / $totalRoutedAll) : 0;
+                    $matchedItems   = $f->multiActivities->where('transaction_type_id', $activity->id);
+                    $totalRoutedAll = (float) $f->multiActivities->sum('routed_amount');
+                    $matchedRouted  = (float) $matchedItems->sum('routed_amount');
+                    $shareRatio     = $totalRoutedAll > 0 ? ($matchedRouted / $totalRoutedAll) : 0;
 
                     $activityNorsaForFund = 0.00;
                     if ($f->norsaAdjustments && $f->norsaAdjustments->count() > 0) {
@@ -685,7 +704,6 @@ class ReportController extends Controller
                         if ($isCancelledParent && $lineItemsNetOblig <= 0) {
                             $grossObligated += ($activityCancelledForFund > 0 ? $activityCancelledForFund : $matchedRouted);
                         } else {
-                            // Multi-activity obligation_amount is stored NET of NORSA; add back NORSA once for Gross
                             $grossObligated += $lineItemsGrossOblig;
                         }
                     }
@@ -694,7 +712,7 @@ class ReportController extends Controller
                 // Net Obligation (Gross minus NORSA and Cancellations, without double-counting overlap)
                 $netObligated = max(0.00, $grossObligated - $norsaAmount - $cancelledAmount + $overlapNorsaCancel);
 
-                // --- CALCULATE DISBURSEMENTS (Exclude Cancelled & Full-NORSA-Cancelled funds) ---
+                // --- CALCULATE DISBURSEMENTS ---
                 foreach ($directFunds as $f) {
                     if (in_array($f->id, $cancelledDirectIds)) continue;
 
@@ -724,8 +742,8 @@ class ReportController extends Controller
                 }
 
                 // Disbursement Rate against Net Obligation (capped at 100%)
-                $disbursementRate = $netObligated > 0 
-                    ? min(100.0, ($disbursed / $netObligated) * 100) 
+                $disbursementRate = $netObligated > 0
+                    ? min(100.0, ($disbursed / $netObligated) * 100)
                     : 0;
 
                 $unpaid = max(0.00, $netObligated - $disbursed);
@@ -734,8 +752,8 @@ class ReportController extends Controller
                 $pooled              = (float) ($activity->pooled_amount ?? 0);
                 $activityBudgetNet   = $activityBudgetGross - $pooled;
 
-                // Pending transactions (both direct and multi-activity un-obligated items, excluding Cancelled)
-                $directPending = (float) $directFunds->filter(fn($f) => 
+                // Pending transactions
+                $directPending = (float) $directFunds->filter(fn($f) =>
                     !in_array($f->id, $cancelledDirectIds) &&
                     (empty($f->obligation_date) || $f->obligation_amount <= 0) &&
                     ($f->disbursement_amount <= 0)
@@ -780,7 +798,7 @@ class ReportController extends Controller
                 // COS Contract Completed Savings (Exclude Cancelled)
                 $cosSalaryFunds = $directFunds->filter(function ($fund) use ($cancelledDirectIds) {
                     if (in_array($fund->id, $cancelledDirectIds)) return false;
-                    return $fund->remarks_salary === 'Imported HR COS Salary/Wages' || 
+                    return $fund->remarks_salary === 'Imported HR COS Salary/Wages' ||
                         $fund->status === 'Disbursed (with savings)';
                 });
 
@@ -792,7 +810,7 @@ class ReportController extends Controller
                         $isFullyDisbursed = false;
 
                         if ($fund->cosContract && $fund->cosContract->total_months > 0) {
-                            $isFullyDisbursed = ($fund->disbursed_months >= $fund->cosContract->total_months) || 
+                            $isFullyDisbursed = ($fund->disbursed_months >= $fund->cosContract->total_months) ||
                                                 ($fund->cosContract->status === 'Completed');
                         } else {
                             $isFullyDisbursed = in_array($fund->status, ['Completed', 'Disbursed (with savings)']);
@@ -839,7 +857,7 @@ class ReportController extends Controller
                 'unassigned_balance'    => $originalSourceTotal - $source->activities->sum('budget_adjusted'),
                 'line_items'            => $lineItems,
                 'total_pending'         => $lineItems->sum('pending_amount'),
-                'total_unpaid'          => $lineItems->sum('unpaid_amount'), 
+                'total_unpaid'          => $lineItems->sum('unpaid_amount'),
                 'total_savings'         => $lineItems->sum('savings_amount'),
                 'total_norsa'           => $lineItems->sum('norsa_amount'),
                 'total_cancelled'       => $lineItems->sum('cancelled_amount'),
@@ -848,8 +866,8 @@ class ReportController extends Controller
                 'total_gross_obligated' => $lineItems->sum('gross_obligated'),
                 'total_obligated'       => $lineItems->sum('obligated_amount'),
                 'total_disbursed'       => $lineItems->sum('disbursed_amount'),
-                'overall_disb_rate'     => $lineItems->sum('obligated_amount') > 0 
-                    ? min(100.0, ($lineItems->sum('disbursed_amount') / $lineItems->sum('obligated_amount')) * 100) 
+                'overall_disb_rate'     => $lineItems->sum('obligated_amount') > 0
+                    ? min(100.0, ($lineItems->sum('disbursed_amount') / $lineItems->sum('obligated_amount')) * 100)
                     : 0,
                 'overall_oblig_rate'    => $lineItems->sum('net_budget') > 0 ? ($lineItems->sum('obligated_amount') / $lineItems->sum('net_budget')) * 100 : 0,
             ];
@@ -858,9 +876,15 @@ class ReportController extends Controller
 
     public function budgetByLineItem(Request $request)
     {
-        $year = $request->get('year', date('Y'));
-        $month = $request->get('month');
-        
+        $year     = $request->get('year', date('Y'));
+        $month    = $request->get('month');
+        $dateFrom = $request->get('date_from');
+        $dateTo   = $request->get('date_to');
+
+        if ((!empty($dateFrom) || !empty($dateTo)) && !$request->filled('year')) {
+            $year = \Carbon\Carbon::parse($dateFrom ?: $dateTo)->year;
+        }
+
         $quarters = (array) $request->get('quarters', []);
         if (empty($quarters) && $request->has('quarter') && $request->get('quarter') !== '') {
             $quarters = [$request->get('quarter')];
@@ -868,7 +892,7 @@ class ReportController extends Controller
 
         $reportData = $this->getBudgetByLineItemData($request);
 
-        return view('admin.reports.by_line_item', compact('reportData', 'year', 'month', 'quarters'));
+        return view('admin.reports.by_line_item', compact('reportData', 'year', 'month', 'quarters', 'dateFrom', 'dateTo'));
     }
 
     /**
@@ -913,7 +937,7 @@ class ReportController extends Controller
             ->table('tbl_section')
             ->pluck('secname', 'secid');
 
-        // 4. Build Source of Fund Query (Eager load multiActivities & cancellations)
+        // 4. Build Source of Fund Query
         $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
             ->with([
                 'activities',
@@ -969,7 +993,6 @@ class ReportController extends Controller
                             }
                         });
                     })
-                    // Include Cancelled transactions so they appear in the transaction list & summary; only exclude Rejected
                     ->where('status', '!=', 'Rejected');
 
                     // Apply Text Search inside Funds
@@ -991,6 +1014,7 @@ class ReportController extends Controller
                 'funds.norsaAdjustments',
                 'funds.cancellations',
                 'funds.multiActivities',
+                'funds.dtrackLogs',
             ]);
 
         // 5. TRANSACTION SCOPING & SECTION FILTER LOGIC
@@ -1089,17 +1113,17 @@ class ReportController extends Controller
                 $allTransactions = collect();
 
                 foreach ($source->funds as $fund) {
-                    // Resolve Creditor: prioritize funds.creditor, fallback to decrypted employee_fund names
                     $resolvedCreditor = !empty(trim((string) $fund->creditor))
                         ? $fund->creditor
                         : ($fundEmployeeMap[$fund->id] ?? null);
 
                     $isParentCancelled = strtolower((string) $fund->status) === 'cancelled';
+                    $multiCount = $fund->multiActivities ? $fund->multiActivities->count() : 0;
 
-                    if ($fund->is_multi_activity && $fund->multiActivities && $fund->multiActivities->count() > 0) {
+                    if ($fund->is_multi_activity && $multiCount > 1) {
+                        // TRUE MULTI-ACTIVITY (> 1 activities): obligation_amount per child is stored NET of NORSA
                         $totalRoutedAll = (float) $fund->multiActivities->sum('routed_amount');
 
-                        // Split parent fund into its multi-activity child items
                         foreach ($fund->multiActivities as $multi) {
                             $item = clone $fund;
                             $item->creditor            = $resolvedCreditor;
@@ -1108,6 +1132,7 @@ class ReportController extends Controller
                             $item->disbursement_amount = (float) $multi->disbursement_amount;
                             $item->amount              = (float) ($multi->routed_amount > 0 ? $multi->routed_amount : $fund->amount);
                             $item->is_multi_activity   = true;
+                            $item->ob_is_net_of_norsa  = true;
                             $item->share_ratio         = $totalRoutedAll > 0 ? ((float) $multi->routed_amount / $totalRoutedAll) : 0;
 
                             if ($isParentCancelled || strtolower((string) ($multi->status ?? '')) === 'cancelled') {
@@ -1120,12 +1145,38 @@ class ReportController extends Controller
                             $allTransactions->push($item);
                         }
                     } else {
-                        // Standard single-activity fund
+                        // SINGLE-ACTIVITY (even if is_multi_activity == 1 with 0 or 1 child row)
+                        $singleMulti = ($multiCount === 1) ? $fund->multiActivities->first() : null;
+
                         $item = clone $fund;
-                        $item->creditor          = $resolvedCreditor;
-                        $item->amount            = (float) $fund->amount;
-                        $item->is_multi_activity = false;
-                        $item->share_ratio       = 1.0;
+                        $item->creditor            = $resolvedCreditor;
+                        $item->transaction_type_id = $singleMulti->transaction_type_id ?? $fund->transaction_type_id;
+                        $item->obligation_amount   = (float) $fund->obligation_amount;
+                        $item->disbursement_amount = (float) $fund->disbursement_amount;
+                        $item->amount              = (float) ($fund->amount > 0 ? $fund->amount : ($singleMulti->routed_amount ?? 0));
+                        $item->is_multi_activity   = false;
+                        $item->share_ratio         = 1.0;
+
+                        // Detect if funds.obligation_amount was stored NET of NORSA (e.g. 2760) vs GROSS (e.g. 5400)
+                        $allTimeNorsa = $fund->norsaAdjustments
+                            ? (float) $fund->norsaAdjustments->sum(fn($adj) => (float) ($adj->norsa_amount ?? $adj->amount ?? 0))
+                            : 0.0;
+                        $positiveLogSum = $fund->dtrackLogs
+                            ? (float) $fund->dtrackLogs->where('obligation_amount', '>', 0)->sum('obligation_amount')
+                            : 0.0;
+
+                        if ($positiveLogSum > 0 && $allTimeNorsa > 0 && abs(($item->obligation_amount + $allTimeNorsa) - $positiveLogSum) < 0.05) {
+                            // obligation_amount is stored NET (e.g. 2760 + 2640 == 5400)
+                            $item->ob_is_net_of_norsa = true;
+                        } else {
+                            // obligation_amount is already GROSS (e.g. 5400)
+                            $item->ob_is_net_of_norsa = false;
+                        }
+
+                        if ($isParentCancelled || strtolower((string) ($singleMulti->status ?? '')) === 'cancelled') {
+                            $item->status = 'Cancelled';
+                        }
+
                         $allTransactions->push($item);
                     }
                 }
@@ -1149,7 +1200,7 @@ class ReportController extends Controller
                         }
 
                         $storedOb    = (float) $f->obligation_amount;
-                        $baseGrossOb = !empty($f->is_multi_activity) ? ($storedOb + $txNorsa) : $storedOb;
+                        $baseGrossOb = !empty($f->ob_is_net_of_norsa) ? ($storedOb + $txNorsa) : $storedOb;
 
                         // Explicit Cancelled status OR 100% NORSA reversal (Gross Obligated == NORSA)
                         $isFullNorsaCancel = ($baseGrossOb > 0 && abs($baseGrossOb - $txNorsa) < 0.01);
@@ -1177,7 +1228,7 @@ class ReportController extends Controller
                         } elseif ($isCancelled) {
                             $refDate = $f->status_date ?? $f->obligation_date ?? $f->created_at;
                             if ($matchesPeriod($refDate)) {
-                                $txCancelled = $storedOb > 0 ? $storedOb : (float) ($f->amount ?? 0);
+                                $txCancelled = $baseGrossOb > 0 ? $baseGrossOb : (float) ($f->amount ?? 0);
                             }
                         }
 
@@ -1187,6 +1238,10 @@ class ReportController extends Controller
                             ? ($baseGrossOb > 0 ? $baseGrossOb : ($effectiveNorsa > 0 ? $effectiveNorsa : (float) ($f->amount ?? 0)))
                             : $baseGrossOb;
 
+                        $netTxObligated = $isCancelled
+                            ? 0.00
+                            : max(0.00, $baseGrossOb - $effectiveNorsa);
+
                         $f->is_cancelled          = $isCancelled;
                         $f->is_norsa_cancelled    = $isFullNorsaCancel;
                         $f->is_cos_salary         = $cosMetrics['is_cos_salary'];
@@ -1194,11 +1249,8 @@ class ReportController extends Controller
                         $f->cos_savings_amount    = $isCancelled ? 0.00 : $cosMetrics['savings'];
                         $f->norsa_amount          = $effectiveNorsa;
                         $f->prior_gross_obligated = $priorGrossOb;
-                        $f->cancellation_remarks  = ($f->cancellations && $f->cancellations->count() > 0)
-                            ? $f->cancellations->pluck('reason')->filter()->implode('; ')
-                            : ($isFullNorsaCancel
-                                ? ('Cancelled via Full NORSA' . (!empty($f->remarks) ? ' — ' . $f->remarks : ''))
-                                : ($f->remarks ?? $f->manual_remarks ?? null));
+                        $f->gross_obligated       = $priorGrossOb;
+                        $f->net_obligated         = $netTxObligated;
 
                         return $f;
                     });
@@ -1209,21 +1261,9 @@ class ReportController extends Controller
                         return $matchesPeriod($f->obligation_date);
                     });
 
-                    $norsaAmount = (float) $mappedTransactions->sum('norsa_amount');
-
-                    $grossObligated = 0.00;
-                    foreach ($obligatedFunds as $f) {
-                        if ($f->is_cancelled) {
-                            $grossObligated += (float) $f->prior_gross_obligated;
-                        } elseif (!empty($f->is_multi_activity)) {
-                            // Multi-activity obligation_amount is stored NET of NORSA; add back NORSA once for Gross
-                            $grossObligated += ((float) $f->obligation_amount + (float) $f->norsa_amount);
-                        } else {
-                            $grossObligated += (float) $f->obligation_amount;
-                        }
-                    }
-
-                    $netObligated = max(0.00, $grossObligated - $norsaAmount);
+                    $norsaAmount    = (float) $mappedTransactions->sum('norsa_amount');
+                    $grossObligated = (float) $obligatedFunds->sum('gross_obligated');
+                    $netObligated   = max(0.00, $grossObligated - $norsaAmount);
 
                     // Disbursements (Exclude Cancelled transactions)
                     $disbursed = (float) $mappedTransactions->filter(fn($f) => !$f->is_cancelled)
@@ -1404,6 +1444,16 @@ class ReportController extends Controller
         $selectedSec    = $request->get('section');
         $selectedSource = $request->get('fund_source');
         $search         = trim((string) $request->get('search', ''));
+        $dateFrom       = $request->get('date_from');
+        $dateTo         = $request->get('date_to');
+        $hasDateRange   = !empty($dateFrom) || !empty($dateTo);
+
+        $parsedDateFrom = !empty($dateFrom) ? \Carbon\Carbon::parse($dateFrom)->startOfDay() : null;
+        $parsedDateTo   = !empty($dateTo)   ? \Carbon\Carbon::parse($dateTo)->endOfDay()     : null;
+
+        if ($hasDateRange && !$request->filled('year')) {
+            $year = ($parsedDateFrom ?? $parsedDateTo)->year;
+        }
 
         // 1. Cumulative Multi-Quarter Handling
         $quartersInput    = $request->get('quarters', $request->get('quarter') ? [$request->get('quarter')] : []);
@@ -1439,55 +1489,48 @@ class ReportController extends Controller
             ->get()
             ->keyBy('id');
 
-        // 3. Query SourceOfFund with Exact Same Relationships & Date Filters as byTransactions()
+        // Reusable SQL date constraint closure
+        $applySqlPeriod = function ($q, string $column) use ($year, $month, $selectedMonths, $hasDateRange, $dateFrom, $dateTo) {
+            if ($hasDateRange) {
+                if (!empty($dateFrom)) {
+                    $q->whereDate($column, '>=', $dateFrom);
+                }
+                if (!empty($dateTo)) {
+                    $q->whereDate($column, '<=', $dateTo);
+                }
+            } else {
+                $q->whereYear($column, $year);
+                if ($month) {
+                    $q->whereMonth($column, $month);
+                } elseif (!empty($selectedMonths)) {
+                    $q->whereIn(\DB::raw("MONTH({$column})"), $selectedMonths);
+                }
+            }
+        };
+
+        // 3. Query SourceOfFund with Exact Same Relationships & Date Filters
         $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
             ->with([
                 'activities',
-                'funds' => function ($q) use ($year, $month, $selectedMonths) {
-                    $q->where(function ($sub) use ($year, $month, $selectedMonths) {
-                        $sub->where(function ($obligQ) use ($year, $month, $selectedMonths) {
-                            $obligQ->whereYear('obligation_date', $year);
-                            if ($month) {
-                                $obligQ->whereMonth('obligation_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $obligQ->whereIn(\DB::raw('MONTH(obligation_date)'), $selectedMonths);
-                            }
+                'funds' => function ($q) use ($applySqlPeriod) {
+                    $q->where(function ($sub) use ($applySqlPeriod) {
+                        $sub->where(function ($obligQ) use ($applySqlPeriod) {
+                            $applySqlPeriod($obligQ, 'obligation_date');
                         })
-                        ->orWhere(function ($disbQ) use ($year, $month, $selectedMonths) {
-                            $disbQ->whereYear('disbursement_date', $year);
-                            if ($month) {
-                                $disbQ->whereMonth('disbursement_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $disbQ->whereIn(\DB::raw('MONTH(disbursement_date)'), $selectedMonths);
-                            }
+                        ->orWhere(function ($disbQ) use ($applySqlPeriod) {
+                            $applySqlPeriod($disbQ, 'disbursement_date');
                         })
-                        ->orWhereHas('cosSalaryDisbursements', function ($cosQ) use ($year, $month, $selectedMonths) {
-                            $cosQ->whereYear('disbursement_date', $year);
-                            if ($month) {
-                                $cosQ->whereMonth('disbursement_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $cosQ->whereIn(\DB::raw('MONTH(disbursement_date)'), $selectedMonths);
-                            }
+                        ->orWhereHas('cosSalaryDisbursements', function ($cosQ) use ($applySqlPeriod) {
+                            $applySqlPeriod($cosQ, 'disbursement_date');
                         })
-                        ->orWhere(function ($cancelQ) use ($year, $month, $selectedMonths) {
-                            $cancelQ->where('status', 'Cancelled')
-                                    ->whereYear('status_date', $year);
-                            if ($month) {
-                                $cancelQ->whereMonth('status_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $cancelQ->whereIn(\DB::raw('MONTH(status_date)'), $selectedMonths);
-                            }
+                        ->orWhere(function ($cancelQ) use ($applySqlPeriod) {
+                            $cancelQ->where('status', 'Cancelled');
+                            $applySqlPeriod($cancelQ, 'status_date');
                         })
-                        ->orWhere(function ($subYear) use ($year, $month, $selectedMonths) {
+                        ->orWhere(function ($subYear) use ($applySqlPeriod) {
                             $subYear->whereNull('obligation_date')
-                                    ->whereNull('disbursement_date')
-                                    ->whereYear('created_at', $year);
-
-                            if ($month) {
-                                $subYear->whereMonth('created_at', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $subYear->whereIn(\DB::raw('MONTH(created_at)'), $selectedMonths);
-                            }
+                                    ->whereNull('disbursement_date');
+                            $applySqlPeriod($subYear, 'created_at');
                         });
                     })
                     ->where('status', '!=', 'Rejected');
@@ -1574,9 +1617,16 @@ class ReportController extends Controller
         }
 
         // Period matcher helper
-        $matchesPeriod = function ($dateVal) use ($year, $month, $selectedMonths) {
+        $matchesPeriod = function ($dateVal) use ($year, $month, $selectedMonths, $hasDateRange, $parsedDateFrom, $parsedDateTo) {
             if (empty($dateVal)) return true;
             $d = \Carbon\Carbon::parse($dateVal);
+
+            if ($hasDateRange) {
+                if ($parsedDateFrom && $d->lt($parsedDateFrom)) return false;
+                if ($parsedDateTo   && $d->gt($parsedDateTo))   return false;
+                return true;
+            }
+
             if ($d->year != $year) return false;
             if ($month && $d->month != $month) return false;
             if (!empty($selectedMonths) && !in_array($d->month, $selectedMonths)) return false;
@@ -1608,7 +1658,7 @@ class ReportController extends Controller
                 ];
             }
 
-            // --- A. Build Virtual Transactions Collection (Identical to byTransactions) ---
+            // --- A. Build Virtual Transactions Collection ---
             $allTransactions = collect();
 
             foreach ($sof->funds as $fund) {
@@ -1764,6 +1814,7 @@ class ReportController extends Controller
                 $pooled              = (float) ($activity->pooled_amount ?? 0);
                 $activityBudgetNet   = $activityBudgetGross - $pooled;
                 $unobligated         = max(0.00, round($activityBudgetNet - ($netObligated + $pending), 2));
+                $actUnpaid           = max(0.00, round($netObligated - $disbursed, 2));
 
                 // Add into UACS Bucket
                 $uKey = $uacs->uacs_code;
@@ -1779,8 +1830,8 @@ class ReportController extends Controller
                         'norsa_amount'    => 0,
                         'net_obligated'   => 0,
                         'disbursed'       => 0,
-                        'unobligated'     => 0,
                         'unpaid'          => 0,
+                        'unobligated'     => 0,
                         'activities'      => collect(),
                         'transactions'    => collect(),
                     ];
@@ -1805,6 +1856,7 @@ class ReportController extends Controller
                     'norsa_amount'    => $norsaAmount,
                     'net_obligated'   => $netObligated,
                     'disbursed'       => $disbursed,
+                    'unpaid'          => $actUnpaid,
                     'unobligated'     => $unobligated,
                     'transactions'    => $mappedTransactions->values(),
                 ]);
@@ -1860,6 +1912,7 @@ class ReportController extends Controller
                 $src['total_norsa']       = $uacsCollection->sum('norsa_amount');
                 $src['total_net_oblig']   = $uacsCollection->sum('net_obligated');
                 $src['total_disbursed']   = $uacsCollection->sum('disbursed');
+                $src['total_unpaid']      = $uacsCollection->sum('unpaid');
                 $src['total_unobligated'] = $uacsCollection->sum('unobligated');
                 return $src;
             })->filter(function ($src) use ($selectedSource) {

@@ -95,6 +95,10 @@
         height: 155px;
         width: 100%;
     }
+    .doughnut-wrapper canvas {
+        position: relative;
+        z-index: 2;
+    }
     .doughnut-center-label {
         position: absolute;
         top: 50%;
@@ -102,12 +106,30 @@
         transform: translate(-50%, -50%);
         text-align: center;
         pointer-events: none;
+        z-index: 1;
     }
     .metric-pill {
         background-color: #f8f9fa;
         border: 1px solid #e9ecef;
         border-radius: 6px;
         padding: 6px 8px;
+    }
+    /* Crisp, high-contrast floating tooltip that never gets overlapped or clipped */
+    #chartjs-floating-tooltip {
+        position: fixed;
+        z-index: 99999;
+        pointer-events: none;
+        background: #0f172a;
+        color: #ffffff;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 0.78rem;
+        line-height: 1.4;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+        white-space: nowrap;
+        opacity: 0;
+        transition: opacity 0.12s ease;
     }
 </style>
 
@@ -311,7 +333,7 @@
                             {{-- Card Body: Dual Charts --}}
                             <div class="card-body py-3">
                                 <div class="row align-items-center">
-                                    {{-- Left: Utilization Doughnut --}}
+                                    {{-- Left: Utilization Doughnut (Disbursed, Unpaid Oblig., Pending, Unobligated) --}}
                                     <div class="col-sm-5 border-right text-center mb-3 mb-sm-0">
                                         <div class="doughnut-wrapper">
                                             <canvas id="utilization-{{ $uniqueId }}"></canvas>
@@ -324,8 +346,9 @@
                                                 </small>
                                             </div>
                                         </div>
-                                        <div class="mt-2 d-flex justify-content-center flex-wrap small" style="gap: 8px; font-size: 0.7rem;">
-                                            <span><i class="fas fa-circle text-primary mr-1"></i>Oblig.</span>
+                                        <div class="mt-2 d-flex justify-content-center flex-wrap small" style="gap: 6px; font-size: 0.68rem;">
+                                            <span><i class="fas fa-circle text-success mr-1"></i>Disb.</span>
+                                            <span><i class="fas fa-circle text-primary mr-1"></i>Unpaid Oblig.</span>
                                             <span><i class="fas fa-circle text-info mr-1"></i>Pending</span>
                                             <span><i class="fas fa-circle text-secondary mr-1" style="opacity: 0.35;"></i>Unoblig.</span>
                                         </div>
@@ -395,6 +418,7 @@
 </div>
 @endsection
 
+@section('scripts')
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
@@ -407,26 +431,78 @@
             maximumFractionDigits: 2
         });
 
+        // External floating tooltip handler so tooltips always sit above all card elements and never get clipped
+        const externalTooltipHandler = (context) => {
+            const { chart, tooltip } = context;
+            let tooltipEl = document.getElementById('chartjs-floating-tooltip');
+
+            if (!tooltipEl) {
+                tooltipEl = document.createElement('div');
+                tooltipEl.id = 'chartjs-floating-tooltip';
+                document.body.appendChild(tooltipEl);
+            }
+
+            if (tooltip.opacity === 0) {
+                tooltipEl.style.opacity = 0;
+                return;
+            }
+
+            const dataIndex = tooltip.dataPoints?.[0]?.dataIndex ?? 0;
+            const dataset   = chart.data.datasets[0];
+            const label     = chart.data.labels[dataIndex] || '';
+            const rawValue  = Number(dataset.data[dataIndex] || 0);
+            const total     = dataset.data.reduce((sum, v) => sum + (Number(v) || 0), 0);
+            const pct       = total > 0 ? ((rawValue / total) * 100).toFixed(1) : '0.0';
+            const color     = Array.isArray(dataset.backgroundColor)
+                ? dataset.backgroundColor[dataIndex]
+                : dataset.backgroundColor;
+
+            tooltipEl.innerHTML = `
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;font-weight:700;">
+                    <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${color};border:1px solid #fff;"></span>
+                    <span>${label}</span>
+                </div>
+                <div style="font-family:'Consolas',monospace;font-size:0.82rem;">
+                    ${formatPeso(rawValue)} <span style="color:#94a3b8;">(${pct}%)</span>
+                </div>
+            `;
+
+            const rect = chart.canvas.getBoundingClientRect();
+            const left = rect.left + tooltip.caretX;
+            const top  = rect.top + tooltip.caretY;
+
+            tooltipEl.style.opacity = 1;
+            tooltipEl.style.left = Math.min(window.innerWidth - tooltipEl.offsetWidth - 12, Math.max(12, left - tooltipEl.offsetWidth / 2)) + 'px';
+            tooltipEl.style.top  = Math.max(12, top - tooltipEl.offsetHeight - 10) + 'px';
+        };
+
         Object.keys(groupedData).forEach(sectionId => {
             const sectionFunds = groupedData[sectionId];
 
             sectionFunds.forEach((source, index) => {
                 const uniqueId = `${sectionId}-${index}`;
 
-                // --- Chart A: Utilization Doughnut (Net Obligated, Pending, Unobligated) ---
+                const obligatedTotal = parseFloat(source.obligated_total) || 0;
+                const disbursedTotal = parseFloat(source.disbursed_total) || 0;
+                const unpaidOblig    = Math.max(0, obligatedTotal - disbursedTotal);
+                const pendingTotal   = parseFloat(source.pending_total) || 0;
+                const remainingBudg  = parseFloat(source.remaining_budget) || 0;
+
+                // --- Chart A: Utilization Doughnut (Disbursed, Unpaid Obligated, Pending, Unobligated) ---
                 const utilCtx = document.getElementById(`utilization-${uniqueId}`);
                 if (utilCtx) {
                     new Chart(utilCtx, {
                         type: 'doughnut',
                         data: {
-                            labels: ['Obligated', 'Pending / Routed', 'Unobligated Balance'],
+                            labels: ['Disbursed', 'Unpaid Obligation', 'Pending / Routed', 'Unobligated Balance'],
                             datasets: [{
                                 data: [
-                                    parseFloat(source.obligated_total) || 0,
-                                    parseFloat(source.pending_total) || 0,
-                                    parseFloat(source.remaining_budget) || 0
+                                    disbursedTotal,
+                                    unpaidOblig,
+                                    pendingTotal,
+                                    remainingBudg
                                 ],
-                                backgroundColor: ['#007bff', '#17a2b8', '#e9ecef'],
+                                backgroundColor: ['#28a745', '#007bff', '#17a2b8', '#e9ecef'],
                                 borderWidth: 1,
                                 borderColor: '#ffffff'
                             }]
@@ -437,9 +513,8 @@
                             plugins: {
                                 legend: { display: false },
                                 tooltip: {
-                                    callbacks: {
-                                        label: (ctx) => ` ${ctx.label}: ${formatPeso(ctx.raw)}`
-                                    }
+                                    enabled: false,
+                                    external: externalTooltipHandler
                                 }
                             }
                         }
@@ -456,8 +531,8 @@
                             datasets: [{
                                 label: 'Amount',
                                 data: [
-                                    parseFloat(source.obligated_total) || 0,
-                                    parseFloat(source.disbursed_total) || 0
+                                    obligatedTotal,
+                                    disbursedTotal
                                 ],
                                 backgroundColor: ['#007bff', '#28a745'],
                                 borderRadius: 5,
@@ -487,6 +562,9 @@
                             plugins: {
                                 legend: { display: false },
                                 tooltip: {
+                                    backgroundColor: '#0f172a',
+                                    padding: 10,
+                                    cornerRadius: 6,
                                     callbacks: {
                                         label: (ctx) => ` ${ctx.label}: ${formatPeso(ctx.raw)}`
                                     }
@@ -531,3 +609,4 @@
         });
     });
 </script>
+@endsection

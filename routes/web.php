@@ -58,16 +58,17 @@ Route::middleware(['auth', 'verified', 'throttle:60,1'])->group(function () {
         Route::post('/funds/save-manual-activity-obligation', [FundController::class, 'saveManualActivityObligation'])
             ->name('funds.saveManualActivityObligation');
         
-        // Critical Operations - INCREASED THROTTLING to handle polling and bulk processing
-        // We increase this from 10 to 1000 to prevent the "Too Many Attempts" error
-        Route::middleware('throttle:1000,1')->group(function () {
-            Route::get('funds/{id}/sync', 'syncWithGoogleSheet')->name('funds.sync');
-            Route::post('/funds/bulk-sync', 'bulkSync')->name('funds.bulk-sync');
-            Route::get('/funds/sync-progress', 'getSyncProgress')->name('funds.sync-progress');
-            Route::post('/funds/sync-cancel', 'cancelSync')->name('funds.sync-cancel');
-            Route::post('/funds/sync-all', 'syncAllDTrack')->name('funds.sync_all');
-            Route::get('/funds/sync-all-dtrack', 'syncAllDTrack');
-        });
+        // Critical Operations - Bypass inherited outer throttle and apply 1000/min limit
+        Route::withoutMiddleware(['throttle', 'throttle:60,1', 'throttle:api'])
+            ->middleware('throttle:1000,1')
+            ->group(function () {
+                Route::get('funds/{id}/sync', 'syncWithGoogleSheet')->name('funds.sync');
+                Route::post('/funds/bulk-sync', 'bulkSync')->name('funds.bulk-sync');
+                Route::get('/funds/sync-progress', 'getSyncProgress')->name('funds.sync-progress');
+                Route::post('/funds/sync-cancel', 'cancelSync')->name('funds.sync-cancel');
+                Route::post('/funds/sync-all', 'syncAllDTrack')->name('funds.sync_all');
+                Route::get('/funds/sync-all-dtrack', 'syncAllDTrack');
+            });
     });
 
     // Explicit resource mapping for funds (excluding already defined routes)

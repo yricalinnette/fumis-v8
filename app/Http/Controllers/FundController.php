@@ -457,13 +457,13 @@ class FundController extends Controller
             $request->merge(['dtrack_no' => $yearPrefix . $suffix]);
         }
 
-        // VALIDATION (creditor_ids is completely optional)
+        // VALIDATION (creditor_ids validates against db_common.tbl_emp_details.dbedid)
         $validated = $request->validate([
             'dtrack_no'                 => ['required', 'regex:/^\d{4}-\d{6}$/'],
             'transaction_date'          => 'required|date',
             'particulars'               => 'required|string',
             'creditor_ids'              => 'nullable|array',
-            'creditor_ids.*'            => 'exists:creditors,id',
+            'creditor_ids.*'            => 'exists:db_common.tbl_emp_details,dbedid',
             'allocations'               => 'required|array|min:1',
             'allocations.*.source_id'   => 'required|exists:source_of_funds,id',
             'allocations.*.activity_id' => 'required|exists:activities,id',
@@ -528,6 +528,40 @@ class FundController extends Controller
                     }
                 }
 
+                // Resolve creditor names if selected
+                $creditorIds = array_values(array_unique(array_filter($request->creditor_ids ?? [])));
+                $creditorNamesStr = null;
+
+                if (!empty($creditorIds)) {
+                    $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
+                    $empNames = \DB::connection('db_common')->table('tbl_employee')
+                        ->join('tbl_emp_details', 'tbl_employee.empid', '=', 'tbl_emp_details.empid')
+                        ->whereIn('tbl_emp_details.dbedid', $creditorIds)
+                        ->select(
+                            'tbl_emp_details.dbedid',
+                            \DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.fname, '{$key}') AS CHAR)) as fname"),
+                            \DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.mname, '{$key}') AS CHAR)) as mname"),
+                            \DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.lname, '{$key}') AS CHAR)) as lname"),
+                            \DB::raw("UPPER(CAST(AES_DECRYPT(tbl_employee.suffix, '{$key}') AS CHAR)) as suffix")
+                        )
+                        ->get()
+                        ->map(function ($emp) {
+                            $fname  = trim((string) $emp->fname);
+                            $mname  = trim((string) $emp->mname);
+                            $lname  = trim((string) $emp->lname);
+                            $suffix = trim((string) $emp->suffix);
+                            $mi     = $mname ? ' ' . substr($mname, 0, 1) . '.' : '';
+                            $suf    = $suffix ? ' ' . $suffix : '';
+                            return "{$lname}, {$fname}{$mi}{$suf}";
+                        })
+                        ->filter()
+                        ->toArray();
+
+                    if (!empty($empNames)) {
+                        $creditorNamesStr = implode('; ', $empNames);
+                    }
+                }
+
                 // Primary source ID and activity ID from the first allocation item
                 $primarySourceId   = $request->allocations[0]['source_id'];
                 $primaryActivityId = $request->allocations[0]['activity_id'];
@@ -538,6 +572,7 @@ class FundController extends Controller
                 $fundHeader->dtrack_no           = $validated['dtrack_no'];
                 $fundHeader->transaction_date    = $validated['transaction_date'];
                 $fundHeader->particulars         = $validated['particulars'];
+                $fundHeader->creditor            = $creditorNamesStr;
                 $fundHeader->amount              = $totalConsolidatedAmount;
                 $fundHeader->obligation_amount   = 0.00;
                 $fundHeader->source_of_fund_id   = $primarySourceId;
@@ -548,9 +583,16 @@ class FundController extends Controller
                 $fundHeader->is_multi_activity   = $isMultiActivity;
                 $fundHeader->save();
 
-                // Sync creditors only if selected
-                if (!empty($request->creditor_ids)) {
-                    $fundHeader->creditors()->sync($request->creditor_ids);
+                // Sync creditors into employee_fund pivot table
+                if (!empty($creditorIds)) {
+                    $pivotRows = array_map(fn($dbedid) => [
+                        'fund_id'    => $fundHeader->id,
+                        'user_id'    => $dbedid,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ], $creditorIds);
+
+                    \DB::table('employee_fund')->insert($pivotRows);
                 }
 
                 // --- 2. RECORD EACH ALLOCATION INTO FUND_MULTI_ACTIVITIES ---
@@ -565,7 +607,7 @@ class FundController extends Controller
                         'transaction_type_id' => $activityId,
                         'dtrack_no'           => $validated['dtrack_no'],
                         'routed_amount'       => $allocatedAmount,
-                        'creditor'            => $activity->name,
+                        'creditor'            => $creditorNamesStr ?? $activity->name,
                         'particulars'         => $validated['particulars'],
                         'obligation_amount'   => 0.00,
                         'status'              => 'Routed',
@@ -1244,9 +1286,57 @@ class FundController extends Controller
         }
     }
 
+    /**
+     * Build a Google Sheets service instance that works on both Ubuntu servers and Windows XAMPP,
+     * with OAuth token caching and IPv4 enforcement to prevent cURL port 443 timeouts.
+     */
+    private function getGoogleSheetsService(): \Google_Service_Sheets
+    {
+        $client = new \Google\Client();
+
+        $guzzleOptions = [
+            'timeout'         => 60,
+            'connect_timeout' => 30,
+            'curl'            => [
+                CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+            ],
+        ];
+
+        if (PHP_OS_FAMILY === 'Windows' && file_exists('C:\xampp\php\extras\ssl\cacert.pem')) {
+            $guzzleOptions['verify'] = 'C:\xampp\php\extras\ssl\cacert.pem';
+        }
+
+        $client->setHttpClient(new \GuzzleHttp\Client($guzzleOptions));
+        $client->setAuthConfig(storage_path('app/google-credentials.json'));
+        $client->addScope(\Google_Service_Sheets::SPREADSHEETS_READONLY);
+
+        // Lock token refresh so 55 parallel requests don't all hit oauth2.googleapis.com at once
+        $token = Cache::get('google_sheets_oauth_token');
+        if (!$token) {
+            $token = Cache::lock('lock_google_sheets_oauth_token', 30)->block(25, function () use ($client) {
+                if (Cache::has('google_sheets_oauth_token')) {
+                    return Cache::get('google_sheets_oauth_token');
+                }
+                $newToken = $client->fetchAccessTokenWithAssertion();
+                Cache::put('google_sheets_oauth_token', $newToken, now()->addMinutes(50));
+                return $newToken;
+            });
+        }
+
+        $client->setAccessToken($token);
+
+        if ($client->isAccessTokenExpired()) {
+            $newToken = $client->fetchAccessTokenWithAssertion();
+            Cache::put('google_sheets_oauth_token', $newToken, now()->addMinutes(50));
+            $client->setAccessToken($newToken);
+        }
+
+        return new \Google_Service_Sheets($client);
+    }
+
     public function syncWithGoogleSheet(Request $request, $id)
     {
-        ini_set('memory_limit', '512M'); 
+        ini_set('memory_limit', '512M');
         set_time_limit(300);
 
         try {
@@ -1287,16 +1377,24 @@ class FundController extends Controller
             $syncedDetails = [];
             $userId = Auth::id() ?? 1;
 
-            $client = new \Google\Client();
-            $httpClient = new \GuzzleHttp\Client(['verify' => 'C:\xampp\php\extras\ssl\cacert.pem']);
-            $client->setHttpClient($httpClient);
-            $client->setAuthConfig(storage_path('app/google-credentials.json'));
-            $client->addScope(\Google_Service_Sheets::SPREADSHEETS_READONLY);
-            $service = new \Google_Service_Sheets($client);
+            $service = $this->getGoogleSheetsService();
 
-            $range = "'{$sourceConfig->sheet_name}'!A:CQ";
-            $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
-            $rows = $response->getValues();
+            // Cache the sheet rows for 2 minutes so bulk-syncing multiple items reads from memory
+            $sheetCacheKey = "raods_sheet_{$sourceConfig->spreadsheet_id}_" . md5($sourceConfig->sheet_name);
+            $rows = Cache::get($sheetCacheKey);
+
+            if (is_null($rows)) {
+                $rows = Cache::lock("lock_{$sheetCacheKey}", 45)->block(40, function () use ($sheetCacheKey, $service, $sourceConfig) {
+                    if (Cache::has($sheetCacheKey)) {
+                        return Cache::get($sheetCacheKey);
+                    }
+                    $range = "'{$sourceConfig->sheet_name}'!A:CQ";
+                    $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
+                    $fetchedRows = $response->getValues() ?? [];
+                    Cache::put($sheetCacheKey, $fetchedRows, now()->addMinutes(3));
+                    return $fetchedRows;
+                });
+            }
 
             // =====================================================================
             // BRANCH A: PROCURABLE TRANSACTION WITH PO DTRACK(S) IN PROCUREMENT TABLES
@@ -1389,11 +1487,11 @@ class FundController extends Controller
             // =====================================================================
             if (!empty($rows)) {
                 $tracker = [
-                    'netOb'          => 0.0, 
+                    'netOb'          => 0.0,
                     'netDisb'        => 0.0,
-                    'latestObDate'   => null, 
+                    'latestObDate'   => null,
                     'latestDisbDate' => null,
-                    'found_serial'   => null, 
+                    'found_serial'   => null,
                     'found'          => false,
                     'disbursements'  => [],
                     'norsa_entries'  => [],
@@ -1407,6 +1505,30 @@ class FundController extends Controller
                 $matchedRows        = [];
                 $cancellationRows   = [];
 
+                // Check if multiple distinct creditors share this DTrack/Serial in RAODS (e.g. batch COS payroll)
+                $matchingDtrackRows = array_filter($rows, function ($r) use ($candidateDtracks, $clickedFund) {
+                    $d = isset($r[0]) ? trim((string) $r[0]) : '';
+                    $s = isset($r[3]) ? trim((string) $r[3]) : '';
+                    return in_array($d, $candidateDtracks, true)
+                        || (!empty($s) && $s === $clickedFund->obligation_serial);
+                });
+
+                $distinctSheetCreditors = collect($matchingDtrackRows)
+                    ->map(fn($r) => isset($r[10]) ? strtolower(trim((string) $r[10])) : '')
+                    ->filter()
+                    ->unique()
+                    ->count();
+
+                // Normalize names regardless of "LAST, FIRST" vs "FIRST LAST" or Ñ vs N
+                $normalizePersonName = function (?string $name): array {
+                    if (empty($name)) return [];
+                    $ascii  = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $name) ?: $name;
+                    $clean  = strtolower(preg_replace('/[^a-z0-9\s]/i', ' ', $ascii));
+                    $tokens = array_values(array_filter(explode(' ', $clean), fn($t) => strlen($t) > 1));
+                    sort($tokens);
+                    return $tokens;
+                };
+
                 foreach ($rows as $rowIndex => $rowData) {
                     $sheetDtrack    = isset($rowData[0])  ? trim((string) $rowData[0])  : '';
                     $sheetSerialRow = isset($rowData[3])  ? trim((string) $rowData[3])  : '';
@@ -1416,33 +1538,18 @@ class FundController extends Controller
 
                     if (empty($sheetDtrack) && empty($sheetSerialRow)) continue;
 
-                    // Check if row is a RAODS Deobligation / Cancellation entry referencing this transaction's ORS or DTrack
-                    $isCancellationEntry = (
-                        stripos($particularsRow, 'cancelled ors') !== false ||
-                        stripos($particularsRow, 'deobligation') !== false ||
-                        (!empty($clickedFund->obligation_serial) && stripos($particularsRow, $clickedFund->obligation_serial) !== false && stripos($particularsRow, 'cancel') !== false)
-                    );
-
-                    $isTargetMatch = in_array($sheetDtrack, $candidateDtracks, true) || 
-                                    (!empty($sheetSerialRow) && $sheetSerialRow === $clickedFund->obligation_serial) ||
-                                    ($isCancellationEntry && in_array($sheetDtrack, $candidateDtracks, true));
+                    $isTargetMatch = in_array($sheetDtrack, $candidateDtracks, true) ||
+                                    (!empty($sheetSerialRow) && $sheetSerialRow === $clickedFund->obligation_serial);
 
                     if (!$isTargetMatch) continue;
 
-                    if ($clickedFund->creditor && $creditorRow && !$isCancellationEntry) {
-                        $normTargetCreditor = strtolower(preg_replace('/\s+/', ' ', trim($clickedFund->creditor)));
-                        $normSheetCreditor  = strtolower(preg_replace('/\s+/', ' ', trim($creditorRow)));
-                        if ($normTargetCreditor !== $normSheetCreditor) {
+                    // Only filter by creditor when multiple distinct creditors share the same DTrack/Serial
+                    if ($distinctSheetCreditors > 1 && $clickedFund->creditor && $creditorRow) {
+                        $targetTokens = $normalizePersonName($clickedFund->creditor);
+                        $sheetTokens  = $normalizePersonName($creditorRow);
+                        if (!empty($targetTokens) && !empty($sheetTokens) && $targetTokens !== $sheetTokens) {
                             continue;
                         }
-                    }
-
-                    // Separate RAODS cancellation rows from normal obligation/disbursement rows
-                    if ($isCancellationEntry) {
-                        $cancellationRows[] = $rowData;
-                        $matchedRows[]      = $rowData;
-                        $tracker['found']   = true;
-                        continue;
                     }
 
                     $tracker['found'] = true;
@@ -1452,6 +1559,10 @@ class FundController extends Controller
                     if (!empty($sheetSerialRow)) $sheetSerial        = $sheetSerialRow;
                     if (!empty($creditorRow))    $creditorName       = $creditorRow;
                     if (!empty($particularsRow)) $particulars        = $particularsRow;
+
+                    if (stripos($particularsRow, 'cancelled ors') !== false || stripos($particularsRow, 'deobligation') !== false) {
+                        $cancellationRows[] = $rowData;
+                    }
 
                     $cleanAllotment   = strtolower(preg_replace('/\s+/', ' ', $allotment));
                     $cleanParticulars = strtolower(preg_replace('/\s+/', ' ', $particularsRow));
@@ -1473,8 +1584,8 @@ class FundController extends Controller
                     if ($isCosSalary) {
                         $contractDetails = $this->parseCosParticulars($particulars, $creditorName);
                         if (!empty($contractDetails['start_date']) && !empty($contractDetails['end_date'])) {
-                            $contractStatus = ($disbursedMonthCount >= $contractDetails['total_months'] && $contractDetails['total_months'] > 0) 
-                                ? 'Completed' 
+                            $contractStatus = ($disbursedMonthCount >= $contractDetails['total_months'] && $contractDetails['total_months'] > 0)
+                                ? 'Completed'
                                 : 'Active';
 
                             $contract = \App\Models\CosContract::firstOrCreate(
@@ -1495,83 +1606,74 @@ class FundController extends Controller
                         }
                     }
 
-                    // Determine Status (Preserve Cancelled if already cancelled or if RAODS cancellation entry exists)
-                    $hasCancellation = !empty($cancellationRows) || strtolower($clickedFund->status) === 'cancelled';
-
-                    if ($hasCancellation) {
-                        $status = 'Cancelled';
-                        $displayAmount = $tracker['netOb'] > 0 ? $tracker['netOb'] : (float) $clickedFund->obligation_amount;
-                    } elseif ($tracker['netDisb'] > 0) {
-                        if ($isCosSalary && !empty($contractDetails['total_months'])) {
-                            if ($disbursedMonthCount < $contractDetails['total_months']) {
-                                $status = 'Disbursed (Partially)';
-                            } else {
-                                $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) 
-                                    ? 'Disbursed (with savings)' 
-                                    : 'Completed';
-                            }
-                        } else {
-                            $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) 
-                                ? 'Disbursed (with savings)' 
-                                : 'Disbursed';
-                        }
-                        $displayAmount = $tracker['netDisb'];
-                    } else {
-                        $status = 'Obligated';
-                        $displayAmount = $tracker['netOb'];
-                    }
-
-                    $totalObligatedFromRaods = $tracker['netOb'] > 0 ? $tracker['netOb'] : (float) $clickedFund->obligation_amount;
-                    $totalDisbursedFromRaods = $tracker['netDisb'];
-
-                    // Calculate Total Sheet NORSA
-                    $totalSheetNorsa = 0;
+                    // Calculate Total Sheet NORSA from negative obligation rows
+                    $totalSheetNorsa = 0.0;
                     if (!empty($tracker['norsa_entries'])) {
                         foreach ($tracker['norsa_entries'] as $nEntry) {
                             $totalSheetNorsa += (float) ($nEntry['amount'] ?? 0);
                         }
                     }
 
-                    $netConsolidatedObligated = max(0, $totalObligatedFromRaods - $totalSheetNorsa);
+                    // $tracker['netOb'] already equals gross obligation minus negative NORSA rows
+                    $netConsolidatedObligated = ($tracker['netOb'] > 0 || $totalSheetNorsa > 0)
+                        ? max(0.0, round((float) $tracker['netOb'], 2))
+                        : round((float) $clickedFund->obligation_amount, 2);
 
-                    // --- CHECK MULTI-ACTIVITY STATUS VIA LINE ITEMS ---
+                    $totalDisbursedFromRaods = round((float) $tracker['netDisb'], 2);
+
+                    // Full deobligation (netOb == 0 after negative entry) or explicit cancellation -> Cancelled
+                    $isFullyDeobligated = ($totalSheetNorsa > 0 && $netConsolidatedObligated <= 0.009);
+                    $hasCancellation    = !empty($cancellationRows) || $isFullyDeobligated || strtolower($clickedFund->status) === 'cancelled';
+
+                    if ($hasCancellation) {
+                        $status = 'Cancelled';
+                        $displayAmount = $netConsolidatedObligated > 0 ? $netConsolidatedObligated : (float) $clickedFund->obligation_amount;
+                    } elseif ($totalDisbursedFromRaods > 0) {
+                        if ($isCosSalary && !empty($contractDetails['total_months'])) {
+                            if ($disbursedMonthCount < $contractDetails['total_months']) {
+                                $status = 'Disbursed (Partially)';
+                            } else {
+                                $status = ($netConsolidatedObligated > 0 && $totalDisbursedFromRaods < $netConsolidatedObligated)
+                                    ? 'Disbursed (with savings)'
+                                    : 'Completed';
+                            }
+                        } else {
+                            $status = ($netConsolidatedObligated > 0 && $totalDisbursedFromRaods < $netConsolidatedObligated)
+                                ? 'Disbursed (with savings)'
+                                : 'Disbursed';
+                        }
+                        $displayAmount = $totalDisbursedFromRaods;
+                    } else {
+                        $status = 'Obligated';
+                        $displayAmount = $netConsolidatedObligated;
+                    }
+
+                    // --- CHECK TRUE MULTI-ACTIVITY STATUS VIA LINE ITEMS ---
                     $lineItems = \App\Models\FundMultiActivity::where('fund_id', $clickedFund->id)->get();
                     $lineItemsCount = $lineItems->count();
-                    $isConsolidatedMultiActivity = ($lineItemsCount > 1 || count($matchedRows) > 1) && !$isCosSalary && !$hasCancellation;
+                    $isTrueMultiActivity = ($lineItemsCount > 1) && !$isCosSalary && !$hasCancellation;
 
-                    $totalRoutedAmount = $lineItems->isNotEmpty() 
-                        ? (float) $lineItems->sum('routed_amount') 
-                        : ((float) ($clickedFund->amount ?? $totalObligatedFromRaods));
+                    $totalRoutedAmount = $lineItems->isNotEmpty()
+                        ? (float) $lineItems->sum('routed_amount')
+                        : ((float) ($clickedFund->amount ?? $netConsolidatedObligated));
 
                     $hasDiscrepancy = (abs($netConsolidatedObligated - $totalRoutedAmount) > 0.01) || ($totalSheetNorsa > 0);
 
                     // =====================================================================
-                    // 1. INTERACTIVE MODAL TRIGGER IF DISCREPANCY EXISTS
+                    // 1. INTERACTIVE MODAL ONLY FOR TRUE MULTI-ACTIVITY (> 1 ACTIVITY)
                     // =====================================================================
-                    if ($isConsolidatedMultiActivity && $hasDiscrepancy) {
-                        if ($lineItems->isNotEmpty()) {
-                            $activitiesBreakdown = $lineItems->map(function($item) {
-                                return [
-                                    'id'                  => $item->id,
-                                    'fund_id'             => $item->fund_id,
-                                    'transaction_type_id' => $item->transaction_type_id,
-                                    'source_of_fund_id'   => $item->source_of_fund_id,
-                                    'activity_name'       => $item->creditor ?? ('Item #' . $item->id),
-                                    'routed_amount'       => (float) $item->routed_amount,
-                                    'obligation_amount'   => (float) $item->obligation_amount,
-                                ];
-                            })->values()->all();
-                        } else {
-                            $activitiesBreakdown = collect($matchedRows)->map(function($row, $idx) use ($clickedFund) {
-                                return [
-                                    'fund_id'             => $idx + 1,
-                                    'transaction_type_id' => $clickedFund->transaction_type_id,
-                                    'source_of_fund_id'   => $clickedFund->source_of_fund_id,
-                                    'activity_name'       => trim((string) ($row[10] ?? $row[11] ?? ('Activity Line #' . ($idx + 1)))),
-                                    'routed_amount'       => (float) str_replace(',', '', $row[6] ?? 0),
-                                ];
-                            })->values()->all();
-                        }
+                    if ($isTrueMultiActivity && $hasDiscrepancy) {
+                        $activitiesBreakdown = $lineItems->map(function ($item) {
+                            return [
+                                'id'                  => $item->id,
+                                'fund_id'             => $item->fund_id,
+                                'transaction_type_id' => $item->transaction_type_id,
+                                'source_of_fund_id'   => $item->source_of_fund_id,
+                                'activity_name'       => $item->creditor ?? ('Item #' . $item->id),
+                                'routed_amount'       => (float) $item->routed_amount,
+                                'obligation_amount'   => (float) $item->obligation_amount,
+                            ];
+                        })->values()->all();
 
                         return response()->json([
                             'success'                    => true,
@@ -1590,7 +1692,7 @@ class FundController extends Controller
                     }
 
                     // =====================================================================
-                    // 2. AUTO-DISTRIBUTION & RECORD UPDATE
+                    // 2. SINGLE-ACTIVITY OR TALLIED MULTI-ACTIVITY DIRECT SAVE
                     // =====================================================================
                     $updateData = [
                         'creditor'            => $creditorName ?: $clickedFund->creditor,
@@ -1603,7 +1705,6 @@ class FundController extends Controller
                         'status_date'         => now(),
                     ];
 
-                    // If matched via a new PO DTrack that wasn't saved yet, persist it to dtrack_no_new
                     if (!empty($matchedSheetDtrack) && $matchedSheetDtrack !== $prDtrack && empty($clickedFund->dtrack_no_new)) {
                         $updateData['dtrack_no_new'] = $matchedSheetDtrack;
                     }
@@ -1617,23 +1718,23 @@ class FundController extends Controller
 
                     $clickedFund->update($updateData);
 
-                    // Record any RAODS cancellation / deobligation rows into fund_cancellations
-                    if (!empty($cancellationRows)) {
-                        $this->syncCancellationRecords($clickedFund, $cancellationRows, $sourceConfig->id, $userId);
+                    if (!empty($cancellationRows) || $isFullyDeobligated) {
+                        $rowsToCancel = !empty($cancellationRows) ? $cancellationRows : $matchedRows;
+                        $this->syncCancellationRecords($clickedFund, $rowsToCancel, $sourceConfig->id, $userId);
                     }
 
-                    // Update multi-activity line items proportionally without modifying transaction_type_id
-                    if (($lineItemsCount > 1 || count($matchedRows) > 1) && !$isCosSalary && $lineItems->isNotEmpty()) {
+                    // Update line items if any exist (e.g. 1 child row or tallied multi-activity)
+                    if ($lineItemsCount > 0 && !$isCosSalary) {
                         foreach ($lineItems as $actItem) {
                             $actRouted = (float) $actItem->routed_amount;
-                            
-                            $actObligation = ($totalRoutedAmount > 0) 
-                                ? round($netConsolidatedObligated * ($actRouted / $totalRoutedAmount), 2) 
-                                : 0;
 
-                            $actDisbursement = ($netConsolidatedObligated > 0) 
-                                ? round($totalDisbursedFromRaods * ($actObligation / $netConsolidatedObligated), 2) 
-                                : 0;
+                            $actObligation = ($lineItemsCount === 1)
+                                ? $netConsolidatedObligated
+                                : (($totalRoutedAmount > 0) ? round($netConsolidatedObligated * ($actRouted / $totalRoutedAmount), 2) : 0);
+
+                            $actDisbursement = ($lineItemsCount === 1)
+                                ? $totalDisbursedFromRaods
+                                : (($netConsolidatedObligated > 0) ? round($totalDisbursedFromRaods * ($actObligation / $netConsolidatedObligated), 2) : 0);
 
                             if ($hasCancellation) {
                                 $actStatus = 'Cancelled';
@@ -1659,7 +1760,7 @@ class FundController extends Controller
                     $this->syncFundDtrackLogs($clickedFund, $matchedRows, $rows);
 
                     $syncedDetails[] = [
-                        'name'   => $sourceConfig->name ?? 'Fund Source', 
+                        'name'   => $sourceConfig->name ?? 'Fund Source',
                         'dtrack' => $matchedSheetDtrack ?: $targetDtrack,
                         'serial' => $sheetSerial ?: $clickedFund->obligation_serial,
                         'amount' => number_format($displayAmount, 2),
@@ -1723,7 +1824,7 @@ class FundController extends Controller
 
         if (is_null($secid) && ($user->username ?? '') !== 'admin') {
             return response()->json([
-                'success' => false, 
+                'success' => false,
                 'message' => 'System Error: Your account is not linked to a section.'
             ], 422);
         }
@@ -1740,7 +1841,7 @@ class FundController extends Controller
 
         if ($totalSources === 0) {
             return response()->json([
-                'success' => false, 
+                'success' => false,
                 'message' => 'No configured fund sources found for your section.'
             ]);
         }
@@ -1748,19 +1849,14 @@ class FundController extends Controller
         $this->updateCache($cacheKey, 0, $totalSources);
         session_write_close();
 
-        $client = new \Google\Client();
-        $httpClient = new \GuzzleHttp\Client(['verify' => 'C:\xampp\php\extras\ssl\cacert.pem']);
-        $client->setHttpClient($httpClient);
-        $client->setAuthConfig(storage_path('app/google-credentials.json'));
-        $client->addScope(\Google_Service_Sheets::SPREADSHEETS_READONLY);
-        $service = new \Google_Service_Sheets($client);
+        $service = $this->getGoogleSheetsService();
 
         $processedSources = 0;
         $sourceCounter = 0;
-        $importedItems = []; 
+        $importedItems = [];
 
         $ignoredLabels = [
-            'entity name', 'fund cluster', 'legal basis', 'fund source', 
+            'entity name', 'fund cluster', 'legal basis', 'fund source',
             'dtrack no', 'dtrack no.', 'serial number', 'obligation serial'
         ];
 
@@ -1773,7 +1869,7 @@ class FundController extends Controller
             try {
                 $sourceCounter++;
                 if ($sourceCounter > 10) {
-                    sleep(1); 
+                    sleep(1);
                 }
 
                 $allotClass = strtoupper(trim((string) ($sourceConfig->allotment_class ?? '')));
@@ -1781,7 +1877,7 @@ class FundController extends Controller
                 $sourceCode = $sourceConfig->code ?? '';
 
                 $isCapitalOutlay = ($allotClass === 'CO') ||
-                                (stripos($sourceName, 'Capital Outlay') !== false) || 
+                                (stripos($sourceName, 'Capital Outlay') !== false) ||
                                 (stripos($sourceName, ' CO') !== false) ||
                                 (stripos($sourceCode, 'CO') !== false);
 
@@ -1794,7 +1890,7 @@ class FundController extends Controller
                     foreach ($rows as $rowIndex => $rowData) {
                         $sheetDtrack = isset($rowData[0]) ? trim((string) $rowData[0]) : '';
                         $sheetSerial = isset($rowData[3]) ? trim((string) $rowData[3]) : '';
-                        
+
                         if (empty($sheetDtrack) && empty($sheetSerial)) continue;
 
                         $cleanSerialCheck = strtolower($sheetSerial);
@@ -1811,18 +1907,18 @@ class FundController extends Controller
                         if ($isHeaderOrMetadata || preg_match('/^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}$/i', $sheetSerial) || preg_match('/^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}$/i', $sheetDtrack)) {
                             continue;
                         }
-                        
+
                         $groupKey = !empty($sheetSerial) ? $sheetSerial : $sheetDtrack;
                         $groupedRows[$groupKey][] = $rowData;
                     }
 
                     foreach ($groupedRows as $groupKey => $groupRows) {
                         $tracker = [
-                            'netOb'          => 0.0, 
-                            'netDisb'        => 0.0, 
-                            'latestObDate'   => null, 
-                            'latestDisbDate' => null, 
-                            'found_serial'   => null, 
+                            'netOb'          => 0.0,
+                            'netDisb'        => 0.0,
+                            'latestObDate'   => null,
+                            'latestDisbDate' => null,
+                            'found_serial'   => null,
                             'found'          => true,
                             'disbursements'  => [],
                             'norsa_entries'  => [],
@@ -1865,7 +1961,7 @@ class FundController extends Controller
                                 $sourceName = $sourceConfig->name ?? '';
                                 $sourceCode = $sourceConfig->code ?? '';
                                 $isCapitalOutlay = ($allClass === 'CO') ||
-                                    (stripos($sourceName, 'Capital Outlay') !== false) || 
+                                    (stripos($sourceName, 'Capital Outlay') !== false) ||
                                     (stripos($sourceName, ' CO') !== false) ||
                                     (stripos($sourceCode, 'CO') !== false);
                             }
@@ -1876,7 +1972,7 @@ class FundController extends Controller
                         }
 
                         if ($isCosSalary && $isCapitalOutlay) {
-                            continue; 
+                            continue;
                         }
 
                         // Handle RAODS Cancellation / Deobligation group separately
@@ -1922,8 +2018,8 @@ class FundController extends Controller
                             $contractDetails = $this->parseCosParticulars($particulars, $creditorName);
                             if (!empty($contractDetails['start_date']) && !empty($contractDetails['end_date'])) {
                                 $totalMonths = $contractDetails['total_months'] ?? 0;
-                                $contractStatus = ($disbursedMonthCount >= $totalMonths && $totalMonths > 0) 
-                                    ? 'Completed' 
+                                $contractStatus = ($disbursedMonthCount >= $totalMonths && $totalMonths > 0)
+                                    ? 'Completed'
                                     : 'Active';
 
                                 $contract = \App\Models\CosContract::firstOrCreate(
@@ -1949,13 +2045,13 @@ class FundController extends Controller
                                 if ($disbursedMonthCount < $contractDetails['total_months']) {
                                     $status = 'Disbursed (Partially)';
                                 } else {
-                                    $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) 
-                                        ? 'Disbursed (with savings)' 
+                                    $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb'])
+                                        ? 'Disbursed (with savings)'
                                         : 'Completed';
                                 }
                             } else {
-                                $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb']) 
-                                    ? 'Disbursed (with savings)' 
+                                $status = ($tracker['netOb'] > 0 && $tracker['netDisb'] < $tracker['netOb'])
+                                    ? 'Disbursed (with savings)'
                                     : 'Disbursed';
                             }
                             $displayAmount = $tracker['netDisb'];
@@ -1968,7 +2064,7 @@ class FundController extends Controller
                         if (!empty($sheetSerial)) {
                             $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
                                 ->where('obligation_serial', $sheetSerial)
-                                ->when($isCosSalary && $creditorName, function($q) use ($creditorName) {
+                                ->when($isCosSalary && $creditorName, function ($q) use ($creditorName) {
                                     $q->where('creditor', $creditorName);
                                 })
                                 ->first();
@@ -1976,11 +2072,11 @@ class FundController extends Controller
 
                         if (!$existingFund && !empty($sheetDtrack)) {
                             $existingFund = Fund::where('source_of_fund_id', $sourceConfig->id)
-                                ->where(function($q) use ($sheetDtrack) {
+                                ->where(function ($q) use ($sheetDtrack) {
                                     $q->where('dtrack_no', $sheetDtrack)
                                     ->orWhere('dtrack_no_new', $sheetDtrack);
                                 })
-                                ->when($isCosSalary && $creditorName, function($q) use ($creditorName) {
+                                ->when($isCosSalary && $creditorName, function ($q) use ($creditorName) {
                                     $q->where('creditor', $creditorName);
                                 })
                                 ->first();
@@ -2057,7 +2153,7 @@ class FundController extends Controller
                                 'remarks_salary'      => 'Imported HR COS Salary/Wages',
                                 'cos_contract_id'     => $contractId,
                                 'disbursed_months'    => $disbursedMonthCount,
-                                'secid'               => $secid, 
+                                'secid'               => $secid,
                             ]);
 
                             $importedItems[] = [
@@ -2067,8 +2163,7 @@ class FundController extends Controller
                                 'amount'     => number_format($displayAmount, 2),
                                 'duplicates' => []
                             ];
-                        } 
-                        elseif ($existingFund) {
+                        } elseif ($existingFund) {
                             $updateData = [
                                 'creditor'            => $creditorName ?: $existingFund->creditor,
                                 'obligation_serial'   => (!empty($sheetSerial)) ? $sheetSerial : $existingFund->obligation_serial,
@@ -2079,7 +2174,7 @@ class FundController extends Controller
                                 'disbursed_months'    => $disbursedMonthCount,
                                 'status'              => $status,
                                 'status_date'         => now(),
-                                'secid'               => $existingFund->secid ?? $secid 
+                                'secid'               => $existingFund->secid ?? $secid
                             ];
 
                             if ($isCosSalary) {
@@ -2100,7 +2195,7 @@ class FundController extends Controller
                             foreach ($rows as $rData) {
                                 $rDtrack = isset($rData[0]) ? trim((string) $rData[0]) : '';
                                 $rSerial = isset($rData[3]) ? trim((string) $rData[3]) : '';
-                                
+
                                 if (($rDtrack === $sheetDtrack && !empty($sheetDtrack)) || (!empty($sheetSerial) && $rSerial === $sheetSerial)) {
                                     $matchingBulkRows[] = $rData;
                                 }
@@ -2495,26 +2590,25 @@ class FundController extends Controller
      */
     private function syncNorsaAdjustments(Fund $fund, array $norsaEntries, $sourceConfigId)
     {
-        // For multi-activity transactions, evaluate NORSA per line item
-        if ($fund->is_multi_activity) {
-            $multiActivities = \App\Models\FundMultiActivity::where('fund_id', $fund->id)->get();
+        $multiActivities = \App\Models\FundMultiActivity::where('fund_id', $fund->id)->get();
 
+        // Only evaluate per-line-item discrepancy if there are genuinely multiple (> 1) activities
+        if ($fund->is_multi_activity && $multiActivities->count() > 1) {
             foreach ($multiActivities as $multi) {
-                // Determine line-item discrepancy between routed amount and obligated amount
-                $difference = round((float)$multi->routed_amount - (float)$multi->obligation_amount, 2);
+                $difference = round((float) $multi->routed_amount - (float) $multi->obligation_amount, 2);
 
                 if ($difference > 0) {
                     \App\Models\NorsaAdjustment::updateOrCreate(
                         [
                             'fund_id'             => $fund->id,
-                            'transaction_type_id' => $multi->transaction_type_id, // Targets distinct activity ID (e.g. 48)
+                            'transaction_type_id' => $multi->transaction_type_id,
                         ],
                         [
                             'dtrack_no'           => $fund->dtrack_no,
                             'obligation_serial'   => $multi->obligation_serial ?: $fund->obligation_serial,
-                            'creditor'            => $multi->creditor,
-                            'particulars'         => $multi->particulars,
-                            'entry_date'          => $fund->transaction_date ?? now(),
+                            'creditor'            => $multi->creditor ?: $fund->creditor,
+                            'particulars'         => $multi->particulars ?: $fund->particulars,
+                            'entry_date'          => $fund->transaction_date ?? now()->format('Y-m-d'),
                             'amount'              => $difference,
                             'source_of_fund_id'   => $multi->source_of_fund_id ?? $sourceConfigId,
                         ]
@@ -2526,24 +2620,30 @@ class FundController extends Controller
                 }
             }
         } else {
-            // Single activity transaction logic
+            // Single activity transaction logic (1 activity)
             if (empty($norsaEntries)) {
                 return;
             }
 
+            $singleMulti = $multiActivities->first();
+            $txTypeId    = $singleMulti->transaction_type_id ?? $fund->transaction_type_id;
+
             foreach ($norsaEntries as $norsa) {
+                $serial    = !empty($norsa['obligation_serial']) ? $norsa['obligation_serial'] : $fund->obligation_serial;
+                $entryDate = $norsa['entry_date'] ?? $norsa['norsa_date'] ?? now()->format('Y-m-d');
+
                 \App\Models\NorsaAdjustment::updateOrCreate(
                     [
                         'fund_id'             => $fund->id,
-                        'transaction_type_id' => $fund->transaction_type_id,
-                        'obligation_serial'   => $norsa['obligation_serial'],
-                        'entry_date'          => $norsa['entry_date'],
+                        'transaction_type_id' => $txTypeId,
+                        'obligation_serial'   => $serial,
+                        'entry_date'          => $entryDate,
                     ],
                     [
-                        'dtrack_no'           => $norsa['dtrack_no'],
-                        'creditor'            => $norsa['creditor'],
-                        'particulars'         => $norsa['particulars'],
-                        'amount'              => $norsa['amount'],
+                        'dtrack_no'           => !empty($norsa['dtrack_no']) ? $norsa['dtrack_no'] : $fund->dtrack_no,
+                        'creditor'            => !empty($norsa['creditor']) ? $norsa['creditor'] : $fund->creditor,
+                        'particulars'         => !empty($norsa['particulars']) ? $norsa['particulars'] : $fund->particulars,
+                        'amount'              => abs((float) ($norsa['amount'] ?? 0)),
                         'source_of_fund_id'   => $sourceConfigId,
                     ]
                 );
