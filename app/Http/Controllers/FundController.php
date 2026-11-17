@@ -1294,11 +1294,35 @@ class FundController extends Controller
     {
         $client = new \Google\Client();
 
+        // Retry middleware for transient cURL error 7 / 28 network drops on Ubuntu server
+        $stack = \GuzzleHttp\HandlerStack::create();
+        $stack->push(\GuzzleHttp\Middleware::retry(
+            function ($retries, $request, $response = null, $exception = null) {
+                if ($retries >= 3) {
+                    return false;
+                }
+                // Retry on network/cURL connection errors or 5xx/429 responses
+                if ($exception instanceof \GuzzleHttp\Exception\ConnectException) {
+                    return true;
+                }
+                if ($response && ($response->getStatusCode() >= 500 || $response->getStatusCode() === 429)) {
+                    return true;
+                }
+                return false;
+            },
+            function ($retries) {
+                return 500 * ($retries + 1); // 500ms, 1000ms, 1500ms backoff
+            }
+        ));
+
         $guzzleOptions = [
+            'handler'         => $stack,
             'timeout'         => 60,
-            'connect_timeout' => 30,
+            'connect_timeout' => 20,
             'curl'            => [
-                CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+                CURLOPT_IPRESOLVE     => CURL_IPRESOLVE_V4,
+                CURLOPT_FRESH_CONNECT => true,
+                CURLOPT_FORBID_REUSE  => true,
             ],
         ];
 
@@ -1310,7 +1334,6 @@ class FundController extends Controller
         $client->setAuthConfig(storage_path('app/google-credentials.json'));
         $client->addScope(\Google_Service_Sheets::SPREADSHEETS_READONLY);
 
-        // Lock token refresh so 55 parallel requests don't all hit oauth2.googleapis.com at once
         $token = Cache::get('google_sheets_oauth_token');
         if (!$token) {
             $token = Cache::lock('lock_google_sheets_oauth_token', 30)->block(25, function () use ($client) {
@@ -1377,17 +1400,16 @@ class FundController extends Controller
             $syncedDetails = [];
             $userId = Auth::id() ?? 1;
 
-            $service = $this->getGoogleSheetsService();
-
-            // Cache the sheet rows for 2 minutes so bulk-syncing multiple items reads from memory
+            // Cache the sheet rows for 3 minutes; only initialize Google Sheets API on cache miss
             $sheetCacheKey = "raods_sheet_{$sourceConfig->spreadsheet_id}_" . md5($sourceConfig->sheet_name);
             $rows = Cache::get($sheetCacheKey);
 
             if (is_null($rows)) {
-                $rows = Cache::lock("lock_{$sheetCacheKey}", 45)->block(40, function () use ($sheetCacheKey, $service, $sourceConfig) {
+                $rows = Cache::lock("lock_{$sheetCacheKey}", 45)->block(40, function () use ($sheetCacheKey, $sourceConfig) {
                     if (Cache::has($sheetCacheKey)) {
                         return Cache::get($sheetCacheKey);
                     }
+                    $service = $this->getGoogleSheetsService();
                     $range = "'{$sourceConfig->sheet_name}'!A:CQ";
                     $response = $service->spreadsheets_values->get($sourceConfig->spreadsheet_id, $range);
                     $fetchedRows = $response->getValues() ?? [];
@@ -1795,7 +1817,7 @@ class FundController extends Controller
             return response()->json(['success' => false, 'message' => "API Error: " . $e->getMessage() . " at line " . $e->getLine()], 500);
         }
     }
-
+    
     public function bulkSync()
     {
         $userId = Auth::id() ?? 1;

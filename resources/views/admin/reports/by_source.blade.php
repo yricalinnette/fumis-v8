@@ -453,7 +453,7 @@
                             </th>
                             <th class="text-right col-sep text-teal">
                                 Savings
-                                <span class="th-subtext">COS + Proc.</span>
+                                <span class="th-subtext">Proc.</span>
                             </th>
                             <th class="text-right text-warning">
                                 Pending

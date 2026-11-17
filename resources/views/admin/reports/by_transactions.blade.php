@@ -9,7 +9,7 @@
     .row-cancelled { background-color: #fff5f5 !important; }
     .row-cancelled td { color: #6c757d; }
     .strike-cancelled { text-decoration: line-through; opacity: 0.75; }
-    
+
     .section-banner {
         background: linear-gradient(135deg, #001f3f 0%, #003366 100%);
         color: #ffffff;
@@ -33,7 +33,7 @@
                 @endif
             </p>
         </div>
-        
+
         <div class="btn-group shadow-sm">
             <a href="{{ request()->fullUrlWithQuery(['export' => 'excel']) }}" class="btn btn-sm btn-success">
                 <i class="fas fa-file-excel mr-1"></i> Export Excel
@@ -136,7 +136,7 @@
                             <span class="text-dark font-weight-bold financial-number">Total: ₱{{ number_format($source['source_total'] ?? 0, 2) }}</span>
                         </div>
                     </div>
-                    
+
                     <div class="card-body p-0">
                         <div class="table-responsive">
                             <table class="table table-bordered table-hover mb-0 text-xs">
@@ -181,7 +181,18 @@
                                             </td>
                                             <td class="text-right align-middle financial-number text-success">₱{{ number_format($act['disbursed'], 2) }}</td>
                                             <td class="text-right align-middle financial-number text-teal">
-                                                {{ ($act['has_cos_salary'] && $act['savings'] > 0) ? '₱'.number_format($act['savings'], 2) : '-' }}
+                                                @if(($act['savings'] ?? 0) > 0)
+                                                    ₱{{ number_format($act['savings'], 2) }}
+                                                    @if(($act['procurement_savings'] ?? 0) > 0 && ($act['cos_savings'] ?? 0) > 0)
+                                                        <small class="d-block text-muted" style="font-size: 0.6rem;">
+                                                            Proc: ₱{{ number_format($act['procurement_savings'], 2) }} | COS: ₱{{ number_format($act['cos_savings'], 2) }}
+                                                        </small>
+                                                    @elseif(($act['procurement_savings'] ?? 0) > 0)
+                                                        {{-- <small class="d-block text-muted" style="font-size: 0.6rem;">Procurement</small> --}}
+                                                    @endif
+                                                @else
+                                                    -
+                                                @endif
                                             </td>
                                             <td class="text-right align-middle financial-number text-primary">₱{{ number_format($act['untouched'], 2) }}</td>
                                             <td class="text-center align-middle">
@@ -244,7 +255,9 @@
                                                                         || !empty($tx->cos_contract_id)
                                                                         || \Illuminate\Support\Str::contains(strtolower($tx->remarks ?? ''), ['cos', 'salary', 'wages', 'payroll']);
 
-                                                                    $cosDisbursements = $tx->cosSalaryDisbursements ?? collect();
+                                                                    $hasCosNorsa = !empty($tx->has_cos_norsa) || ($isCosSalary && $txNorsaAmt > 0);
+
+                                                                    $cosDisbursements  = $tx->cosSalaryDisbursements ?? collect();
                                                                     $isCosConsolidated = !empty($tx->is_cos_consolidated) || $cosDisbursements->contains(function ($d) {
                                                                         return ((int) ($d->months_covered ?? $d->months_count ?? 1) > 1)
                                                                             || !empty($d->is_consolidated)
@@ -276,7 +289,8 @@
                                                                             || ($totalCosDisb > 0 && $txNorsaAmt > 0 && abs($cosSavingsDiff - $txNorsaAmt) < 0.01);
 
                                                                         if ($isCosFullyDisbursed) {
-                                                                            $displayStatus = ($totalCosDisb > 0 && $cosSavingsDiff > 0.009)
+                                                                            // COS with NORSA is NOT savings — display as Completed
+                                                                            $displayStatus = (!$hasCosNorsa && $totalCosDisb > 0 && $cosSavingsDiff > 0.009)
                                                                                 ? 'Disbursed (with savings)'
                                                                                 : 'Completed';
                                                                         }
@@ -306,7 +320,7 @@
                                                                     </td>
                                                                     <td class="align-middle font-weight-bold">{{ $creditorName ?: '-' }}</td>
                                                                     <td class="align-middle text-wrap {{ $isTxCancelled ? 'strike-cancelled' : '' }}">{{ $tx->particulars }}</td>
-                                                                    
+
                                                                     <td class="text-right align-middle financial-number font-weight-bold {{ $isTxCancelled ? 'strike-cancelled' : '' }}">
                                                                         ₱{{ number_format($tx->amount, 2) }}
                                                                     </td>
@@ -329,9 +343,9 @@
 
                                                                     <td class="text-center align-middle bg-soft-light py-2 border-left-primary">
                                                                         <div>
-                                                                            <span class="badge px-2 py-1 shadow-sm {{ 
-                                                                                in_array($displayStatus, ['Disbursed', 'Completed']) ? 'badge-success' : 
-                                                                                ($displayStatus == 'Disbursed (with savings)' ? 'badge-info' : 
+                                                                            <span class="badge px-2 py-1 shadow-sm {{
+                                                                                in_array($displayStatus, ['Disbursed', 'Completed']) ? 'badge-success' :
+                                                                                ($displayStatus == 'Disbursed (with savings)' ? 'badge-info' :
                                                                                 ($isTxCancelled || $displayStatus == 'Rejected' ? 'badge-danger' : 'badge-secondary')) }}">
                                                                                 @if($isTxCancelled)
                                                                                     <i class="fas fa-ban mr-1"></i>

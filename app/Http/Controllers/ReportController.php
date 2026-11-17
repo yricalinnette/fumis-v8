@@ -211,6 +211,7 @@ class ReportController extends Controller
             $grossObligated      = 0.00;
             $overlapNorsaCancel  = 0.00;
             $cancelledFundIds    = [];
+            $fundNorsaMap        = [];
 
             foreach ($source->funds as $f) {
                 // 1. Per-fund NORSA in selected period
@@ -219,6 +220,7 @@ class ReportController extends Controller
                     $fundNorsa = (float) $f->norsaAdjustments->filter(fn($adj) => $matchesPeriod($adj->entry_date))
                         ->sum(fn($adj) => (float) ($adj->norsa_amount ?? $adj->amount ?? 0));
                 }
+                $fundNorsaMap[$f->id] = $fundNorsa;
                 $norsaAmount += $fundNorsa;
 
                 // 2. Per-fund Explicit Cancellation Records in selected period
@@ -282,7 +284,8 @@ class ReportController extends Controller
 
             $cancelledAmount = $cancelledFromFunds + $orphanSourceCancellations;
 
-            // Net Obligation = Gross Obligated - NORSA - Cancelled + Overlap (prevents double-deducting full NORSA cancellations)
+            // Net Obligation = Gross Obligated - NORSA - Cancelled + Overlap
+            // (Any COS salary NORSA deducted here automatically flows back into Unobligated Balance)
             $netObligated = max(0.00, $grossObligated - $norsaAmount - $cancelledAmount + $overlapNorsaCancel);
 
             // 6. CALCULATE DISBURSEMENTS (Exclude Cancelled & Full-NORSA-Cancelled funds)
@@ -314,12 +317,22 @@ class ReportController extends Controller
                 ($f->disbursement_amount <= 0)
             )->sum('amount');
 
-            // 7. COS SALARY SAVINGS (Exclude Cancelled)
+            // 7. COS SALARY SAVINGS (Exclude Cancelled & Exclude NORSA-reduced amounts so COS NORSA is NOT counted as savings)
             $cosSavings = (float) $source->funds->filter(function ($fund) use ($cancelledFundIds) {
                 if (in_array($fund->id, $cancelledFundIds)) return false;
                 return $fund->remarks_salary === 'Imported HR COS Salary/Wages' ||
+                    $fund->cos_contract_id !== null ||
                     $fund->status === 'Disbursed (with savings)';
-            })->sum(function ($fund) {
+            })->sum(function ($fund) use ($fundNorsaMap) {
+                $totalAllTimeNorsa = $fund->norsaAdjustments && $fund->norsaAdjustments->count() > 0
+                    ? (float) $fund->norsaAdjustments->sum(fn($adj) => (float) ($adj->norsa_amount ?? $adj->amount ?? 0))
+                    : (float) ($fundNorsaMap[$fund->id] ?? 0.00);
+
+                // If COS salary had a NORSA reduction, that NORSA is returned to Unobligated Balance and is NOT savings
+                if ($totalAllTimeNorsa > 0) {
+                    return 0.00;
+                }
+
                 $isFullyDisbursed = false;
 
                 if ($fund->cosContract && $fund->cosContract->total_months > 0) {
@@ -594,6 +607,7 @@ class ReportController extends Controller
                 $disbursed          = 0.00;
                 $cancelledDirectIds = [];
                 $cancelledMultiIds  = [];
+                $directFundNorsaMap = [];
 
                 // Direct Funds: Gross Obligation, NORSA, & Cancellations (including Full-NORSA Cancellations)
                 foreach ($directFunds as $f) {
@@ -606,6 +620,7 @@ class ReportController extends Controller
                             return $matchesPeriod($adj->entry_date);
                         })->sum(fn($adj) => (float) ($adj->norsa_amount ?? $adj->amount ?? 0));
                     }
+                    $directFundNorsaMap[$f->id] = $fundNorsa;
                     $norsaAmount += $fundNorsa;
 
                     $storedOb            = (float) $f->obligation_amount;
@@ -710,6 +725,7 @@ class ReportController extends Controller
                 }
 
                 // Net Obligation (Gross minus NORSA and Cancellations, without double-counting overlap)
+                // Any COS salary NORSA deducted here automatically returns to Unobligated Balance ($untouched)
                 $netObligated = max(0.00, $grossObligated - $norsaAmount - $cancelledAmount + $overlapNorsaCancel);
 
                 // --- CALCULATE DISBURSEMENTS ---
@@ -795,10 +811,11 @@ class ReportController extends Controller
                     }
                 }
 
-                // COS Contract Completed Savings (Exclude Cancelled)
+                // COS Contract Completed Savings (Exclude Cancelled & Exclude NORSA-reduced amounts so COS NORSA is NOT counted as savings)
                 $cosSalaryFunds = $directFunds->filter(function ($fund) use ($cancelledDirectIds) {
                     if (in_array($fund->id, $cancelledDirectIds)) return false;
                     return $fund->remarks_salary === 'Imported HR COS Salary/Wages' ||
+                        $fund->cos_contract_id !== null ||
                         $fund->status === 'Disbursed (with savings)';
                 });
 
@@ -806,7 +823,16 @@ class ReportController extends Controller
 
                 $cosSavings = 0.00;
                 if ($hasCosSalaryFunds) {
-                    $cosSavings = (float) $cosSalaryFunds->sum(function ($fund) {
+                    $cosSavings = (float) $cosSalaryFunds->sum(function ($fund) use ($directFundNorsaMap) {
+                        $totalAllTimeNorsa = $fund->norsaAdjustments && $fund->norsaAdjustments->count() > 0
+                            ? (float) $fund->norsaAdjustments->sum(fn($adj) => (float) ($adj->norsa_amount ?? $adj->amount ?? 0))
+                            : (float) ($directFundNorsaMap[$fund->id] ?? 0.00);
+
+                        // If COS salary had a NORSA reduction, that NORSA returns to Unobligated Balance and is NOT savings
+                        if ($totalAllTimeNorsa > 0) {
+                            return 0.00;
+                        }
+
                         $isFullyDisbursed = false;
 
                         if ($fund->cosContract && $fund->cosContract->total_months > 0) {
@@ -904,11 +930,11 @@ class ReportController extends Controller
 
         $year          = $request->get('year', date('Y'));
         $month         = $request->get('month');
-        $sectionFilter = $request->get('section_id'); 
-        $search        = trim($request->get('search'));      
+        $sectionFilter = $request->get('section_id');
+        $search        = trim($request->get('search'));
 
         // 1. CUMULATIVE MULTI-QUARTER CHECKBOX HANDLING
-        $quartersInput = $request->get('quarters', $request->get('quarter') ? [$request->get('quarter')] : []);
+        $quartersInput    = $request->get('quarters', $request->get('quarter') ? [$request->get('quarter')] : []);
         $selectedQuarters = is_array($quartersInput) ? array_map('intval', $quartersInput) : [(int) $quartersInput];
         $selectedQuarters = array_values(array_filter($selectedQuarters));
 
@@ -999,12 +1025,12 @@ class ReportController extends Controller
                     if (!empty($search)) {
                         $query->where(function ($q) use ($search) {
                             $q->where('dtrack_no', 'LIKE', "%{$search}%")
-                            ->orWhere('dtrack_no_new', 'LIKE', "%{$search}%")
-                            ->orWhere('obligation_serial', 'LIKE', "%{$search}%")
-                            ->orWhere('particulars', 'LIKE', "%{$search}%")
-                            ->orWhere('creditor', 'LIKE', "%{$search}%")
-                            ->orWhere('remarks', 'LIKE', "%{$search}%")
-                            ->orWhere('manual_remarks', 'LIKE', "%{$search}%");
+                              ->orWhere('dtrack_no_new', 'LIKE', "%{$search}%")
+                              ->orWhere('obligation_serial', 'LIKE', "%{$search}%")
+                              ->orWhere('particulars', 'LIKE', "%{$search}%")
+                              ->orWhere('creditor', 'LIKE', "%{$search}%")
+                              ->orWhere('remarks', 'LIKE', "%{$search}%")
+                              ->orWhere('manual_remarks', 'LIKE', "%{$search}%");
                         });
                     }
                 },
@@ -1015,6 +1041,7 @@ class ReportController extends Controller
                 'funds.cancellations',
                 'funds.multiActivities',
                 'funds.dtrackLogs',
+                'funds.procurementTransactions.items',
             ]);
 
         // 5. TRANSACTION SCOPING & SECTION FILTER LOGIC
@@ -1041,7 +1068,7 @@ class ReportController extends Controller
         $sources = $query->get();
 
         // --- RESOLVE EMPLOYEE CREDITORS FROM employee_fund + db_common ---
-        $allFundIds = $sources->pluck('funds')->flatten()->pluck('id')->unique()->toArray();
+        $allFundIds      = $sources->pluck('funds')->flatten()->pluck('id')->unique()->toArray();
         $fundEmployeeMap = [];
 
         if (!empty($allFundIds)) {
@@ -1106,9 +1133,9 @@ class ReportController extends Controller
 
         // 6. Group and Map Data: Section -> Source -> Activity -> Transactions
         $groupedReport = $sources->groupBy('section_id')->map(function ($sectionSources, $sectionId) use ($sectionNames, $search, $fundEmployeeMap, $matchesPeriod) {
-            
+
             $sourcesData = $sectionSources->map(function ($source) use ($search, $fundEmployeeMap, $matchesPeriod) {
-                
+
                 // --- BUILD VIRTUAL TRANSACTIONS COLLECTION ---
                 $allTransactions = collect();
 
@@ -1118,14 +1145,14 @@ class ReportController extends Controller
                         : ($fundEmployeeMap[$fund->id] ?? null);
 
                     $isParentCancelled = strtolower((string) $fund->status) === 'cancelled';
-                    $multiCount = $fund->multiActivities ? $fund->multiActivities->count() : 0;
+                    $multiCount        = $fund->multiActivities ? $fund->multiActivities->count() : 0;
 
                     if ($fund->is_multi_activity && $multiCount > 1) {
                         // TRUE MULTI-ACTIVITY (> 1 activities): obligation_amount per child is stored NET of NORSA
                         $totalRoutedAll = (float) $fund->multiActivities->sum('routed_amount');
 
                         foreach ($fund->multiActivities as $multi) {
-                            $item = clone $fund;
+                            $item                      = clone $fund;
                             $item->creditor            = $resolvedCreditor;
                             $item->transaction_type_id = $multi->transaction_type_id;
                             $item->obligation_amount   = (float) $multi->obligation_amount;
@@ -1148,7 +1175,7 @@ class ReportController extends Controller
                         // SINGLE-ACTIVITY (even if is_multi_activity == 1 with 0 or 1 child row)
                         $singleMulti = ($multiCount === 1) ? $fund->multiActivities->first() : null;
 
-                        $item = clone $fund;
+                        $item                      = clone $fund;
                         $item->creditor            = $resolvedCreditor;
                         $item->transaction_type_id = $singleMulti->transaction_type_id ?? $fund->transaction_type_id;
                         $item->obligation_amount   = (float) $fund->obligation_amount;
@@ -1166,10 +1193,8 @@ class ReportController extends Controller
                             : 0.0;
 
                         if ($positiveLogSum > 0 && $allTimeNorsa > 0 && abs(($item->obligation_amount + $allTimeNorsa) - $positiveLogSum) < 0.05) {
-                            // obligation_amount is stored NET (e.g. 2760 + 2640 == 5400)
                             $item->ob_is_net_of_norsa = true;
                         } else {
-                            // obligation_amount is already GROSS (e.g. 5400)
                             $item->ob_is_net_of_norsa = false;
                         }
 
@@ -1184,7 +1209,7 @@ class ReportController extends Controller
                 // Group virtual transactions by target activity ID
                 $fundsByActivity = $allTransactions->groupBy('transaction_type_id');
 
-                $activities = $source->activities->map(function ($activity) use ($fundsByActivity, $matchesPeriod) {
+                $activities = $source->activities->map(function ($activity) use ($source, $fundsByActivity, $matchesPeriod) {
                     $activityFunds = $fundsByActivity->get($activity->id, collect());
 
                     // Map individual transaction attributes (Cancellations folded into NORSA)
@@ -1199,6 +1224,14 @@ class ReportController extends Controller
                             })->sum(fn($adj) => (float) ($adj->norsa_amount ?? $adj->amount ?? 0));
                         }
 
+                        // Check all-time NORSA on this fund/activity (even if NORSA entry falls outside period filter)
+                        $allTimeTxNorsa = 0.00;
+                        if ($f->norsaAdjustments && $f->norsaAdjustments->count() > 0) {
+                            $allTimeTxNorsa = (float) $f->norsaAdjustments->filter(function ($adj) use ($activity) {
+                                return !$adj->transaction_type_id || $adj->transaction_type_id === $activity->id;
+                            })->sum(fn($adj) => (float) ($adj->norsa_amount ?? $adj->amount ?? 0));
+                        }
+
                         $storedOb    = (float) $f->obligation_amount;
                         $baseGrossOb = !empty($f->ob_is_net_of_norsa) ? ($storedOb + $txNorsa) : $storedOb;
 
@@ -1209,10 +1242,18 @@ class ReportController extends Controller
                         // Resolve COS Salary consolidation & completion status
                         $cosMetrics = $this->resolveCosSalaryMetrics($f);
 
+                        // If COS salary had a NORSA reduction, it is NOT savings — only NORSA (which returns to Unobligated)
+                        $hasCosNorsa      = ($allTimeTxNorsa > 0 || $txNorsa > 0);
+                        $cosSavingsAmount = ($isCancelled || $hasCosNorsa) ? 0.00 : (float) $cosMetrics['savings'];
+
                         if ($isCancelled) {
                             $f->status = 'Cancelled';
                         } elseif ($cosMetrics['is_cos_salary']) {
-                            $f->status = $cosMetrics['effective_status'];
+                            if ($hasCosNorsa && $cosMetrics['effective_status'] === 'Disbursed (with savings)') {
+                                $f->status = 'Completed';
+                            } else {
+                                $f->status = $cosMetrics['effective_status'];
+                            }
                         }
 
                         // Fold any explicit cancellation record into NORSA without double-counting
@@ -1246,7 +1287,8 @@ class ReportController extends Controller
                         $f->is_norsa_cancelled    = $isFullNorsaCancel;
                         $f->is_cos_salary         = $cosMetrics['is_cos_salary'];
                         $f->is_cos_consolidated   = $cosMetrics['is_consolidated'];
-                        $f->cos_savings_amount    = $isCancelled ? 0.00 : $cosMetrics['savings'];
+                        $f->has_cos_norsa         = $cosMetrics['is_cos_salary'] && $hasCosNorsa;
+                        $f->cos_savings_amount    = $cosSavingsAmount;
                         $f->norsa_amount          = $effectiveNorsa;
                         $f->prior_gross_obligated = $priorGrossOb;
                         $f->gross_obligated       = $priorGrossOb;
@@ -1280,42 +1322,71 @@ class ReportController extends Controller
                             return (float) $f->disbursement_amount;
                         });
 
-                    $pending = (float) $mappedTransactions->filter(fn($f) => 
+                    $pending = (float) $mappedTransactions->filter(fn($f) =>
                         empty($f->obligation_date) && empty($f->disbursement_date) && !$f->is_cancelled
                     )->sum('amount');
 
-                    // COS Savings (Exclude Cancelled transactions; supports consolidated COS contracts)
+                    // 1. COS Savings (Exclude Cancelled & NORSA-adjusted COS transactions)
                     $cosSalaryFunds    = $mappedTransactions->filter(fn($f) => !$f->is_cancelled && !empty($f->is_cos_salary));
                     $hasCosSalaryFunds = $cosSalaryFunds->count() > 0;
-                    $savings           = $hasCosSalaryFunds ? (float) $cosSalaryFunds->sum('cos_savings_amount') : 0.00;
+                    $cosSavings        = $hasCosSalaryFunds ? (float) $cosSalaryFunds->sum('cos_savings_amount') : 0.00;
+
+                    // 2. Procurable Transactions Savings (matching Line Item Report logic)
+                    $procurementSavings = 0.00;
+                    $procTransactions   = \App\Models\ProcurementTransaction::with('items')
+                        ->where('source_of_fund_id', $source->id)
+                        ->where('activity_id', $activity->id)
+                        ->whereNotIn('caf_status', ['Cancelled', 'Rejected'])
+                        ->get();
+
+                    foreach ($procTransactions as $procTrx) {
+                        if ($procTrx->items && $procTrx->items->count() > 0) {
+                            foreach ($procTrx->items as $pItem) {
+                                if (strtolower((string) ($pItem->status ?? '')) === 'cancelled') continue;
+                                if (!is_null($pItem->po_amount)) {
+                                    $procurementSavings += max(0, (float) $pItem->item_amount - (float) $pItem->po_amount);
+                                }
+                            }
+                        } else {
+                            if (!is_null($procTrx->po_amount)) {
+                                $procurementSavings += max(0, (float) $procTrx->abc_allotment - (float) $procTrx->po_amount);
+                            }
+                        }
+                    }
+
+                    $savings = $cosSavings + $procurementSavings;
 
                     $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
                     $pooled              = (float) ($activity->pooled_amount ?? 0);
                     $activityBudgetNet   = $activityBudgetGross - $pooled;
+                    // Any COS NORSA deducted in $netObligated returns to Unobligated Balance ($untouched)
                     $untouched           = $activityBudgetNet - ($netObligated + $pending);
 
                     return [
-                        'details'         => $activity,
-                        'net_budget'      => $activityBudgetNet,
-                        'gross_budget'    => $activityBudgetGross,
-                        'pooled_amount'   => $pooled,
-                        'is_pooled'       => $pooled > 0 || !empty($activity->is_pooled),
-                        'pooled_remarks'  => $activity->pooled_remarks ?? $activity->pooled_reason ?? $activity->remarks ?? 'Budget pooled by management',
-                        'gross_obligated' => $grossObligated,
-                        'norsa_amount'    => $norsaAmount,
-                        'obligated'       => $netObligated,
-                        'disbursed'       => $disbursed,
-                        'pending'         => $pending,
-                        'savings'         => $savings,
-                        'has_cos_salary'  => $hasCosSalaryFunds,
-                        'untouched'       => $untouched > 0 ? $untouched : 0,
-                        'transactions'    => $mappedTransactions->values(),
+                        'details'             => $activity,
+                        'net_budget'          => $activityBudgetNet,
+                        'gross_budget'        => $activityBudgetGross,
+                        'pooled_amount'       => $pooled,
+                        'is_pooled'           => $pooled > 0 || !empty($activity->is_pooled),
+                        'pooled_remarks'      => $activity->pooled_remarks ?? $activity->pooled_reason ?? $activity->remarks ?? 'Budget pooled by management',
+                        'gross_obligated'     => $grossObligated,
+                        'norsa_amount'        => $norsaAmount,
+                        'obligated'           => $netObligated,
+                        'disbursed'           => $disbursed,
+                        'pending'             => $pending,
+                        'cos_savings'         => $cosSavings,
+                        'procurement_savings' => $procurementSavings,
+                        'savings'             => $savings,
+                        'has_cos_salary'      => $hasCosSalaryFunds,
+                        'has_savings'         => $savings > 0,
+                        'untouched'           => $untouched > 0 ? $untouched : 0,
+                        'transactions'        => $mappedTransactions->values(),
                     ];
                 });
 
                 if (!empty($search)) {
                     $activities = $activities->filter(function ($act) use ($search) {
-                        return $act['transactions']->isNotEmpty() || 
+                        return $act['transactions']->isNotEmpty() ||
                             \Illuminate\Support\Str::contains(strtolower($act['details']->name), strtolower($search));
                     });
                 }
