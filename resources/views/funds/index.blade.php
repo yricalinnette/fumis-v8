@@ -2042,11 +2042,26 @@
                             $isFullyDisbursed = !$isGroupCancelled && ($activeCountInGroup > 0 && $activeCountInGroup === $disbursedInGroup) && !$hasPartialProcurement;
                             $isLockedTerminal = ($isGroupCancelled || $isFullyDisbursed);
 
-                            // 4. Action Logic: Edit/Delete disabled if Cancelled or if ANY item has moved past 'Routed'
+                            // 4. Action Logic: Edit/Delete disabled if Cancelled, moved past 'Routed', OR Tagged as CAF / Tagged as PO
                             $hasNonRoutedItem = $groupItems->contains(function($gi) {
                                 return strcasecmp(trim((string)($gi->status ?? '')), 'Routed') !== 0;
                             });
-                            $isActionDisabled = ($isGroupCancelled || $hasNonRoutedItem);
+
+                            $hasCafOrPoTag = $actionProcTx->contains(function($pt) {
+                                return in_array(strtolower(trim((string)($pt->caf_status ?? ''))), ['tagged as caf', 'tagged as po'])
+                                    || in_array(strtolower(trim((string)($pt->status ?? ''))), ['tagged as caf', 'tagged as po', 'obligated', 'disbursed', 'disbursed (with savings)', 'completed'])
+                                    || !empty($pt->caf_date)
+                                    || !empty($pt->po_number)
+                                    || !empty($pt->po_date)
+                                    || (float)($pt->po_amount ?? 0) > 0;
+                            }) || $actionProcItems->contains(function($pi) {
+                                return in_array(strtolower(trim((string)($pi->status ?? ''))), ['tagged as caf', 'tagged as po', 'obligated', 'disbursed', 'disbursed (with savings)', 'completed'])
+                                    || !empty($pi->po_number)
+                                    || !empty($pi->po_date)
+                                    || (float)($pi->po_amount ?? 0) > 0;
+                            });
+
+                            $isActionDisabled = ($isGroupCancelled || $hasNonRoutedItem || $hasCafOrPoTag);
                             
                             // 5. Status Check: Disable DTrack status updates if Cancelled or fully finished
                             $firstItem = $groupItems->first();
@@ -2067,7 +2082,7 @@
                             data-id="{{ $fund->id }}"
                             {{ $isActionDisabled ? 'disabled' : '' }}
                             data-toggle="tooltip" 
-                            title="{{ $isGroupCancelled ? 'Locked: Transaction is Cancelled' : ($isActionDisabled ? 'Locked: Only Routed transactions can be edited' : 'Edit Transaction') }}">
+                            title="{{ $isGroupCancelled ? 'Locked: Transaction is Cancelled' : ($hasCafOrPoTag ? 'Locked: Transaction is already Tagged as CAF/PO' : ($isActionDisabled ? 'Locked: Only Routed transactions can be edited' : 'Edit Transaction')) }}">
                             <i class="fas fa-edit {{ $isActionDisabled ? 'text-muted' : 'text-warning' }}"></i> 
                         </button>
 
@@ -2088,7 +2103,7 @@
                             data-id="{{ $fund->id }}" 
                             {{ $isActionDisabled ? 'disabled' : '' }}
                             data-toggle="tooltip"
-                            title="{{ $isGroupCancelled ? 'Locked: Transaction is Cancelled' : ($isActionDisabled ? 'Locked: Only Routed transactions can be deleted' : 'Delete Transaction') }}">
+                            title="{{ $isGroupCancelled ? 'Locked: Transaction is Cancelled' : ($hasCafOrPoTag ? 'Locked: Transaction is already Tagged as CAF/PO' : ($isActionDisabled ? 'Locked: Only Routed transactions can be deleted' : 'Delete Transaction')) }}">
                             <i class="fas fa-trash {{ $isActionDisabled ? 'text-muted' : 'text-danger' }}"></i>
                         </button>
                     </td>
