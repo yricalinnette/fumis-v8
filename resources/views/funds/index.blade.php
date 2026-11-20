@@ -1066,35 +1066,101 @@
                                     $obDate = $item->obligation_date ?? $fund->obligation_date ?? null;
                                     $disbDate = $item->disbursement_date ?? $fund->disbursement_date ?? null;
                                     
-                                    // Saved obligation_amount in DB is the gross/actual obligated amount
                                     $dbObAmount = (float) ($item->obligation_amount ?? $fund->obligation_amount ?? 0);
                                     $disbAmount = (float) ($item->disbursement_amount ?? $fund->disbursement_amount ?? 0);
 
-                                    // Query NORSA records for this breakdown item (column is `amount`)
+                                    // Query NORSA records for this breakdown item (column is `amount` or `norsa_amount`)
                                     $norsaQuery = DB::table('norsa_adjustments')->where('fund_id', $item->id);
                                     if (!empty($item->obligation_serial)) {
                                         $norsaQuery->orWhere('obligation_serial', $item->obligation_serial);
                                     }
                                     $itemNorsaRows = $norsaQuery->get();
 
-                                    $norsaAmount = (float) ($item->norsa_amount ?? $itemNorsaRows->sum('amount') ?? $fund->total_norsa ?? 0);
+                                    $norsaAmount = (float) ($item->norsa_amount ?? $itemNorsaRows->sum(function($r) {
+                                        return (float) ($r->norsa_amount ?? $r->amount ?? 0);
+                                    }) ?? $fund->total_norsa ?? 0);
                                     $hasNorsa = ((isset($item->has_norsa) && $item->has_norsa) || (isset($fund->has_norsa) && $fund->has_norsa) || $norsaAmount > 0);
 
-                                    // Check if NORSA equals Obligation Amount (100% deobligated / Cancelled)
-                                    $isCancelledByNorsa = ($hasNorsa && $norsaAmount > 0 && $dbObAmount > 0 && abs($dbObAmount - $norsaAmount) < 0.01);
+                                    // Detect if DB obligation_amount is ALREADY stored NET of NORSA (e.g. ₱48,770 = ₱53,420 - ₱4,650) vs GROSS
+                                    $routedTotal = (float) ($item->routed_amount ?? $item->amount ?? $fund->amount ?? 0);
+                                    $positiveLogSum = (float) DB::table('fund_dtrack_logs')
+                                        ->where('fund_id', $item->id)
+                                        ->where('obligation_amount', '>', 0)
+                                        ->sum('obligation_amount');
+
+                                    $isObAlreadyNetOfNorsa = false;
+                                    if ($hasNorsa && $norsaAmount > 0 && $dbObAmount > 0) {
+                                        if ($positiveLogSum > 0 && abs(($dbObAmount + $norsaAmount) - $positiveLogSum) < 0.05) {
+                                            $isObAlreadyNetOfNorsa = true;
+                                        } elseif ($routedTotal > 0 && abs(($dbObAmount + $norsaAmount) - $routedTotal) < 0.05) {
+                                            $isObAlreadyNetOfNorsa = true;
+                                        } elseif ($disbAmount > 0 && abs($dbObAmount - $disbAmount) < 0.05 && $routedTotal > $dbObAmount) {
+                                            $isObAlreadyNetOfNorsa = true;
+                                        }
+                                    }
+
+                                    // Check if NORSA equals Gross Obligation Amount (100% deobligated / Cancelled)
+                                    $effectiveGrossCheck = $isObAlreadyNetOfNorsa ? ($dbObAmount + $norsaAmount) : $dbObAmount;
+                                    $isCancelledByNorsa  = ($hasNorsa && $norsaAmount > 0 && $effectiveGrossCheck > 0 && abs($effectiveGrossCheck - $norsaAmount) < 0.01);
 
                                     // Fetch NORSA Particulars from norsa_adjustments
                                     $itemNorsaParticulars = $hasNorsa
                                         ? $itemNorsaRows->pluck('particulars')->filter()->unique()
                                         : collect();
 
-                                    // Original Gross Obligation (from funds.obligation_amount) & Net Obligation (Obligation - NORSA)
+                                    // Original Gross Obligation & Actual Net Obligation (After NORSA)
                                     if ($isCancelledByNorsa) {
-                                        $originalObAmount = $dbObAmount;
-                                        $netObAmount = 0;
+                                        $originalObAmount = $effectiveGrossCheck;
+                                        $netObAmount      = 0.00;
+                                    } elseif ($isObAlreadyNetOfNorsa) {
+                                        $originalObAmount = round($dbObAmount + $norsaAmount, 2);
+                                        $netObAmount      = $dbObAmount;
                                     } else {
                                         $originalObAmount = $dbObAmount;
-                                        $netObAmount = $hasNorsa ? max(0, round($dbObAmount - $norsaAmount, 2)) : $dbObAmount;
+                                        $netObAmount      = $hasNorsa ? max(0, round($dbObAmount - $norsaAmount, 2)) : $dbObAmount;
+                                    }
+
+                                    // Per-Activity Breakdown (for Multi-Activity Transactions so each activity shows its own actual obligation after NORSA)
+                                    $multiActRows = DB::table('fund_multi_activities')
+                                        ->leftJoin('activities', 'fund_multi_activities.transaction_type_id', '=', 'activities.id')
+                                        ->where('fund_multi_activities.fund_id', $item->id)
+                                        ->select(
+                                            'fund_multi_activities.*',
+                                            'activities.name as activity_name'
+                                        )
+                                        ->get();
+
+                                    $activityObligationLines = collect();
+                                    if ($multiActRows->count() > 1) {
+                                        foreach ($multiActRows as $mRow) {
+                                            $actNorsa = (float) $itemNorsaRows
+                                                ->where('transaction_type_id', $mRow->transaction_type_id)
+                                                ->sum(fn($r) => (float) ($r->norsa_amount ?? $r->amount ?? 0));
+
+                                            // Fallback: match NORSA row if transaction_type_id is null and only one activity had reduction
+                                            if ($actNorsa == 0 && $hasNorsa && $itemNorsaRows->whereNull('transaction_type_id')->count() > 0) {
+                                                $diffFromRouted = max(0, round((float)$mRow->routed_amount - (float)$mRow->obligation_amount, 2));
+                                                if ($diffFromRouted > 0 && abs($diffFromRouted - $norsaAmount) < 0.05) {
+                                                    $actNorsa = $norsaAmount;
+                                                }
+                                            }
+
+                                            $mObStored = (float) ($mRow->obligation_amount ?? 0);
+                                            $mRouted   = (float) ($mRow->routed_amount ?? 0);
+                                            // In fund_multi_activities, obligation_amount is stored NET of NORSA when NORSA is applied
+                                            $mGrossOb  = ($actNorsa > 0 && $mRouted > 0 && abs(($mObStored + $actNorsa) - $mRouted) < 0.05)
+                                                ? $mRouted
+                                                : ($actNorsa > 0 ? round($mObStored + $actNorsa, 2) : $mObStored);
+                                            $mNetOb    = $isCancelledByNorsa ? 0.00 : max(0, round($mGrossOb - $actNorsa, 2));
+
+                                            $activityObligationLines->push([
+                                                'name'        => $mRow->activity_name ?? 'Activity',
+                                                'gross_ob'    => $mGrossOb,
+                                                'norsa'       => $actNorsa,
+                                                'net_ob'      => $mNetOb,
+                                                'disbursed'   => (float) ($mRow->disbursement_amount ?? 0),
+                                            ]);
+                                        }
                                     }
 
                                     // -------------------------------------------------------------
@@ -1254,7 +1320,7 @@
 
                                     {{-- NORSA BADGE TAG --}}
                                     @if($hasNorsa)
-                                        <span class="badge badge-danger shadow-sm ml-1" title="{{ $isCancelledByNorsa ? 'Full obligation cancelled via NORSA' : 'NORSA savings adjustment recorded' }}">
+                                        <span class="badge badge-danger shadow-sm ml-1" title="{{ $isCancelledByNorsa ? 'Full obligation cancelled via NORSA' : 'NORSA reduction recorded' }}">
                                             <i class="fas fa-file-invoice-dollar mr-1"></i> {{ $isCancelledByNorsa ? 'NORSA Cancelled' : 'NORSA' }}: (₱{{ number_format($norsaAmount, 2) }})
                                         </span>
                                     @endif
@@ -1287,7 +1353,7 @@
                                                     Prior Obligation: <del>₱{{ number_format($originalObAmount, 2) }}</del>
                                                 </div>
                                                 <div class="text-danger font-weight-bold mt-0.5" style="font-size: 0.72rem;">
-                                                    Net Obligation: ₱0.00 (Cancelled via NORSA)
+                                                    Actual Obligation (After NORSA): ₱0.00 (Cancelled via NORSA)
                                                 </div>
                                             @endif
 
@@ -1304,13 +1370,39 @@
                                                     </div>
                                                 @endif
 
-                                                <div class="text-dark font-weight-bold mt-0.5" style="font-size: 0.72rem;">
-                                                    Obligation Amount: ₱{{ number_format($originalObAmount, 2) }}
-                                                </div>
-
                                                 @if($hasNorsa)
-                                                    <div class="text-info font-weight-bold mt-0.5" style="font-size: 0.72rem;">
-                                                        Net Obligation (After NORSA): ₱{{ number_format($netObAmount, 2) }}
+                                                    <div class="text-muted mt-0.5" style="font-size: 0.70rem;">
+                                                        Original Obligation: ₱{{ number_format($originalObAmount, 2) }}
+                                                    </div>
+                                                    <div class="text-info font-weight-bold mt-0.5" style="font-size: 0.73rem;">
+                                                        Actual Obligation (After NORSA): ₱{{ number_format($netObAmount, 2) }}
+                                                    </div>
+                                                @else
+                                                    <div class="text-dark font-weight-bold mt-0.5" style="font-size: 0.72rem;">
+                                                        Obligation Amount: ₱{{ number_format($originalObAmount, 2) }}
+                                                    </div>
+                                                @endif
+
+                                                {{-- Per-Activity Breakdown for Multi-Activity Transactions --}}
+                                                @if($activityObligationLines->isNotEmpty())
+                                                    <div class="mt-1 pl-2 border-left border-info bg-light rounded py-1 pr-2" style="font-size: 0.65rem;">
+                                                        @foreach($activityObligationLines as $actLine)
+                                                            <div class="{{ !$loop->last ? 'mb-1 pb-1 border-bottom border-light' : '' }}">
+                                                                <div class="text-dark font-weight-bold">{{ \Illuminate\Support\Str::limit($actLine['name'], 42) }}</div>
+                                                                <div class="d-flex justify-content-between">
+                                                                    <span class="text-muted">
+                                                                        @if($actLine['norsa'] > 0)
+                                                                            Orig: ₱{{ number_format($actLine['gross_ob'], 2) }} &minus; NORSA: ₱{{ number_format($actLine['norsa'], 2) }}
+                                                                        @else
+                                                                            Obligated:
+                                                                        @endif
+                                                                    </span>
+                                                                    <span class="font-weight-bold {{ $actLine['norsa'] > 0 ? 'text-info' : 'text-dark' }}">
+                                                                        ₱{{ number_format($actLine['net_ob'], 2) }}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                        @endforeach
                                                     </div>
                                                 @endif
 
@@ -1330,15 +1422,42 @@
                                             @endif
 
                                             @if($originalObAmount > 0)
-                                                <div class="text-dark font-weight-bold mt-0.5" style="font-size: 0.72rem;">
-                                                    Obligation Amount: ₱{{ number_format($originalObAmount, 2) }}
-                                                </div>
+                                                @if($hasNorsa)
+                                                    <div class="text-muted mt-0.5" style="font-size: 0.70rem;">
+                                                        Original Obligation: ₱{{ number_format($originalObAmount, 2) }}
+                                                    </div>
+                                                    <div class="text-info font-weight-bold mt-0.5" style="font-size: 0.73rem;">
+                                                        Actual Obligation (After NORSA): ₱{{ number_format($netObAmount, 2) }}
+                                                    </div>
+                                                @else
+                                                    <div class="text-dark font-weight-bold mt-0.5" style="font-size: 0.72rem;">
+                                                        Obligation Amount: ₱{{ number_format($originalObAmount, 2) }}
+                                                    </div>
+                                                @endif
                                                 <div class="text-muted" style="font-size: 0.65rem;">
                                                     (Total Disbursed: ₱{{ number_format($disbAmount, 2) }})
                                                 </div>
-                                                @if($hasNorsa)
-                                                    <div class="text-info font-weight-bold mt-0.5" style="font-size: 0.68rem;">
-                                                        Net Obligation (After NORSA): ₱{{ number_format($netObAmount, 2) }}
+
+                                                {{-- Per-Activity Breakdown for Multi-Activity Transactions --}}
+                                                @if($activityObligationLines->isNotEmpty())
+                                                    <div class="mt-1 pl-2 border-left border-info bg-light rounded py-1 pr-2" style="font-size: 0.65rem;">
+                                                        @foreach($activityObligationLines as $actLine)
+                                                            <div class="{{ !$loop->last ? 'mb-1 pb-1 border-bottom border-light' : '' }}">
+                                                                <div class="text-dark font-weight-bold">{{ \Illuminate\Support\Str::limit($actLine['name'], 42) }}</div>
+                                                                <div class="d-flex justify-content-between">
+                                                                    <span class="text-muted">
+                                                                        @if($actLine['norsa'] > 0)
+                                                                            Orig: ₱{{ number_format($actLine['gross_ob'], 2) }} &minus; NORSA: ₱{{ number_format($actLine['norsa'], 2) }}
+                                                                        @else
+                                                                            Actual Oblig:
+                                                                        @endif
+                                                                    </span>
+                                                                    <span class="font-weight-bold {{ $actLine['norsa'] > 0 ? 'text-info' : 'text-dark' }}">
+                                                                        ₱{{ number_format($actLine['net_ob'], 2) }}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                        @endforeach
                                                     </div>
                                                 @endif
                                             @endif
@@ -1360,7 +1479,7 @@
                                                 @endif
                                             @endif
 
-                                            {{-- DYNAMIC SAVINGS CALCULATION (Net Obligation minus Disbursed) --}}
+                                            {{-- DYNAMIC SAVINGS CALCULATION (Actual Obligation After NORSA minus Disbursed) --}}
                                             @php
                                                 $savings = 0;
                                                 if ($isCosItem && $itemContract) {
