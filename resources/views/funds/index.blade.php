@@ -234,6 +234,148 @@
         padding-right: 20px !important;
     }
 
+    /* Horizontal Dotted Stepper Timeline */
+    .proc-timeline {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        position: relative;
+        padding: 8px 4px 4px;
+        overflow-x: auto;
+    }
+    .proc-step {
+        position: relative;
+        flex: 1 1 0;
+        min-width: 112px;
+        text-align: center;
+        z-index: 1;
+    }
+    /* Connecting line between dots */
+    .proc-step:not(:last-child)::after {
+        content: '';
+        position: absolute;
+        top: 13px;
+        left: 50%;
+        width: 100%;
+        height: 3px;
+        background-color: #dee2e6;
+        z-index: -1;
+    }
+    .proc-step.is-done:not(:last-child)::after {
+        background-color: #28a745;
+    }
+    .proc-step.is-active:not(:last-child)::after {
+        background: linear-gradient(90deg, #28a745 0%, #dee2e6 100%);
+    }
+
+    /* Circular milestone dot */
+    .proc-dot {
+        width: 28px;
+        height: 28px;
+        margin: 0 auto 6px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.72rem;
+        background-color: #f8f9fa;
+        border: 3px solid #ced4da;
+        color: #adb5bd;
+        transition: all 0.2s ease;
+    }
+    .proc-step.is-done .proc-dot {
+        background-color: #fff;
+        border-color: var(--step-color, #28a745);
+        color: var(--step-color, #28a745);
+        box-shadow: 0 0 0 3px rgba(40, 167, 69, 0.12);
+    }
+    .proc-step.is-active .proc-dot {
+        background-color: var(--step-color, #ffc107);
+        border-color: var(--step-color, #ffc107);
+        color: #fff;
+        box-shadow: 0 0 0 4px rgba(255, 193, 7, 0.28);
+    }
+
+    /* Duration pill floating on the connecting line between dots */
+    .proc-duration-pill {
+        position: absolute;
+        top: 4px;
+        left: calc(50% + 18px);
+        right: calc(-50% + 18px);
+        text-align: center;
+        pointer-events: none;
+        z-index: 2;
+    }
+    .proc-duration-pill span {
+        display: inline-block;
+        background: #ffffff;
+        border: 1px solid #d0e2ff;
+        color: #0056b3;
+        font-size: 0.62rem;
+        font-weight: 700;
+        padding: 0 6px;
+        border-radius: 10px;
+        line-height: 1.45;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+
+    /* Compact mini-timeline for Multi-Item rows */
+    .proc-mini-timeline {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        position: relative;
+        padding-top: 4px;
+    }
+    .proc-mini-step {
+        position: relative;
+        flex: 1 1 0;
+        text-align: center;
+        z-index: 1;
+    }
+    .proc-mini-step:not(:last-child)::after {
+        content: '';
+        position: absolute;
+        top: 6px;
+        left: 50%;
+        width: 100%;
+        height: 2px;
+        background-color: #dee2e6;
+        z-index: -1;
+    }
+    .proc-mini-step.is-done:not(:last-child)::after {
+        background-color: #28a745;
+    }
+    .proc-mini-dot {
+        width: 14px;
+        height: 14px;
+        margin: 0 auto 3px;
+        border-radius: 50%;
+        background-color: #fff;
+        border: 2.5px solid #ced4da;
+    }
+    .proc-mini-step.is-done .proc-mini-dot {
+        border-color: var(--step-color, #28a745);
+        background-color: var(--step-color, #28a745);
+    }
+    .proc-mini-step.is-active .proc-mini-dot {
+        border-color: var(--step-color, #ffc107);
+        background-color: #fff;
+        box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.3);
+    }
+
+    /* Allow the Procurement Items Breakdown box inside the modal to use the full wider column */
+    #viewTransactionModal #v_status div[style*="max-width"] {
+        max-width: 100% !important;
+    }
+
+    /* Display Item-Level Lead Time cards in a 2-column grid on wide screens */
+    #viewTransactionModal .item-lead-time-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(430px, 1fr));
+        gap: 10px;
+    }
+
 </style>
 
 <div class="row mb-3">
@@ -394,7 +536,8 @@
                     <td class="text-center col-dtrack" data-order="{{ \Carbon\Carbon::parse($fund->created_at)->timestamp }}">
                         <a href="#" class="view-dtrack font-weight-bold" 
                         data-particulars="{{ e($fund->particulars ?? 'No particulars') }}" 
-                        data-remarks="{{ e($fund->all_remarks ?? 'No remarks') }}">
+                        data-remarks="{{ e($fund->all_remarks ?? 'No remarks') }}"
+                        data-breakdown='@json($fund->breakdown)'>
                             {{ $fund->dtrack_no }}
                         </a>
                     </td>
@@ -2178,7 +2321,7 @@
 
 {{-- View Transaction Modal --}}
 <div class="modal fade" id="viewTransactionModal" tabindex="-1" role="dialog">
-    <div class="modal-dialog modal-lg" role="document">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable" role="document" style="max-width: 92vw; width: 1180px;">
         <div class="modal-content shadow-lg border-0">
             <div class="modal-header bg-dark text-white py-3">
                 <h5 class="modal-title font-weight-bold" id="viewModalLabel">
@@ -2192,10 +2335,10 @@
             
             <div class="modal-body px-4 py-4">
                 <div class="row mb-4">
-                    <div class="col-md-6 pr-md-4">
+                    <div class="col-lg-5 pr-lg-4">
                         <table class="table table-sm table-borderless mb-0">
                             <tr class="py-1">
-                                <th width="35%"><i class="fas fa-calendar mr-2 text-muted"></i> Date:</th> 
+                                <th width="32%"><i class="fas fa-calendar mr-2 text-muted"></i> Date:</th> 
                                 <td id="v_date" class="text-dark"></td>
                             </tr>
                             <tr class="py-1">
@@ -2213,36 +2356,45 @@
                         </table>
                     </div>
                     
-                    <div class="col-md-6 pl-md-4 border-left">
+                    <div class="col-lg-7 pl-lg-4 border-left">
                         <table class="table table-sm table-borderless mb-0">
                             <tr class="py-1">
-                                <th width="35%"><i class="fas fa-money-bill-wave mr-2 text-muted"></i> Amount:</th> 
+                                <th width="22%"><i class="fas fa-money-bill-wave mr-2 text-muted"></i> Amount:</th> 
                                 <td id="v_amount" class="h5 mb-0 text-success font-weight-bold"></td>
                             </tr>
                             <tr class="py-1">
                                 <th><i class="fas fa-check-circle mr-2 text-muted"></i> Status:</th> 
                                 <td id="v_status"></td>
                             </tr>
-                            {{-- <tr class="py-1">
-                                <th><i class="fas fa-barcode mr-2 text-muted"></i> Serial No:</th> 
-                                <td id="v_serial" class="text-dark"></td>
-                            </tr> --}}
                         </table>
                     </div>
                 </div>
 
-                <div class="mb-4">
-                    <h6 class="font-weight-bold text-uppercase small text-muted mb-2">
-                        <i class="fas fa-file-alt mr-1"></i> Particulars
-                    </h6>
-                    <div id="v_particulars" class="p-3 bg-light border rounded-lg text-dark" style="min-height: 60px; line-height: 1.6;"></div>
+                {{-- Procurement Lead Time Tracker Section --}}
+                <div id="v_lead_time_section" class="mb-4" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="font-weight-bold text-uppercase small text-navy mb-0">
+                            <i class="fas fa-stopwatch mr-1 text-primary"></i> Procurement Lead Time Tracker
+                        </h6>
+                        <span id="v_lead_time_total_badge" class="badge badge-primary px-2 py-1"></span>
+                    </div>
+                    <div id="v_lead_time_container" class="p-3 bg-light border rounded-lg"></div>
                 </div>
 
-                <div>
-                    <h6 class="font-weight-bold text-uppercase small text-muted mb-2">
-                        <i class="fas fa-comment-alt mr-1"></i> Remarks/Notes
-                    </h6>
-                    <div id="v_remarks" class="p-3 bg-light border rounded-lg text-dark" style="min-height: 60px; line-height: 1.6;"></div>
+                <div class="row">
+                    <div class="col-md-6 mb-3 mb-md-0">
+                        <h6 class="font-weight-bold text-uppercase small text-muted mb-2">
+                            <i class="fas fa-file-alt mr-1"></i> Particulars
+                        </h6>
+                        <div id="v_particulars" class="p-3 bg-light border rounded-lg text-dark" style="min-height: 70px; line-height: 1.6;"></div>
+                    </div>
+
+                    <div class="col-md-6">
+                        <h6 class="font-weight-bold text-uppercase small text-muted mb-2">
+                            <i class="fas fa-comment-alt mr-1"></i> Remarks/Notes
+                        </h6>
+                        <div id="v_remarks" class="p-3 bg-light border rounded-lg text-dark" style="min-height: 70px; line-height: 1.6;"></div>
+                    </div>
                 </div>
             </div>
 
@@ -3635,33 +3787,268 @@
             }
         });
 
+        const STAGE_HEX_COLORS = {
+            secondary: '#6c757d',
+            warning:   '#f0ad4e',
+            info:      '#17a2b8',
+            primary:   '#007bff',
+            success:   '#28a745'
+        };
+
+        function renderStageTimeline(tracker) {
+            if (!tracker || !tracker.stages || !tracker.has_any_date) return '';
+
+            // Find the last completed index to highlight active stage when ongoing
+            let lastDoneIdx = -1;
+            tracker.stages.forEach((s, i) => {
+                if (s.completed) lastDoneIdx = i;
+            });
+
+            let html = '<div class="proc-timeline">';
+
+            tracker.stages.forEach(function (st, idx) {
+                const isDone   = st.completed;
+                const isActive = (!tracker.is_completed && idx === lastDoneIdx);
+                const nextStage = tracker.stages[idx + 1] || null;
+                const stepColor = STAGE_HEX_COLORS[st.color] || '#28a745';
+
+                const stateClass = isActive ? 'is-active' : (isDone ? 'is-done' : '');
+
+                html += `
+                    <div class="proc-step ${stateClass}" style="--step-color: ${stepColor};">
+                        <div class="proc-dot" title="${st.label}">
+                            <i class="fas ${st.icon}"></i>
+                        </div>
+                        <div class="font-weight-bold ${isDone ? 'text-dark' : 'text-muted'}" style="font-size: 0.72rem; line-height: 1.2;">
+                            ${st.short}
+                        </div>
+                        <div class="${isDone ? 'text-secondary' : 'text-muted font-italic'}" style="font-size: 0.67rem; margin-top: 2px;">
+                            ${st.date ? st.date : 'Pending'}
+                        </div>
+
+                        ${nextStage && nextStage.days_from_prev !== null ? `
+                            <div class="proc-duration-pill">
+                                <span>+${nextStage.days_from_prev}d</span>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+
+            // Ongoing elapsed banner if not yet disbursed
+            if (!tracker.is_completed && tracker.ongoing_days !== null && tracker.active_stage) {
+                html += `
+                    <div class="mt-2 pt-2 border-top d-flex justify-content-between align-items-center text-xs">
+                        <span class="text-warning font-weight-bold">
+                            <i class="fas fa-hourglass-half mr-1"></i> Currently at <u>${tracker.active_stage}</u> for <strong>${tracker.ongoing_days} ${tracker.ongoing_days === 1 ? 'day' : 'days'}</strong>
+                        </span>
+                        <span class="text-muted">Elapsed since PR/Routed: <strong>${tracker.total_days} ${tracker.total_days === 1 ? 'day' : 'days'}</strong></span>
+                    </div>
+                `;
+            }
+
+            return html;
+        }
+
+        function renderMiniItemTimeline(tracker) {
+            if (!tracker || !tracker.stages || !tracker.has_any_date) return '';
+
+            let lastDoneIdx = -1;
+            tracker.stages.forEach((s, i) => {
+                if (s.completed) lastDoneIdx = i;
+            });
+
+            let html = '<div class="proc-mini-timeline">';
+
+            tracker.stages.forEach(function (st, idx) {
+                const isDone    = st.completed;
+                const isActive  = (!tracker.is_completed && idx === lastDoneIdx);
+                const stepColor = STAGE_HEX_COLORS[st.color] || '#28a745';
+                const stateClass = isActive ? 'is-active' : (isDone ? 'is-done' : '');
+
+                html += `
+                    <div class="proc-mini-step ${stateClass}" style="--step-color: ${stepColor};">
+                        <div class="proc-mini-dot"></div>
+                        <div class="font-weight-bold ${isDone ? 'text-dark' : 'text-muted'}" style="font-size: 0.64rem; line-height: 1.15;">
+                            ${st.short}
+                            ${idx > 0 && st.days_from_prev !== null ? `<span class="text-primary">(+${st.days_from_prev}d)</span>` : ''}
+                        </div>
+                        <div class="text-muted" style="font-size: 0.60rem;">
+                            ${st.date ? st.date : 'Pending'}
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            return html;
+        }
+
+        function getItemStatusBadgeClass(statusText) {
+            const s = (statusText || '').toLowerCase();
+            if (s.includes('disbursed') && !s.includes('partially')) return 'badge-success';
+            if (s.includes('partially') || s.includes('caf')) return 'badge-warning text-dark';
+            if (s.includes('obligated')) return 'badge-primary';
+            if (s.includes('po')) return 'badge-info';
+            if (s.includes('cancelled')) return 'badge-danger';
+            return 'badge-secondary';
+        }
+
+        function populateProcurementLeadTime(rawBreakdown) {
+            const $section   = $('#v_lead_time_section');
+            const $container = $('#v_lead_time_container');
+            const $badge     = $('#v_lead_time_total_badge');
+
+            let breakdownList = rawBreakdown;
+            if (typeof breakdownList === 'string') {
+                try {
+                    breakdownList = JSON.parse(breakdownList);
+                } catch (err) {
+                    breakdownList = [];
+                }
+            }
+
+            if (!Array.isArray(breakdownList) || breakdownList.length === 0) {
+                $section.hide();
+                $container.empty();
+                return;
+            }
+
+            const procurableAllocations = breakdownList.filter(b => Array.isArray(b.procurements) && b.procurements.length > 0);
+
+            if (procurableAllocations.length === 0) {
+                $section.hide();
+                $container.empty();
+                return;
+            }
+
+            let contentHtml   = '';
+            let maxTotalDays  = 0;
+            let allCompleted  = true;
+            let hasMultiItems = false;
+
+            procurableAllocations.forEach(function (alloc) {
+                alloc.procurements.forEach(function (pt) {
+                    const items      = Array.isArray(pt.items) ? pt.items : [];
+                    const isMulti    = items.length > 1;
+                    const ptTracker  = pt.lead_time || alloc.lead_time_tracker;
+                    const ptStatusText = pt.resolved_status || pt.status || 'In Process';
+
+                    if (isMulti) {
+                        hasMultiItems = true;
+                    } else if (ptTracker && ptTracker.total_days !== null) {
+                        maxTotalDays = Math.max(maxTotalDays, ptTracker.total_days);
+                        if (!ptTracker.is_completed) allCompleted = false;
+                    }
+
+                    contentHtml += `
+                        <div class="mb-3 last:mb-0">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span class="font-weight-bold text-dark small">
+                                    <i class="fas fa-file-alt text-primary mr-1"></i> ${pt.item_name || pt.pr_number || 'Procurement Transaction'}
+                                    ${!isMulti && pt.po_number ? `<span class="badge badge-info ml-1">PO: ${pt.po_number}</span>` : ''}
+                                    ${!isMulti && pt.po_dtrack_no ? `<span class="badge badge-light border ml-1">DTrack: ${pt.po_dtrack_no}</span>` : ''}
+                                </span>
+                                ${isMulti
+                                    ? `<span class="badge ${getItemStatusBadgeClass(ptStatusText)}">${ptStatusText}</span>`
+                                    : (ptTracker && ptTracker.total_days !== null
+                                        ? `<span class="badge ${ptTracker.is_completed ? 'badge-success' : 'badge-warning text-dark'}">
+                                            ${ptTracker.is_completed ? 'Completed in' : ptStatusText + ' • Elapsed:'} ${ptTracker.total_days} ${ptTracker.total_days === 1 ? 'day' : 'days'}
+                                        </span>`
+                                        : '')}
+                            </div>
+
+                            ${!isMulti ? renderStageTimeline(ptTracker) : ''}
+                    `;
+
+                    // Multi-Item Individual Dotted Timeline Breakdown (shown without parent timeline)
+                    if (isMulti) {
+                        contentHtml += `
+                            <div class="mt-2">
+                                <div class="text-xs font-weight-bold text-muted text-uppercase mb-2">
+                                    <i class="fas fa-boxes mr-1"></i> Item-Level Lead Time (${items.length} Items)
+                                </div>
+                                <div class="item-lead-time-grid">
+                        `;
+
+                        items.forEach(function (pItem) {
+                            const iTracker   = pItem.lead_time;
+                            const itemStatus = pItem.resolved_status || pItem.status || 'Routed';
+                            const badgeClass = getItemStatusBadgeClass(itemStatus);
+
+                            contentHtml += `
+                                <div class="bg-white border rounded p-2 shadow-xs">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="font-weight-bold text-dark text-xs pr-2">
+                                            <i class="fas fa-cube text-muted mr-1"></i> ${pItem.pr_item_name || 'Item'}
+                                            ${pItem.po_number ? `<span class="badge badge-light border text-info ml-1">PO: ${pItem.po_number}</span>` : ''}
+                                            ${pItem.po_dtrack_no ? `<span class="text-muted font-weight-normal ml-1">(DTrack: ${pItem.po_dtrack_no})</span>` : ''}
+                                        </span>
+                                        <span class="badge ${badgeClass} text-nowrap" style="font-size: 0.65rem;">
+                                            ${itemStatus}
+                                            ${iTracker && iTracker.total_days !== null ? ` &bull; ${iTracker.total_days}d` : ''}
+                                        </span>
+                                    </div>
+
+                                    ${renderMiniItemTimeline(iTracker)}
+
+                                    ${iTracker && !iTracker.is_completed && iTracker.ongoing_days !== null && iTracker.active_stage
+                                        ? `<div class="text-warning font-weight-bold mt-1 text-right" style="font-size: 0.64rem;">
+                                            <i class="fas fa-clock mr-1"></i> In ${iTracker.active_stage} for ${iTracker.ongoing_days} ${iTracker.ongoing_days === 1 ? 'day' : 'days'}
+                                        </div>`
+                                        : ''}
+                                </div>
+                            `;
+                        });
+
+                        contentHtml += `</div></div>`;
+                    }
+
+                    contentHtml += `</div>`;
+                });
+            });
+
+            if (hasMultiItems) {
+                $badge.hide();
+            } else {
+                $badge
+                    .show()
+                    .removeClass('badge-primary badge-success badge-warning text-dark')
+                    .addClass(allCompleted ? 'badge-success' : 'badge-warning text-dark')
+                    .text((allCompleted ? 'Total Turnaround: ' : 'Max Elapsed: ') + maxTotalDays + (maxTotalDays === 1 ? ' day' : ' days'));
+            }
+
+            $container.html(contentHtml);
+            $section.show();
+        }
+
         // For viewing of transaction info
         $(document).on('click', '.view-dtrack', function (e) {
             e.preventDefault();
             const $link = $(this);
             const modal = $('#viewTransactionModal');
 
-            // 1. Find the parent row
-            // If the table is responsive (mobile view), the row might be a 'child' row
+            // 1. Find the parent row (handles DataTables responsive child rows)
             let tr = $link.closest('tr');
             if (tr.hasClass('child')) { 
                 tr = tr.prev(); 
             }
 
-            // 2. Extract Data using Classes (NOT Indexes)
-            // This ensures that even if 'Section' is missing, we get the right data.
+            // 2. Extract Data using Classes
             const dtrackNo = $link.text().trim();
             const date     = tr.find('.col-date').text().trim();
-            const creditor = tr.find('.col-creditor').html(); // Using .html() to keep badges
+            const creditor = tr.find('.col-creditor').html();
             const source   = tr.find('.col-source').html();
             const activity = tr.find('.col-activity').html();
             const amount   = tr.find('.col-amount').html();
             const status   = tr.find('.col-status').html();
 
-            // 3. Extract Data Attributes for Particulars and Remarks
-            // We use .data() to get the 'e()' escaped strings from your Blade file
+            // 3. Extract Data Attributes for Particulars, Remarks, and Breakdown
             const particulars = $link.data('particulars');
             const remarks     = $link.data('remarks');
+            const breakdown   = $link.data('breakdown');
 
             // 4. Update Modal Content
             modal.find('#view_dtrack').text(dtrackNo);
@@ -3672,15 +4059,16 @@
             modal.find('#v_amount').html(amount);
             modal.find('#v_status').html(status);
 
-            // 5. Handle Particulars & Remarks Display
-            // Using .text() for particulars to prevent XSS, .html() for remarks to allow <br>
+            // 5. Render Procurement Lead Time Tracker (hides automatically if non-procurable)
+            populateProcurementLeadTime(breakdown);
+
+            // 6. Handle Particulars & Remarks Display
             modal.find('#v_particulars').text(particulars || 'No particulars provided.');
             
-            // Replace semicolons with line breaks for better readability in the modal
             const formattedRemarks = remarks ? remarks.replace(/; /g, '<br>') : 'No remarks provided.';
             modal.find('#v_remarks').html(formattedRemarks);
 
-            // 6. Show the Modal
+            // 7. Show the Modal
             modal.modal('show');
         });
 

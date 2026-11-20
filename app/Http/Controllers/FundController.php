@@ -158,13 +158,102 @@ class FundController extends Controller
             return $emp;
         })->keyBy('dbedid');
 
+        // --- HELPER: BUILD STAGE-BY-STAGE PROCUREMENT LEAD TIME TRACKER ---
+        $buildLeadTimeTracker = function ($routedDate, $cafDate, $poDate, $obligDate, $disbDate, $currentStatus = 'Routed', $forceInProgress = false) {
+            $parseDate = function ($val) {
+                if (empty($val)) return null;
+                try {
+                    return \Carbon\Carbon::parse($val)->startOfDay();
+                } catch (\Exception $e) {
+                    return null;
+                }
+            };
+
+            $dRouted = $parseDate($routedDate);
+            $dCaf    = $parseDate($cafDate);
+            $dPo     = $parseDate($poDate);
+            $dOblig  = $parseDate($obligDate);
+            $dDisb   = $forceInProgress ? null : $parseDate($disbDate);
+            $today   = \Carbon\Carbon::today();
+
+            $milestones = [
+                ['key' => 'routed', 'label' => 'PR / Routed',   'short' => 'PR/Routed', 'date' => $dRouted, 'icon' => 'fa-paper-plane',   'color' => 'secondary'],
+                ['key' => 'caf',    'label' => 'Tagged as CAF', 'short' => 'CAF',       'date' => $dCaf,    'icon' => 'fa-tag',           'color' => 'warning'],
+                ['key' => 'po',     'label' => 'Tagged as PO',  'short' => 'PO',        'date' => $dPo,     'icon' => 'fa-file-contract', 'color' => 'info'],
+                ['key' => 'oblig',  'label' => 'Obligated',     'short' => 'Obligated', 'date' => $dOblig,  'icon' => 'fa-file-signature','color' => 'primary'],
+                ['key' => 'disb',   'label' => 'Disbursed',     'short' => 'Disbursed', 'date' => $dDisb,   'icon' => 'fa-check-circle',  'color' => 'success'],
+            ];
+
+            $stages       = [];
+            $prevStage    = null;
+            $lastReached  = null;
+            $firstReached = null;
+
+            foreach ($milestones as $m) {
+                $daysFromPrev = null;
+                if ($m['date'] !== null) {
+                    if ($firstReached === null) {
+                        $firstReached = $m;
+                    }
+                    if ($prevStage !== null && $prevStage['date'] !== null) {
+                        $daysFromPrev = max(0, $prevStage['date']->diffInDays($m['date'], false));
+                    }
+                    $prevStage   = $m;
+                    $lastReached = $m;
+                }
+
+                $stages[] = [
+                    'key'            => $m['key'],
+                    'label'          => $m['label'],
+                    'short'          => $m['short'],
+                    'date'           => $m['date'] ? $m['date']->format('M d, Y') : null,
+                    'date_raw'       => $m['date'] ? $m['date']->format('Y-m-d') : null,
+                    'days_from_prev' => $daysFromPrev,
+                    'completed'      => $m['date'] !== null,
+                    'icon'           => $m['icon'],
+                    'color'          => $m['color'],
+                ];
+            }
+
+            $isCancelled = (strcasecmp(trim((string) $currentStatus), 'Cancelled') === 0);
+            $isCompleted = !$forceInProgress && (
+                ($dDisb !== null) ||
+                in_array(strtolower(trim((string) $currentStatus)), ['disbursed', 'disbursed (with savings)', 'completed', 'cancelled'])
+            );
+
+            $totalDays   = null;
+            $ongoingDays = null;
+            $activeLabel = null;
+
+            if ($firstReached !== null && $lastReached !== null) {
+                if ($dDisb !== null && !$forceInProgress) {
+                    $totalDays = max(0, $firstReached['date']->diffInDays($dDisb, false));
+                } elseif (!$isCompleted && !$isCancelled) {
+                    $ongoingDays = max(0, $lastReached['date']->diffInDays($today, false));
+                    $totalDays   = max(0, $firstReached['date']->diffInDays($today, false));
+                    $activeLabel = $lastReached['label'];
+                } else {
+                    $totalDays = max(0, $firstReached['date']->diffInDays($lastReached['date'], false));
+                }
+            }
+
+            return [
+                'stages'        => $stages,
+                'total_days'    => $totalDays,
+                'ongoing_days'  => $ongoingDays,
+                'active_stage'  => $activeLabel,
+                'is_completed'  => ($dDisb !== null && !$forceInProgress) || $isCancelled,
+                'has_any_date'  => $firstReached !== null,
+            ];
+        };
+
         // --- 3. GROUP AND MAP (WITH MULTI-ACTIVITY & NORSA INTEGRATION) ---
         $funds = $fundsCollection->groupBy(function ($item) {
             if ($item->remarks_salary === 'Imported HR COS Salary/Wages') {
                 return 'COS_SALARY_' . $item->id;
             }
             return $item->dtrack_no;
-        })->map(function ($group) use ($employees) {
+        })->map(function ($group) use ($employees, $buildLeadTimeTracker) {
             $first = $group->first();
 
             // Creditor resolution
@@ -232,7 +321,6 @@ class FundController extends Controller
             // Collect child line items or distinct activity names across the group
             $groupedActivities = collect();
             
-            // 1. Check if lineItems exist on parent records
             foreach ($group as $gItem) {
                 if ($gItem->lineItems && $gItem->lineItems->isNotEmpty()) {
                     foreach ($gItem->lineItems as $line) {
@@ -244,7 +332,6 @@ class FundController extends Controller
                 }
             }
 
-            // 2. Fallback to direct activity relation on grouped funds
             if ($groupedActivities->isEmpty()) {
                 foreach ($group as $gItem) {
                     if ($gItem->activity) {
@@ -282,7 +369,7 @@ class FundController extends Controller
                     $isDisbursedMissing = ($isDisbursedType && (empty($item->disbursement_amount) || $item->disbursement_amount <= 0));
                     return $isObligatedMissing || $isDisbursedMissing;
                 }),
-                'breakdown' => $group->map(function($item) {
+                'breakdown' => $group->map(function($item) use ($buildLeadTimeTracker) {
                     $norsaAmount = $item->norsaAdjustments ? (float)$item->norsaAdjustments->sum('amount') : 0.00;
                     $netObligationAmount = max(0.00, (float)$item->obligation_amount - $norsaAmount);
 
@@ -291,11 +378,131 @@ class FundController extends Controller
                         ->where('fund_transaction_id', $item->id)
                         ->get();
 
+                    $routedDate = $item->transaction_date ?? $item->created_at;
+
+                    // Attach lead time tracker to each procurement transaction and its child items
+                    $procurements = $procurements->map(function ($pt) use ($item, $routedDate, $buildLeadTimeTracker) {
+                        $rawItems = \DB::table('procurement_transaction_items')
+                            ->where('procurement_transaction_id', $pt->id)
+                            ->get();
+
+                        $ptItems = $rawItems->map(function ($pItem) use ($pt, $routedDate, $buildLeadTimeTracker) {
+                            $rawStatus = trim((string) ($pItem->status ?? ''));
+                            $pDisbAmt  = (float) ($pItem->disbursement_amount ?? 0);
+                            $pObAmt    = (float) ($pItem->obligation_amount ?? 0);
+                            $pPoAmt    = (float) ($pItem->po_amount ?? 0);
+
+                            $hasPo   = !empty($pItem->po_number) || $pPoAmt > 0 || !empty($pItem->po_date) || strcasecmp($rawStatus, 'Tagged as PO') === 0;
+                            $hasOblig = $pObAmt > 0 || !empty($pItem->obligation_date) || strcasecmp($rawStatus, 'Obligated') === 0;
+                            $hasDisb = $pDisbAmt > 0 || !empty($pItem->disbursement_date) || in_array(strtolower($rawStatus), ['disbursed', 'disbursed (with savings)', 'completed']);
+
+                            // Resolve exact item status (never falsely inherit parent Disbursed/Obligated)
+                            if (strcasecmp($rawStatus, 'Cancelled') === 0) {
+                                $resolvedStatus = 'Cancelled';
+                            } elseif ($hasDisb) {
+                                $resolvedStatus = ($pObAmt > 0 && $pDisbAmt > 0 && $pDisbAmt < $pObAmt)
+                                    ? 'Disbursed (with savings)'
+                                    : 'Disbursed';
+                            } elseif ($hasOblig) {
+                                $resolvedStatus = 'Obligated';
+                            } elseif ($hasPo) {
+                                $resolvedStatus = 'Tagged as PO';
+                            } elseif (!empty($pt->caf_date) || in_array($pt->caf_status ?? '', ['Tagged as CAF', 'Tagged as PO']) || strcasecmp($rawStatus, 'Tagged as CAF') === 0) {
+                                $resolvedStatus = 'Tagged as CAF';
+                            } else {
+                                $resolvedStatus = $rawStatus !== '' ? $rawStatus : 'Routed';
+                            }
+
+                            $pItem->resolved_status = $resolvedStatus;
+
+                            // Use ONLY item-specific dates for PO, Obligation, and Disbursement (no parent fund fallback!)
+                            $pItem->lead_time = $buildLeadTimeTracker(
+                                $routedDate,
+                                $pt->caf_date ?? null,
+                                $pItem->po_date ?? null,
+                                $pItem->obligation_date ?? null,
+                                $pItem->disbursement_date ?? null,
+                                $resolvedStatus,
+                                !$hasDisb && $resolvedStatus !== 'Cancelled'
+                            );
+
+                            return $pItem;
+                        });
+
+                        $pt->items = $ptItems;
+
+                        // Determine parent procurement transaction completion & summary status across its items
+                        $totalChildItems     = $ptItems->count();
+                        $disbursedChildCount = $ptItems->filter(fn($i) => in_array($i->resolved_status, ['Disbursed', 'Disbursed (with savings)', 'Completed']))->count();
+                        $obligatedChildCount = $ptItems->filter(fn($i) => in_array($i->resolved_status, ['Obligated', 'Disbursed', 'Disbursed (with savings)', 'Completed']))->count();
+                        $poChildCount        = $ptItems->filter(fn($i) => in_array($i->resolved_status, ['Tagged as PO', 'Obligated', 'Disbursed', 'Disbursed (with savings)', 'Completed']))->count();
+
+                        if ($totalChildItems > 0) {
+                            $allItemsDisbursed = ($disbursedChildCount === $totalChildItems);
+
+                            if ($allItemsDisbursed) {
+                                $pt->resolved_status = 'Disbursed';
+                            } elseif ($disbursedChildCount > 0) {
+                                $pt->resolved_status = "Partially Disbursed ({$disbursedChildCount}/{$totalChildItems} items)";
+                            } elseif ($obligatedChildCount === $totalChildItems) {
+                                $pt->resolved_status = 'Obligated';
+                            } elseif ($obligatedChildCount > 0) {
+                                $pt->resolved_status = "Partially Obligated ({$obligatedChildCount}/{$totalChildItems} items)";
+                            } elseif ($poChildCount === $totalChildItems) {
+                                $pt->resolved_status = 'Tagged as PO';
+                            } elseif ($poChildCount > 0) {
+                                $pt->resolved_status = "Partially Tagged as PO ({$poChildCount}/{$totalChildItems} items)";
+                            } else {
+                                $pt->resolved_status = !empty($pt->caf_date) ? 'Tagged as CAF' : ($pt->status ?? 'Routed');
+                            }
+
+                            $latestPoDate    = $ptItems->pluck('po_date')->filter()->max() ?? $pt->po_date ?? null;
+                            $latestObligDate = $ptItems->pluck('obligation_date')->filter()->max() ?? $pt->obligation_date ?? null;
+                            $latestDisbDate  = $allItemsDisbursed
+                                ? ($ptItems->pluck('disbursement_date')->filter()->max() ?? $pt->disbursement_date ?? $item->disbursement_date ?? null)
+                                : null;
+
+                            $pt->lead_time = $buildLeadTimeTracker(
+                                $routedDate,
+                                $pt->caf_date ?? null,
+                                $latestPoDate,
+                                $latestObligDate,
+                                $latestDisbDate,
+                                $pt->resolved_status,
+                                !$allItemsDisbursed
+                            );
+                        } else {
+                            // Single-item procurement transaction without child rows
+                            $pt->resolved_status = $pt->status ?? $item->status;
+                            $pt->lead_time = $buildLeadTimeTracker(
+                                $routedDate,
+                                $pt->caf_date ?? null,
+                                $pt->po_date ?? null,
+                                $pt->obligation_date ?? $item->obligation_date ?? null,
+                                $pt->disbursement_date ?? $item->disbursement_date ?? null,
+                                $pt->resolved_status
+                            );
+                        }
+
+                        return $pt;
+                    });
+
+                    // Overall item-level procurement lead time summary
+                    $firstProc = $procurements->first();
+                    $overallLeadTime = $firstProc
+                        ? $firstProc->lead_time
+                        : $buildLeadTimeTracker(
+                            $routedDate,
+                            null,
+                            null,
+                            $item->obligation_date ?? null,
+                            $item->disbursement_date ?? null,
+                            $item->status
+                        );
+
                     $totalProcurements = $procurements->count();
                     $poCount = $procurements->where('caf_status', 'Tagged as PO')->count();
-                    $cafCount = $procurements->where('caf_status', 'Tagged as CAF')->count();
 
-                    // Determine partial vs full status
                     $procurementStatus = null;
                     if ($totalProcurements > 0) {
                         if ($poCount === $totalProcurements) {
@@ -311,6 +518,7 @@ class FundController extends Controller
                         'id'                    => $item->id,
                         'source_name'           => $item->fundSource->name ?? 'N/A', 
                         'activity_name'         => $item->activity->name ?? 'N/A',
+                        'transaction_date'      => $item->transaction_date,
                         'amount'                => $item->amount,
                         'status'                => $item->status,
                         'remarks'               => $item->remarks,
@@ -331,11 +539,12 @@ class FundController extends Controller
                         'disbursement_date'     => $item->disbursement_date,
                         'status_date'           => $item->status_date,
                         'line_items'            => $item->lineItems,
-                        // Procurement tracking additions:
+                        // Procurement tracking & lead time additions:
                         'procurements'          => $procurements,
                         'procurement_status'    => $procurementStatus,
                         'po_numbers'            => $procurements->pluck('po_number')->filter()->unique()->implode(', '),
-                        'po_dtrack_nos'         => $procurements->pluck('dtrack_no')->filter()->unique()->implode(', '),
+                        'po_dtrack_nos'         => $procurements->pluck('po_dtrack_no')->filter()->unique()->implode(', '),
+                        'lead_time_tracker'     => $overallLeadTime,
                     ];
                 }),
             ];
