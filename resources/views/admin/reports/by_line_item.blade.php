@@ -168,6 +168,8 @@
                         $totalDisbursed      = $source['total_disbursed'] ?? 0;
                         $totalPending        = $source['total_pending'] ?? 0;
                         $totalSavings        = $source['total_savings'] ?? 0;
+                        $totalCafCount       = $source['total_caf_count'] ?? 0;
+                        $totalPoCount        = $source['total_po_count'] ?? 0;
 
                         $overallObligRate = $netSourceBudget > 0 ? ($totalObligated / $netSourceBudget) * 100 : 0;
                         $overallDisbRate  = $totalObligated > 0 ? ($totalDisbursed / $totalObligated) * 100 : 0;
@@ -184,6 +186,16 @@
                             <h6 class="card-title text-navy font-weight-bold mb-0" style="font-size: 0.95rem;">
                                 <i class="fas fa-folder text-warning mr-2"></i>{{ $source['source_name'] }}
                                 <span class="text-muted ml-3 font-weight-normal">TOTAL ALLOTTED FUND: <strong class="text-dark financial-number">₱{{ number_format($source['source_total'] ?? 0, 2) }}</strong></span>
+                                @if($totalCafCount > 0 || $totalPoCount > 0)
+                                    <span class="ml-2">
+                                        @if($totalCafCount > 0)
+                                            <span class="badge badge-warning text-dark font-weight-bold" style="font-size: 0.68rem;">CAF: {{ $totalCafCount }}</span>
+                                        @endif
+                                        @if($totalPoCount > 0)
+                                            <span class="badge badge-primary font-weight-bold" style="font-size: 0.68rem;">PO: {{ $totalPoCount }}</span>
+                                        @endif
+                                    </span>
+                                @endif
                             </h6>
                             <div>
                                 <button type="button" class="btn btn-xs btn-outline-primary btn-copy-card px-2 font-weight-bold mr-1" title="Capture table as image for PowerPoint">
@@ -277,6 +289,9 @@
                                             $pending     = $item['pending_amount'];
                                             $savings     = $item['savings_amount'] ?? 0;
 
+                                            $cafCount    = $item['caf_tagged_count'] ?? 0;
+                                            $poCount     = $item['po_tagged_count'] ?? 0;
+
                                             $rowUnpaid   = max(0, $netOb - $disbursed);
                                             $pooled      = $item['pooled_amount'] ?? 0;
 
@@ -299,9 +314,23 @@
                                             <td class="align-middle font-weight-bold text-dark">
                                                 {{ $item['name'] }}
                                                 @if($pooled > 0)
-                                                    <span class="badge badge-warning text-dark ml-1 d-block mt-1" style="font-size: 0.65rem; width: fit-content;">
+                                                    <span class="badge badge-warning text-dark d-block mt-1" style="font-size: 0.65rem; width: fit-content;">
                                                         POOLED AMOUNT: ₱{{ number_format($pooled, 2) }}
                                                     </span>
+                                                @endif
+                                                @if($cafCount > 0 || $poCount > 0)
+                                                    <div class="mt-1">
+                                                        @if($cafCount > 0)
+                                                            <span class="badge badge-warning text-dark mr-1" style="font-size: 0.62rem;" title="Tagged as CAF (₱{{ number_format($item['caf_tagged_amount'] ?? 0, 2) }})">
+                                                                <i class="fas fa-tag mr-1"></i>CAF ({{ $cafCount }})
+                                                            </span>
+                                                        @endif
+                                                        @if($poCount > 0)
+                                                            <span class="badge badge-primary" style="font-size: 0.62rem;" title="Tagged as PO (₱{{ number_format($item['po_tagged_amount'] ?? 0, 2) }})">
+                                                                <i class="fas fa-file-contract mr-1"></i>PO ({{ $poCount }})
+                                                            </span>
+                                                        @endif
+                                                    </div>
                                                 @endif
                                             </td>
                                             <td class="text-right align-middle financial-number">₱{{ number_format($netBudget, 2) }}</td>

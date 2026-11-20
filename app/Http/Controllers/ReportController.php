@@ -788,25 +788,84 @@ class ReportController extends Controller
 
                 $untouched = $activityBudgetNet - ($netObligated + $pending);
 
-                // Procurement Savings (Exclude Cancelled)
+                // Procurement Savings & CAF / PO Tagging Status (Exclude Cancelled/Rejected)
                 $procurementSavings = 0.00;
-                $procTransactions = \App\Models\ProcurementTransaction::with('items')
+                $cafTaggedCount     = 0;
+                $poTaggedCount      = 0;
+                $cafTaggedAmount    = 0.00;
+                $poTaggedAmount     = 0.00;
+
+                $procTransactions = \App\Models\ProcurementTransaction::with(['items', 'fund'])
                     ->where('source_of_fund_id', $source->id)
                     ->where('activity_id', $activity->id)
                     ->whereNotIn('caf_status', ['Cancelled', 'Rejected'])
                     ->get();
 
                 foreach ($procTransactions as $procTrx) {
+                    $parentFund = $procTrx->fund;
+                    $hasParentPo = $parentFund && (
+                        !empty($parentFund->dtrack_no_new) ||
+                        \Illuminate\Support\Str::contains(strtolower((string) ($parentFund->status ?? '')), 'po')
+                    );
+
                     if ($procTrx->items && $procTrx->items->count() > 0) {
                         foreach ($procTrx->items as $pItem) {
                             if (strtolower((string) ($pItem->status ?? '')) === 'cancelled') continue;
+
+                            $itemStatusLower = strtolower((string) ($pItem->status ?? ''));
+                            $isPoTagged = !is_null($pItem->po_amount)
+                                || !empty($pItem->po_number)
+                                || !empty($pItem->po_date)
+                                || \Illuminate\Support\Str::contains($itemStatusLower, 'po')
+                                || $hasParentPo;
+
+                            if ($isPoTagged) {
+                                $poTaggedCount++;
+                                $poTaggedAmount += (float) ($pItem->po_amount ?? $pItem->item_amount ?? 0);
+                            } else {
+                                $cafTaggedCount++;
+                                $cafTaggedAmount += (float) ($pItem->item_amount ?? 0);
+                            }
+
                             if (!is_null($pItem->po_amount)) {
                                 $procurementSavings += max(0, (float) $pItem->item_amount - (float) $pItem->po_amount);
                             }
                         }
                     } else {
+                        $trxPoStatusLower = strtolower((string) ($procTrx->po_status ?? ''));
+                        $isPoTagged = !is_null($procTrx->po_amount)
+                            || !empty($procTrx->po_number)
+                            || !empty($procTrx->po_date)
+                            || (!empty($trxPoStatusLower) && !in_array($trxPoStatusLower, ['pending', 'for po', 'none']))
+                            || $hasParentPo;
+
+                        if ($isPoTagged) {
+                            $poTaggedCount++;
+                            $poTaggedAmount += (float) ($procTrx->po_amount ?? $procTrx->abc_allotment ?? 0);
+                        } else {
+                            $cafTaggedCount++;
+                            $cafTaggedAmount += (float) ($procTrx->abc_allotment ?? 0);
+                        }
+
                         if (!is_null($procTrx->po_amount)) {
                             $procurementSavings += max(0, (float) $procTrx->abc_allotment - (float) $procTrx->po_amount);
+                        }
+                    }
+                }
+
+                // Also detect direct funds tagged as CAF or PO when no ProcurementTransaction record exists yet
+                if ($procTransactions->isEmpty()) {
+                    foreach ($directFunds as $f) {
+                        if (in_array($f->id, $cancelledDirectIds)) continue;
+                        $fStatusLower = strtolower((string) ($f->status ?? ''));
+                        $fRemarksLower = strtolower((string) ($f->remarks ?? ''));
+
+                        if (!empty($f->dtrack_no_new) || \Illuminate\Support\Str::contains($fStatusLower, 'po') || \Illuminate\Support\Str::contains($fRemarksLower, 'tagged as po')) {
+                            $poTaggedCount++;
+                            $poTaggedAmount += (float) ($f->obligation_amount > 0 ? $f->obligation_amount : $f->amount);
+                        } elseif (\Illuminate\Support\Str::contains($fStatusLower, 'caf') || \Illuminate\Support\Str::contains($fRemarksLower, 'caf')) {
+                            $cafTaggedCount++;
+                            $cafTaggedAmount += (float) ($f->obligation_amount > 0 ? $f->obligation_amount : $f->amount);
                         }
                     }
                 }
@@ -860,6 +919,11 @@ class ReportController extends Controller
                 return [
                     'name'              => $activity->name,
                     'has_cos_salary'    => $hasCosSalaryFunds || $procurementSavings > 0,
+                    'is_procurable'     => ($cafTaggedCount + $poTaggedCount) > 0,
+                    'caf_tagged_count'  => $cafTaggedCount,
+                    'po_tagged_count'   => $poTaggedCount,
+                    'caf_tagged_amount' => $cafTaggedAmount,
+                    'po_tagged_amount'  => $poTaggedAmount,
                     'net_budget'        => $activityBudgetNet,
                     'pooled_amount'     => $pooled,
                     'gross_obligated'   => $grossObligated,
@@ -882,6 +946,8 @@ class ReportController extends Controller
                 'source_total'          => $originalSourceTotal,
                 'unassigned_balance'    => $originalSourceTotal - $source->activities->sum('budget_adjusted'),
                 'line_items'            => $lineItems,
+                'total_caf_count'       => $lineItems->sum('caf_tagged_count'),
+                'total_po_count'        => $lineItems->sum('po_tagged_count'),
                 'total_pending'         => $lineItems->sum('pending_amount'),
                 'total_unpaid'          => $lineItems->sum('unpaid_amount'),
                 'total_savings'         => $lineItems->sum('savings_amount'),
@@ -932,6 +998,14 @@ class ReportController extends Controller
         $month         = $request->get('month');
         $sectionFilter = $request->get('section_id');
         $search        = trim($request->get('search'));
+        $dateFrom      = $request->get('date_from');
+        $dateTo        = $request->get('date_to');
+
+        // Normalize date range if inverted
+        if (!empty($dateFrom) && !empty($dateTo) && $dateFrom > $dateTo) {
+            [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
+        }
+        $hasCustomDateRange = !empty($dateFrom) || !empty($dateTo);
 
         // 1. CUMULATIVE MULTI-QUARTER CHECKBOX HANDLING
         $quartersInput    = $request->get('quarters', $request->get('quarter') ? [$request->get('quarter')] : []);
@@ -963,60 +1037,54 @@ class ReportController extends Controller
             ->table('tbl_section')
             ->pluck('secname', 'secid');
 
+        // SQL date-column filter closure (applies custom date_from/date_to when provided, else year/month/quarters)
+        $applyDateFilter = function ($q, string $col) use ($year, $month, $selectedMonths, $hasCustomDateRange, $dateFrom, $dateTo) {
+            if ($hasCustomDateRange) {
+                if (!empty($dateFrom) && !empty($dateTo)) {
+                    $q->whereDate($col, '>=', $dateFrom)->whereDate($col, '<=', $dateTo);
+                } elseif (!empty($dateFrom)) {
+                    $q->whereDate($col, '>=', $dateFrom)->whereYear($col, $year);
+                } else {
+                    $q->whereDate($col, '<=', $dateTo)->whereYear($col, $year);
+                }
+            } else {
+                $q->whereYear($col, $year);
+                if ($month) {
+                    $q->whereMonth($col, $month);
+                } elseif (!empty($selectedMonths)) {
+                    $q->whereIn(\DB::raw("MONTH({$col})"), $selectedMonths);
+                }
+            }
+        };
+
         // 4. Build Source of Fund Query
         $query = \App\Models\SourceOfFund::where('fiscal_year', $year)
             ->with([
                 'activities',
-                'funds' => function ($query) use ($year, $month, $selectedMonths, $search) {
-                    $query->where(function ($sub) use ($year, $month, $selectedMonths) {
+                'funds' => function ($query) use ($search, $applyDateFilter) {
+                    $query->where(function ($sub) use ($applyDateFilter) {
                         // A. Matched by Obligation Date
-                        $sub->where(function ($obligQ) use ($year, $month, $selectedMonths) {
-                            $obligQ->whereYear('obligation_date', $year);
-                            if ($month) {
-                                $obligQ->whereMonth('obligation_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $obligQ->whereIn(\DB::raw('MONTH(obligation_date)'), $selectedMonths);
-                            }
+                        $sub->where(function ($obligQ) use ($applyDateFilter) {
+                            $applyDateFilter($obligQ, 'obligation_date');
                         })
                         // B. OR Matched by Main Disbursement Date
-                        ->orWhere(function ($disbQ) use ($year, $month, $selectedMonths) {
-                            $disbQ->whereYear('disbursement_date', $year);
-                            if ($month) {
-                                $disbQ->whereMonth('disbursement_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $disbQ->whereIn(\DB::raw('MONTH(disbursement_date)'), $selectedMonths);
-                            }
+                        ->orWhere(function ($disbQ) use ($applyDateFilter) {
+                            $applyDateFilter($disbQ, 'disbursement_date');
                         })
                         // C. OR Matched by Monthly COS Salary Disbursement Entries
-                        ->orWhereHas('cosSalaryDisbursements', function ($cosQ) use ($year, $month, $selectedMonths) {
-                            $cosQ->whereYear('disbursement_date', $year);
-                            if ($month) {
-                                $cosQ->whereMonth('disbursement_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $cosQ->whereIn(\DB::raw('MONTH(disbursement_date)'), $selectedMonths);
-                            }
+                        ->orWhereHas('cosSalaryDisbursements', function ($cosQ) use ($applyDateFilter) {
+                            $applyDateFilter($cosQ, 'disbursement_date');
                         })
                         // D. OR Matched by Cancellation Status Date
-                        ->orWhere(function ($cancelQ) use ($year, $month, $selectedMonths) {
-                            $cancelQ->where('status', 'Cancelled')
-                                    ->whereYear('status_date', $year);
-                            if ($month) {
-                                $cancelQ->whereMonth('status_date', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $cancelQ->whereIn(\DB::raw('MONTH(status_date)'), $selectedMonths);
-                            }
+                        ->orWhere(function ($cancelQ) use ($applyDateFilter) {
+                            $cancelQ->where('status', 'Cancelled');
+                            $applyDateFilter($cancelQ, 'status_date');
                         })
                         // E. Fallback for un-obligated items
-                        ->orWhere(function ($subYear) use ($year, $month, $selectedMonths) {
+                        ->orWhere(function ($subYear) use ($applyDateFilter) {
                             $subYear->whereNull('obligation_date')
-                                    ->whereNull('disbursement_date')
-                                    ->whereYear('created_at', $year);
-
-                            if ($month) {
-                                $subYear->whereMonth('created_at', $month);
-                            } elseif (!empty($selectedMonths)) {
-                                $subYear->whereIn(\DB::raw('MONTH(created_at)'), $selectedMonths);
-                            }
+                                    ->whereNull('disbursement_date');
+                            $applyDateFilter($subYear, 'created_at');
                         });
                     })
                     ->where('status', '!=', 'Rejected');
@@ -1121,10 +1189,22 @@ class ReportController extends Controller
             }
         }
 
-        // Period matcher helper
-        $matchesPeriod = function ($dateVal) use ($year, $month, $selectedMonths) {
+        // Period matcher helper (supports custom date_from/date_to as well as year/month/quarters)
+        $fromCarbon = !empty($dateFrom) ? \Carbon\Carbon::parse($dateFrom)->startOfDay() : null;
+        $toCarbon   = !empty($dateTo) ? \Carbon\Carbon::parse($dateTo)->endOfDay() : null;
+
+        $matchesPeriod = function ($dateVal) use ($year, $month, $selectedMonths, $hasCustomDateRange, $fromCarbon, $toCarbon) {
             if (empty($dateVal)) return true;
             $d = \Carbon\Carbon::parse($dateVal);
+
+            if ($hasCustomDateRange) {
+                if ($fromCarbon && $d->lt($fromCarbon)) return false;
+                if ($toCarbon && $d->gt($toCarbon)) return false;
+                if (!$fromCarbon && !$toCarbon && $d->year != $year) return false;
+                if ((!$fromCarbon || !$toCarbon) && $d->year != $year) return false;
+                return true;
+            }
+
             if ($d->year != $year) return false;
             if ($month && $d->month != $month) return false;
             if (!empty($selectedMonths) && !in_array($d->month, $selectedMonths)) return false;
@@ -1148,7 +1228,6 @@ class ReportController extends Controller
                     $multiCount        = $fund->multiActivities ? $fund->multiActivities->count() : 0;
 
                     if ($fund->is_multi_activity && $multiCount > 1) {
-                        // TRUE MULTI-ACTIVITY (> 1 activities): obligation_amount per child is stored NET of NORSA
                         $totalRoutedAll = (float) $fund->multiActivities->sum('routed_amount');
 
                         foreach ($fund->multiActivities as $multi) {
@@ -1172,7 +1251,6 @@ class ReportController extends Controller
                             $allTransactions->push($item);
                         }
                     } else {
-                        // SINGLE-ACTIVITY (even if is_multi_activity == 1 with 0 or 1 child row)
                         $singleMulti = ($multiCount === 1) ? $fund->multiActivities->first() : null;
 
                         $item                      = clone $fund;
@@ -1184,7 +1262,6 @@ class ReportController extends Controller
                         $item->is_multi_activity   = false;
                         $item->share_ratio         = 1.0;
 
-                        // Detect if funds.obligation_amount was stored NET of NORSA (e.g. 2760) vs GROSS (e.g. 5400)
                         $allTimeNorsa = $fund->norsaAdjustments
                             ? (float) $fund->norsaAdjustments->sum(fn($adj) => (float) ($adj->norsa_amount ?? $adj->amount ?? 0))
                             : 0.0;
@@ -1212,8 +1289,37 @@ class ReportController extends Controller
                 $activities = $source->activities->map(function ($activity) use ($source, $fundsByActivity, $matchesPeriod) {
                     $activityFunds = $fundsByActivity->get($activity->id, collect());
 
-                    // Map individual transaction attributes (Cancellations folded into NORSA)
-                    $mappedTransactions = $activityFunds->map(function ($f) use ($activity, $matchesPeriod) {
+                    // Fetch non-cancelled/non-rejected procurement records using exact schema columns
+                    $procTransactions = \App\Models\ProcurementTransaction::with(['items', 'fund'])
+                        ->where(function ($q) use ($source, $activity, $activityFunds) {
+                            $fundIds   = $activityFunds->pluck('id')->filter()->unique()->values()->all();
+                            $dtrackNos = $activityFunds->pluck('dtrack_no')->filter()->map(fn($d) => trim((string) $d))->unique()->values()->all();
+
+                            $q->where(function ($sub) use ($source, $activity) {
+                                $sub->where('source_of_fund_id', $source->id)
+                                    ->where('activity_id', $activity->id);
+                            });
+
+                            if (!empty($fundIds)) {
+                                $q->orWhereIn('fund_transaction_id', $fundIds);
+                            }
+                            if (!empty($dtrackNos)) {
+                                $q->orWhereIn('pr_number', $dtrackNos)
+                                  ->orWhereIn('po_dtrack_no', $dtrackNos);
+                            }
+                        })
+                        ->where(function ($q) {
+                            $q->whereNull('caf_status')
+                              ->orWhereNotIn('caf_status', ['Cancelled', 'Rejected']);
+                        })
+                        ->where(function ($q) {
+                            $q->whereNull('status')
+                              ->orWhereNotIn('status', ['Cancelled', 'Rejected']);
+                        })
+                        ->get();
+
+                    // Map individual transaction attributes (Cancellations folded into NORSA + Procurable CAF/PO status)
+                    $mappedTransactions = $activityFunds->map(function ($f) use ($activity, $matchesPeriod, $procTransactions, $activityFunds) {
                         $txNorsa = 0.00;
                         if ($f->norsaAdjustments && $f->norsaAdjustments->count() > 0) {
                             $txNorsa = (float) $f->norsaAdjustments->filter(function ($adj) use ($activity, $matchesPeriod) {
@@ -1224,7 +1330,6 @@ class ReportController extends Controller
                             })->sum(fn($adj) => (float) ($adj->norsa_amount ?? $adj->amount ?? 0));
                         }
 
-                        // Check all-time NORSA on this fund/activity (even if NORSA entry falls outside period filter)
                         $allTimeTxNorsa = 0.00;
                         if ($f->norsaAdjustments && $f->norsaAdjustments->count() > 0) {
                             $allTimeTxNorsa = (float) $f->norsaAdjustments->filter(function ($adj) use ($activity) {
@@ -1235,14 +1340,11 @@ class ReportController extends Controller
                         $storedOb    = (float) $f->obligation_amount;
                         $baseGrossOb = !empty($f->ob_is_net_of_norsa) ? ($storedOb + $txNorsa) : $storedOb;
 
-                        // Explicit Cancelled status OR 100% NORSA reversal (Gross Obligated == NORSA)
                         $isFullNorsaCancel = ($baseGrossOb > 0 && abs($baseGrossOb - $txNorsa) < 0.01);
                         $isCancelled       = strtolower((string) $f->status) === 'cancelled' || $isFullNorsaCancel;
 
-                        // Resolve COS Salary consolidation & completion status
                         $cosMetrics = $this->resolveCosSalaryMetrics($f);
 
-                        // If COS salary had a NORSA reduction, it is NOT savings — only NORSA (which returns to Unobligated)
                         $hasCosNorsa      = ($allTimeTxNorsa > 0 || $txNorsa > 0);
                         $cosSavingsAmount = ($isCancelled || $hasCosNorsa) ? 0.00 : (float) $cosMetrics['savings'];
 
@@ -1253,6 +1355,153 @@ class ReportController extends Controller
                                 $f->status = 'Completed';
                             } else {
                                 $f->status = $cosMetrics['effective_status'];
+                            }
+                        }
+
+                        // Check if transaction is already Obligated or Disbursed
+                        $rawStatusLower = strtolower(trim((string) ($f->status ?? '')));
+                        $isAlreadyObligatedOrDisbursed = !empty($f->obligation_date)
+                            || !empty($f->disbursement_date)
+                            || (float) ($f->obligation_amount ?? 0) > 0
+                            || (float) ($f->disbursement_amount ?? 0) > 0
+                            || in_array($rawStatusLower, ['obligated', 'disbursed', 'completed', 'disbursed (with savings)']);
+
+                        $txCafCount       = 0;
+                        $txPoCount        = 0;
+                        $procurementTag   = null;
+                        $procurementBadge = null;
+
+                        // ONLY show Tagged as CAF or Tagged as PO when NOT cancelled, NOT COS salary, and NOT yet Obligated/Disbursed
+                        if (!$isCancelled && !$cosMetrics['is_cos_salary'] && !$isAlreadyObligatedOrDisbursed) {
+                            $fDtrack       = trim((string) ($f->dtrack_no ?? ''));
+                            $txProcRecords = collect();
+
+                            // 1. Direct Eloquent relation on Fund
+                            if ($f->procurementTransactions && $f->procurementTransactions->count() > 0) {
+                                $txProcRecords = $f->procurementTransactions->filter(function ($pt) {
+                                    return !in_array($pt->caf_status, ['Cancelled', 'Rejected'])
+                                        && !in_array($pt->status, ['Cancelled', 'Rejected']);
+                                });
+                            }
+
+                            // 2. Match by fund_transaction_id
+                            if ($txProcRecords->isEmpty()) {
+                                $txProcRecords = $procTransactions->filter(fn($pt) => (int) ($pt->fund_transaction_id ?? 0) === (int) $f->id);
+                            }
+
+                            // 3. Match by pr_number or po_dtrack_no against fund dtrack_no
+                            if ($txProcRecords->isEmpty() && $fDtrack !== '') {
+                                $txProcRecords = $procTransactions->filter(function ($pt) use ($fDtrack) {
+                                    return trim((string) ($pt->pr_number ?? '')) === $fDtrack
+                                        || trim((string) ($pt->po_dtrack_no ?? '')) === $fDtrack;
+                                });
+                            }
+
+                            // 4. Match unlinked (fund_transaction_id IS NULL) procurement records belonging to THIS transaction
+                            if ($txProcRecords->isEmpty()) {
+                                $unlinkedProc = $procTransactions->filter(function ($pt) use ($activity) {
+                                    return empty($pt->fund_transaction_id)
+                                        && (int) $pt->activity_id === (int) $activity->id;
+                                });
+
+                                if ($unlinkedProc->count() > 0) {
+                                    // 4a. Match by item_name / po_particulars substring inside fund particulars
+                                    $partic  = strtolower(trim((string) ($f->particulars ?? '')));
+                                    $matched = collect();
+                                    if ($partic !== '') {
+                                        $matched = $unlinkedProc->filter(function ($pt) use ($partic) {
+                                            $itemName = strtolower(trim((string) ($pt->item_name ?? '')));
+                                            $poPartic = strtolower(trim((string) ($pt->po_particulars ?? '')));
+                                            if ($itemName !== '' && (\Illuminate\Support\Str::contains($partic, $itemName) || \Illuminate\Support\Str::contains($itemName, $partic))) {
+                                                return true;
+                                            }
+                                            if ($poPartic !== '' && (\Illuminate\Support\Str::contains($partic, $poPartic) || \Illuminate\Support\Str::contains($poPartic, $partic))) {
+                                                return true;
+                                            }
+                                            if ($pt->items && $pt->items->count() > 0) {
+                                                foreach ($pt->items as $pItem) {
+                                                    $subName = strtolower(trim((string) ($pItem->item_name ?? $pItem->description ?? '')));
+                                                    if ($subName !== '' && \Illuminate\Support\Str::contains($partic, $subName)) {
+                                                        return true;
+                                                    }
+                                                }
+                                            }
+                                            return false;
+                                        });
+                                    }
+
+                                    // 4b. If there is only 1 un-obligated fund under this activity, all unlinked procurement records for this activity belong to it
+                                    if ($matched->isEmpty() && $activityFunds->filter(fn($af) => empty($af->obligation_date) && empty($af->disbursement_date))->count() === 1) {
+                                        $matched = $unlinkedProc;
+                                    }
+
+                                    $txProcRecords = $matched;
+                                }
+                            }
+
+                            $fRemarksLower = strtolower((string) ($f->remarks ?? ''));
+                            $hasFundPo     = !empty($f->dtrack_no_new)
+                                || \Illuminate\Support\Str::contains($rawStatusLower, 'tagged as po')
+                                || \Illuminate\Support\Str::contains($fRemarksLower, 'tagged as po');
+
+                            if ($txProcRecords->count() > 0) {
+                                foreach ($txProcRecords as $pt) {
+                                    if ($pt->items && $pt->items->count() > 0) {
+                                        foreach ($pt->items as $pItem) {
+                                            if (strtolower((string) ($pItem->status ?? '')) === 'cancelled') continue;
+                                            $itemStatusLower = strtolower((string) ($pItem->status ?? ''));
+                                            $isItemPo = !is_null($pItem->po_amount)
+                                                || !empty($pItem->po_number)
+                                                || !empty($pItem->po_date)
+                                                || \Illuminate\Support\Str::contains($itemStatusLower, 'po')
+                                                || $hasFundPo;
+
+                                            $isItemPo ? $txPoCount++ : $txCafCount++;
+                                        }
+                                    } else {
+                                        $ptStatusLower    = strtolower(trim((string) ($pt->status ?? '')));
+                                        $ptCafStatusLower = strtolower(trim((string) ($pt->caf_status ?? '')));
+                                        $isTrxPo = !is_null($pt->po_amount)
+                                            || !empty($pt->po_number)
+                                            || !empty($pt->po_date)
+                                            || !empty($pt->po_dtrack_no)
+                                            || \Illuminate\Support\Str::contains($ptStatusLower, 'po')
+                                            || $hasFundPo;
+
+                                        $isTrxCaf = !$isTrxPo && (
+                                            !empty($pt->caf_date)
+                                            || (!empty($ptCafStatusLower) && !in_array($ptCafStatusLower, ['pending', 'none']))
+                                            || \Illuminate\Support\Str::contains($ptStatusLower, 'caf')
+                                        );
+
+                                        if ($isTrxPo) {
+                                            $txPoCount++;
+                                        } elseif ($isTrxCaf) {
+                                            $txCafCount++;
+                                        }
+                                    }
+                                }
+                            } elseif ($hasFundPo) {
+                                $txPoCount = 1;
+                            } elseif (\Illuminate\Support\Str::contains($rawStatusLower, 'caf') || \Illuminate\Support\Str::contains($fRemarksLower, 'caf')) {
+                                $txCafCount = 1;
+                            }
+
+                            // Strictly "Tagged as PO" or "Tagged as CAF" — no item counts
+                            if ($txPoCount > 0) {
+                                $procurementTag   = 'PO';
+                                $procurementBadge = 'Tagged as PO';
+                            } elseif ($txCafCount > 0) {
+                                $procurementTag   = 'CAF';
+                                $procurementBadge = 'Tagged as CAF';
+                            }
+
+                            if (!empty($procurementBadge) && in_array($rawStatusLower, ['', 'routed', 'pending', 'for obligation', 'tagged as caf', 'tagged as po'])) {
+                                $f->status = $procurementBadge;
+                            }
+                        } elseif (!$isCancelled && !$cosMetrics['is_cos_salary'] && $isAlreadyObligatedOrDisbursed) {
+                            if (\Illuminate\Support\Str::contains($rawStatusLower, ['caf', 'tagged as po'])) {
+                                $f->status = (!empty($f->disbursement_date) || (float) ($f->disbursement_amount ?? 0) > 0) ? 'Disbursed' : 'Obligated';
                             }
                         }
 
@@ -1289,6 +1538,11 @@ class ReportController extends Controller
                         $f->is_cos_consolidated   = $cosMetrics['is_consolidated'];
                         $f->has_cos_norsa         = $cosMetrics['is_cos_salary'] && $hasCosNorsa;
                         $f->cos_savings_amount    = $cosSavingsAmount;
+                        $f->is_procurable         = !$isAlreadyObligatedOrDisbursed && (($txPoCount + $txCafCount) > 0);
+                        $f->procurement_tag       = $procurementTag;
+                        $f->procurement_badge     = $procurementBadge;
+                        $f->tx_caf_count          = $txCafCount;
+                        $f->tx_po_count           = $txPoCount;
                         $f->norsa_amount          = $effectiveNorsa;
                         $f->prior_gross_obligated = $priorGrossOb;
                         $f->gross_obligated       = $priorGrossOb;
@@ -1331,27 +1585,74 @@ class ReportController extends Controller
                     $hasCosSalaryFunds = $cosSalaryFunds->count() > 0;
                     $cosSavings        = $hasCosSalaryFunds ? (float) $cosSalaryFunds->sum('cos_savings_amount') : 0.00;
 
-                    // 2. Procurable Transactions Savings (matching Line Item Report logic)
+                    // 2. Procurable Transactions Savings & Activity-Level CAF / PO Counts
                     $procurementSavings = 0.00;
-                    $procTransactions   = \App\Models\ProcurementTransaction::with('items')
-                        ->where('source_of_fund_id', $source->id)
-                        ->where('activity_id', $activity->id)
-                        ->whereNotIn('caf_status', ['Cancelled', 'Rejected'])
-                        ->get();
+                    $cafTaggedCount     = 0;
+                    $poTaggedCount      = 0;
+                    $cafTaggedAmount    = 0.00;
+                    $poTaggedAmount     = 0.00;
 
                     foreach ($procTransactions as $procTrx) {
+                        $parentFund = $procTrx->fund;
+                        $hasParentPo = $parentFund && (
+                            !empty($parentFund->dtrack_no_new) ||
+                            \Illuminate\Support\Str::contains(strtolower((string) ($parentFund->status ?? '')), 'po')
+                        );
+
                         if ($procTrx->items && $procTrx->items->count() > 0) {
                             foreach ($procTrx->items as $pItem) {
                                 if (strtolower((string) ($pItem->status ?? '')) === 'cancelled') continue;
+
+                                $itemStatusLower = strtolower((string) ($pItem->status ?? ''));
+                                $isPoTagged = !is_null($pItem->po_amount)
+                                    || !empty($pItem->po_number)
+                                    || !empty($pItem->po_date)
+                                    || \Illuminate\Support\Str::contains($itemStatusLower, 'po')
+                                    || $hasParentPo;
+
+                                if ($isPoTagged) {
+                                    $poTaggedCount++;
+                                    $poTaggedAmount += (float) ($pItem->po_amount ?? $pItem->item_amount ?? 0);
+                                } else {
+                                    $cafTaggedCount++;
+                                    $cafTaggedAmount += (float) ($pItem->item_amount ?? 0);
+                                }
+
                                 if (!is_null($pItem->po_amount)) {
                                     $procurementSavings += max(0, (float) $pItem->item_amount - (float) $pItem->po_amount);
                                 }
                             }
                         } else {
+                            $trxStatusLower = strtolower(trim((string) ($procTrx->status ?? '')));
+                            $isPoTagged = !is_null($procTrx->po_amount)
+                                || !empty($procTrx->po_number)
+                                || !empty($procTrx->po_date)
+                                || !empty($procTrx->po_dtrack_no)
+                                || \Illuminate\Support\Str::contains($trxStatusLower, 'po')
+                                || $hasParentPo;
+
+                            if ($isPoTagged) {
+                                $poTaggedCount++;
+                                $poTaggedAmount += (float) ($procTrx->po_amount ?? $procTrx->abc_allotment ?? 0);
+                            } else {
+                                $cafTaggedCount++;
+                                $cafTaggedAmount += (float) ($procTrx->abc_allotment ?? 0);
+                            }
+
                             if (!is_null($procTrx->po_amount)) {
                                 $procurementSavings += max(0, (float) $procTrx->abc_allotment - (float) $procTrx->po_amount);
                             }
                         }
+                    }
+
+                    // Fallback to transaction-level CAF/PO counts if ProcurementTransaction rows are absent
+                    if ($procTransactions->isEmpty()) {
+                        $cafTaggedCount  = (int) $mappedTransactions->filter(fn($f) => !$f->is_cancelled)->sum('tx_caf_count');
+                        $poTaggedCount   = (int) $mappedTransactions->filter(fn($f) => !$f->is_cancelled)->sum('tx_po_count');
+                        $cafTaggedAmount = (float) $mappedTransactions->filter(fn($f) => !$f->is_cancelled && ($f->tx_caf_count ?? 0) > 0)
+                            ->sum(fn($f) => $f->net_obligated > 0 ? $f->net_obligated : $f->amount);
+                        $poTaggedAmount  = (float) $mappedTransactions->filter(fn($f) => !$f->is_cancelled && ($f->tx_po_count ?? 0) > 0)
+                            ->sum(fn($f) => $f->net_obligated > 0 ? $f->net_obligated : $f->amount);
                     }
 
                     $savings = $cosSavings + $procurementSavings;
@@ -1359,7 +1660,6 @@ class ReportController extends Controller
                     $activityBudgetGross = (float) ($activity->budget_adjusted ?? $activity->budget);
                     $pooled              = (float) ($activity->pooled_amount ?? 0);
                     $activityBudgetNet   = $activityBudgetGross - $pooled;
-                    // Any COS NORSA deducted in $netObligated returns to Unobligated Balance ($untouched)
                     $untouched           = $activityBudgetNet - ($netObligated + $pending);
 
                     return [
@@ -1369,6 +1669,11 @@ class ReportController extends Controller
                         'pooled_amount'       => $pooled,
                         'is_pooled'           => $pooled > 0 || !empty($activity->is_pooled),
                         'pooled_remarks'      => $activity->pooled_remarks ?? $activity->pooled_reason ?? $activity->remarks ?? 'Budget pooled by management',
+                        'is_procurable'       => ($cafTaggedCount + $poTaggedCount) > 0,
+                        'caf_tagged_count'    => $cafTaggedCount,
+                        'po_tagged_count'     => $poTaggedCount,
+                        'caf_tagged_amount'   => $cafTaggedAmount,
+                        'po_tagged_amount'    => $poTaggedAmount,
                         'gross_obligated'     => $grossObligated,
                         'norsa_amount'        => $norsaAmount,
                         'obligated'           => $netObligated,
@@ -1391,10 +1696,27 @@ class ReportController extends Controller
                     });
                 }
 
+                // Calculate Totals per Fund Source
+                $totals = [
+                    'net_budget'          => (float) $activities->sum('net_budget'),
+                    'pending'             => (float) $activities->sum('pending'),
+                    'obligated'           => (float) $activities->sum('obligated'),
+                    'norsa_amount'        => (float) $activities->sum('norsa_amount'),
+                    'disbursed'           => (float) $activities->sum('disbursed'),
+                    'cos_savings'         => (float) $activities->sum('cos_savings'),
+                    'procurement_savings' => (float) $activities->sum('procurement_savings'),
+                    'savings'             => (float) $activities->sum('savings'),
+                    'untouched'           => (float) $activities->sum('untouched'),
+                    'caf_tagged_count'    => (int) $activities->sum('caf_tagged_count'),
+                    'po_tagged_count'     => (int) $activities->sum('po_tagged_count'),
+                    'transactions_count'  => (int) $activities->sum(fn($a) => $a['transactions']->count()),
+                ];
+
                 return [
                     'source_name'  => $source->name,
                     'source_total' => $source->activities->sum(fn($a) => ($a->budget_adjusted ?? $a->budget) - ($a->pooled_amount ?? 0)),
                     'activities'   => $activities,
+                    'totals'       => $totals,
                 ];
             })->filter(fn($source) => $source['activities']->isNotEmpty());
 
@@ -1413,6 +1735,8 @@ class ReportController extends Controller
             'groupedReport'    => $groupedReport,
             'year'             => $year,
             'month'            => $month,
+            'dateFrom'         => $dateFrom,
+            'dateTo'           => $dateTo,
             'selectedQuarters' => $selectedQuarters,
             'selectedSection'  => $sectionFilter,
             'search'           => $search,
@@ -1612,6 +1936,8 @@ class ReportController extends Controller
                 'funds.norsaAdjustments',
                 'funds.cancellations',
                 'funds.multiActivities',
+                'funds.dtrackLogs',
+                'funds.procurementTransactions.items',
             ]);
 
         if (!$isAdminOrBudget) {
@@ -1787,7 +2113,17 @@ class ReportController extends Controller
 
                 $activityFunds = $fundsByActivity->get($activity->id, collect());
 
-                $mappedTransactions = $activityFunds->map(function ($f) use ($activity, $matchesPeriod) {
+                // Fetch all non-cancelled/non-rejected procurement records for this source & activity
+                $procTransactions = \App\Models\ProcurementTransaction::with(['items', 'fund'])
+                    ->where('source_of_fund_id', $sof->id)
+                    ->where('activity_id', $activity->id)
+                    ->whereNotIn('caf_status', ['Cancelled', 'Rejected'])
+                    ->get();
+
+                $procByFundId = $procTransactions->whereNotNull('fund_id')->groupBy('fund_id');
+                $procByDtrack = $procTransactions->filter(fn($pt) => !empty($pt->dtrack_no))->groupBy('dtrack_no');
+
+                $mappedTransactions = $activityFunds->map(function ($f) use ($activity, $matchesPeriod, $procTransactions, $procByFundId, $procByDtrack) {
                     $txNorsa = 0.00;
                     if ($f->norsaAdjustments && $f->norsaAdjustments->count() > 0) {
                         $txNorsa = (float) $f->norsaAdjustments->filter(function ($adj) use ($activity, $matchesPeriod) {
@@ -1809,6 +2145,106 @@ class ReportController extends Controller
                         $f->status = 'Cancelled';
                     } elseif ($cosMetrics['is_cos_salary']) {
                         $f->status = $cosMetrics['effective_status'];
+                    }
+
+                    // Check if transaction is already Obligated or Disbursed
+                    $rawStatusLower = strtolower(trim((string) ($f->status ?? '')));
+                    $isAlreadyObligatedOrDisbursed = !empty($f->obligation_date)
+                        || !empty($f->disbursement_date)
+                        || in_array($rawStatusLower, ['obligated', 'disbursed', 'completed', 'disbursed (with savings)']);
+
+                    $txCafCount       = 0;
+                    $txPoCount        = 0;
+                    $procurementTag   = null;
+                    $procurementBadge = null;
+
+                    // Only evaluate Tagged as CAF / Tagged as PO if NOT cancelled, NOT COS salary, and NOT yet Obligated/Disbursed
+                    if (!$isCancelled && !$cosMetrics['is_cos_salary'] && !$isAlreadyObligatedOrDisbursed) {
+                        $txProcRecords = collect();
+                        if ($f->procurementTransactions && $f->procurementTransactions->count() > 0) {
+                            $txProcRecords = $f->procurementTransactions->filter(function ($pt) use ($activity) {
+                                return !in_array($pt->caf_status, ['Cancelled', 'Rejected'])
+                                    && (!$pt->activity_id || (int) $pt->activity_id === (int) $activity->id);
+                            });
+                        }
+                        if ($txProcRecords->isEmpty() && $procByFundId->has($f->id)) {
+                            $txProcRecords = $procByFundId->get($f->id);
+                        }
+                        if ($txProcRecords->isEmpty() && !empty($f->dtrack_no) && $procByDtrack->has($f->dtrack_no)) {
+                            $txProcRecords = $procByDtrack->get($f->dtrack_no);
+                        }
+                        // Strictly match unlinked (fund_id IS NULL) procurement records belonging to THIS transaction only
+                        if ($txProcRecords->isEmpty()) {
+                            $txProcRecords = $procTransactions->filter(function ($pt) use ($f) {
+                                if (!empty($pt->fund_id)) return false;
+
+                                $ptDtrack = trim((string) ($pt->dtrack_no ?? $pt->pr_dtrack_no ?? ''));
+                                if ($ptDtrack !== '' && $ptDtrack === trim((string) $f->dtrack_no)) {
+                                    return true;
+                                }
+
+                                $sameAmount = abs((float) ($pt->abc_allotment ?? 0) - (float) ($f->amount ?? 0)) < 0.05;
+                                $title      = strtolower(trim((string) ($pt->project_title ?? $pt->particulars ?? '')));
+                                $partic     = strtolower(trim((string) ($f->particulars ?? '')));
+                                $sameTitle  = $title !== '' && $partic !== '' && (\Illuminate\Support\Str::contains($partic, $title) || \Illuminate\Support\Str::contains($title, $partic));
+
+                                return $sameAmount && $sameTitle;
+                            });
+                        }
+
+                        $fRemarksLower = strtolower((string) ($f->remarks ?? ''));
+                        $hasFundPo     = !empty($f->dtrack_no_new)
+                            || \Illuminate\Support\Str::contains($rawStatusLower, 'tagged as po')
+                            || \Illuminate\Support\Str::contains($fRemarksLower, 'tagged as po');
+
+                        if ($txProcRecords->count() > 0) {
+                            foreach ($txProcRecords as $pt) {
+                                if ($pt->items && $pt->items->count() > 0) {
+                                    foreach ($pt->items as $pItem) {
+                                        if (strtolower((string) ($pItem->status ?? '')) === 'cancelled') continue;
+                                        $itemStatusLower = strtolower((string) ($pItem->status ?? ''));
+                                        $isItemPo = !is_null($pItem->po_amount)
+                                            || !empty($pItem->po_number)
+                                            || !empty($pItem->po_date)
+                                            || \Illuminate\Support\Str::contains($itemStatusLower, 'po')
+                                            || $hasFundPo;
+
+                                        $isItemPo ? $txPoCount++ : $txCafCount++;
+                                    }
+                                } else {
+                                    $ptPoStatusLower = strtolower((string) ($pt->po_status ?? ''));
+                                    $isTrxPo = !is_null($pt->po_amount)
+                                        || !empty($pt->po_number)
+                                        || !empty($pt->po_date)
+                                        || (!empty($ptPoStatusLower) && !in_array($ptPoStatusLower, ['pending', 'for po', 'none']))
+                                        || $hasFundPo;
+
+                                    $isTrxPo ? $txPoCount++ : $txCafCount++;
+                                }
+                            }
+                        } elseif ($hasFundPo) {
+                            $txPoCount = 1;
+                        } elseif (\Illuminate\Support\Str::contains($rawStatusLower, 'caf') || \Illuminate\Support\Str::contains($fRemarksLower, 'caf')) {
+                            $txCafCount = 1;
+                        }
+
+                        // Strictly "Tagged as PO" or "Tagged as CAF" — no item counts
+                        if ($txPoCount > 0) {
+                            $procurementTag   = 'PO';
+                            $procurementBadge = 'Tagged as PO';
+                        } elseif ($txCafCount > 0) {
+                            $procurementTag   = 'CAF';
+                            $procurementBadge = 'Tagged as CAF';
+                        }
+
+                        if (!empty($procurementBadge) && in_array($rawStatusLower, ['', 'routed', 'pending', 'for obligation', 'tagged as caf', 'tagged as po'])) {
+                            $f->status = $procurementBadge;
+                        }
+                    } elseif (!$isCancelled && !$cosMetrics['is_cos_salary'] && $isAlreadyObligatedOrDisbursed) {
+                        // Clean up if raw DB status was still 'Tagged as CAF' / 'Tagged as PO' despite having obligation/disbursement dates
+                        if (\Illuminate\Support\Str::contains($rawStatusLower, ['caf', 'tagged as po'])) {
+                            $f->status = (!empty($f->disbursement_date) || (float) ($f->disbursement_amount ?? 0) > 0) ? 'Disbursed' : 'Obligated';
+                        }
                     }
 
                     $txCancelled = 0.00;
@@ -1838,6 +2274,11 @@ class ReportController extends Controller
                     $f->is_cos_salary         = $cosMetrics['is_cos_salary'];
                     $f->is_cos_consolidated   = $cosMetrics['is_consolidated'];
                     $f->cos_savings_amount    = $isCancelled ? 0.00 : $cosMetrics['savings'];
+                    $f->is_procurable         = !$isAlreadyObligatedOrDisbursed && (($txPoCount + $txCafCount) > 0);
+                    $f->procurement_tag       = $procurementTag;
+                    $f->procurement_badge     = $procurementBadge;
+                    $f->tx_caf_count          = $txCafCount;
+                    $f->tx_po_count           = $txPoCount;
                     $f->norsa_amount          = $effectiveNorsa;
                     $f->prior_gross_obligated = $priorGrossOb;
                     $f->cancellation_remarks  = ($f->cancellations && $f->cancellations->count() > 0)
@@ -1848,6 +2289,42 @@ class ReportController extends Controller
 
                     return $f;
                 });
+
+                // Activity-Level CAF & PO Counts
+                $cafTaggedCount = 0;
+                $poTaggedCount  = 0;
+                foreach ($procTransactions as $procTrx) {
+                    $parentFund  = $procTrx->fund;
+                    $hasParentPo = $parentFund && (
+                        !empty($parentFund->dtrack_no_new) ||
+                        \Illuminate\Support\Str::contains(strtolower((string) ($parentFund->status ?? '')), 'po')
+                    );
+
+                    if ($procTrx->items && $procTrx->items->count() > 0) {
+                        foreach ($procTrx->items as $pItem) {
+                            if (strtolower((string) ($pItem->status ?? '')) === 'cancelled') continue;
+                            $itemStatusLower = strtolower((string) ($pItem->status ?? ''));
+                            $isPoTagged = !is_null($pItem->po_amount)
+                                || !empty($pItem->po_number)
+                                || !empty($pItem->po_date)
+                                || \Illuminate\Support\Str::contains($itemStatusLower, 'po')
+                                || $hasParentPo;
+                            $isPoTagged ? $poTaggedCount++ : $cafTaggedCount++;
+                        }
+                    } else {
+                        $trxPoStatusLower = strtolower((string) ($procTrx->po_status ?? ''));
+                        $isPoTagged = !is_null($procTrx->po_amount)
+                            || !empty($procTrx->po_number)
+                            || !empty($procTrx->po_date)
+                            || (!empty($trxPoStatusLower) && !in_array($trxPoStatusLower, ['pending', 'for po', 'none']))
+                            || $hasParentPo;
+                        $isPoTagged ? $poTaggedCount++ : $cafTaggedCount++;
+                    }
+                }
+                if ($procTransactions->isEmpty()) {
+                    $cafTaggedCount = (int) $mappedTransactions->filter(fn($f) => !$f->is_cancelled)->sum('tx_caf_count');
+                    $poTaggedCount  = (int) $mappedTransactions->filter(fn($f) => !$f->is_cancelled)->sum('tx_po_count');
+                }
 
                 // Calculate Activity Totals
                 $obligatedFunds = $mappedTransactions->filter(fn($f) => !empty($f->obligation_date) && $matchesPeriod($f->obligation_date));
@@ -1891,45 +2368,51 @@ class ReportController extends Controller
                 $uKey = $uacs->uacs_code;
                 if (!isset($tree[$secName]['sources'][$sof->id]['uacs_items'][$uKey])) {
                     $tree[$secName]['sources'][$sof->id]['uacs_items'][$uKey] = [
-                        'uacs_id'         => $uacs->id,
-                        'uacs_code'       => $uacs->uacs_code,
-                        'account_title'   => $uacs->account_title,
-                        'allotment_class' => $uacs->allotment_class,
-                        'allotment'       => 0,
-                        'pending'         => 0,
-                        'gross_obligated' => 0,
-                        'norsa_amount'    => 0,
-                        'net_obligated'   => 0,
-                        'disbursed'       => 0,
-                        'unpaid'          => 0,
-                        'unobligated'     => 0,
-                        'activities'      => collect(),
-                        'transactions'    => collect(),
+                        'uacs_id'          => $uacs->id,
+                        'uacs_code'        => $uacs->uacs_code,
+                        'account_title'    => $uacs->account_title,
+                        'allotment_class'  => $uacs->allotment_class,
+                        'allotment'        => 0,
+                        'pending'          => 0,
+                        'gross_obligated'  => 0,
+                        'norsa_amount'     => 0,
+                        'net_obligated'    => 0,
+                        'disbursed'        => 0,
+                        'unpaid'           => 0,
+                        'unobligated'      => 0,
+                        'caf_tagged_count' => 0,
+                        'po_tagged_count'  => 0,
+                        'activities'       => collect(),
+                        'transactions'     => collect(),
                     ];
                 }
 
                 $bucket = &$tree[$secName]['sources'][$sof->id]['uacs_items'][$uKey];
 
-                $bucket['allotment']       += $activityBudgetNet;
-                $bucket['pending']         += $pending;
-                $bucket['gross_obligated'] += $grossObligated;
-                $bucket['norsa_amount']    += $norsaAmount;
-                $bucket['net_obligated']   += $netObligated;
-                $bucket['disbursed']       += $disbursed;
-                $bucket['unobligated']     += $unobligated;
+                $bucket['allotment']        += $activityBudgetNet;
+                $bucket['pending']          += $pending;
+                $bucket['gross_obligated']  += $grossObligated;
+                $bucket['norsa_amount']     += $norsaAmount;
+                $bucket['net_obligated']    += $netObligated;
+                $bucket['disbursed']        += $disbursed;
+                $bucket['unobligated']      += $unobligated;
+                $bucket['caf_tagged_count'] += $cafTaggedCount;
+                $bucket['po_tagged_count']  += $poTaggedCount;
 
                 $bucket['activities']->push([
-                    'activity_id'     => $activity->id,
-                    'activity_name'   => $activity->name,
-                    'allotment'       => $activityBudgetNet,
-                    'pending'         => $pending,
-                    'gross_obligated' => $grossObligated,
-                    'norsa_amount'    => $norsaAmount,
-                    'net_obligated'   => $netObligated,
-                    'disbursed'       => $disbursed,
-                    'unpaid'          => $actUnpaid,
-                    'unobligated'     => $unobligated,
-                    'transactions'    => $mappedTransactions->values(),
+                    'activity_id'      => $activity->id,
+                    'activity_name'    => $activity->name,
+                    'allotment'        => $activityBudgetNet,
+                    'pending'          => $pending,
+                    'gross_obligated'  => $grossObligated,
+                    'norsa_amount'     => $norsaAmount,
+                    'net_obligated'    => $netObligated,
+                    'disbursed'        => $disbursed,
+                    'unpaid'           => $actUnpaid,
+                    'unobligated'      => $unobligated,
+                    'caf_tagged_count' => $cafTaggedCount,
+                    'po_tagged_count'  => $poTaggedCount,
+                    'transactions'     => $mappedTransactions->values(),
                 ]);
 
                 foreach ($mappedTransactions as $mTx) {
@@ -1985,6 +2468,8 @@ class ReportController extends Controller
                 $src['total_disbursed']   = $uacsCollection->sum('disbursed');
                 $src['total_unpaid']      = $uacsCollection->sum('unpaid');
                 $src['total_unobligated'] = $uacsCollection->sum('unobligated');
+                $src['caf_tagged_count']  = $uacsCollection->sum('caf_tagged_count');
+                $src['po_tagged_count']   = $uacsCollection->sum('po_tagged_count');
                 return $src;
             })->filter(function ($src) use ($selectedSource) {
                 if ($src['uacs_items']->isEmpty()) {

@@ -168,11 +168,25 @@
             </div>
 
             @foreach($section['sources'] as $srcIdx => $source)
+                @php
+                    $srcCafCount = $source['caf_tagged_count'] ?? 0;
+                    $srcPoCount  = $source['po_tagged_count'] ?? 0;
+                @endphp
                 <div class="card card-navy card-outline mb-4 shadow-sm">
                     <div class="card-header bg-white py-2 px-3">
                         <div class="d-flex justify-content-between align-items-center">
                             <h6 class="card-title text-navy font-weight-bold mb-0">
                                 <i class="fas fa-folder text-warning mr-2"></i>{{ $source['source_name'] }}
+                                {{-- @if($srcCafCount > 0 || $srcPoCount > 0)
+                                    <span class="ml-2">
+                                        @if($srcCafCount > 0)
+                                            <span class="badge badge-warning text-dark font-weight-bold" style="font-size: 0.68rem;">CAF: {{ $srcCafCount }}</span>
+                                        @endif
+                                        @if($srcPoCount > 0)
+                                            <span class="badge badge-primary font-weight-bold" style="font-size: 0.68rem;">PO: {{ $srcPoCount }}</span>
+                                        @endif
+                                    </span>
+                                @endif --}}
                             </h6>
                             <span class="text-dark font-weight-bold financial-number">
                                 Total Allotted: ₱{{ number_format($source['source_total'] ?? 0, 2) }}
@@ -202,8 +216,10 @@
                                 <tbody>
                                     @foreach($source['uacs_items'] as $uIdx => $uacs)
                                         @php
-                                            $collapseId = "uacs-trx-{$secIdx}-{$srcIdx}-{$uIdx}";
-                                            $uacsUnpaid = $uacs['unpaid'] ?? max(0, round(($uacs['net_obligated'] ?? 0) - ($uacs['disbursed'] ?? 0), 2));
+                                            $collapseId   = "uacs-trx-{$secIdx}-{$srcIdx}-{$uIdx}";
+                                            $uacsUnpaid   = $uacs['unpaid'] ?? max(0, round(($uacs['net_obligated'] ?? 0) - ($uacs['disbursed'] ?? 0), 2));
+                                            $uacsCafCount = $uacs['caf_tagged_count'] ?? 0;
+                                            $uacsPoCount  = $uacs['po_tagged_count'] ?? 0;
                                         @endphp
                                         <tr>
                                             <td class="align-middle font-weight-bold text-navy financial-number text-nowrap">
@@ -211,6 +227,20 @@
                                             </td>
                                             <td class="align-middle font-weight-bold text-dark">
                                                 {{ $uacs['account_title'] }}
+                                                {{-- @if($uacsCafCount > 0 || $uacsPoCount > 0)
+                                                    <div class="mt-1">
+                                                        @if($uacsCafCount > 0)
+                                                            <span class="badge badge-warning text-dark mr-1" style="font-size: 0.62rem;">
+                                                                <i class="fas fa-tag mr-1"></i>CAF ({{ $uacsCafCount }})
+                                                            </span>
+                                                        @endif
+                                                        @if($uacsPoCount > 0)
+                                                            <span class="badge badge-primary" style="font-size: 0.62rem;">
+                                                                <i class="fas fa-file-contract mr-1"></i>PO ({{ $uacsPoCount }})
+                                                            </span>
+                                                        @endif
+                                                    </div>
+                                                @endif --}}
                                             </td>
                                             <td class="text-center align-middle">
                                                 <span class="badge badge-light border">{{ $uacs['allotment_class'] ?? '—' }}</span>
@@ -250,13 +280,21 @@
 
                                                     @forelse($uacs['activities'] as $actItem)
                                                         @php
-                                                            $actUnpaid = $actItem['unpaid'] ?? max(0, round(($actItem['net_obligated'] ?? 0) - ($actItem['disbursed'] ?? 0), 2));
+                                                            $actUnpaid   = $actItem['unpaid'] ?? max(0, round(($actItem['net_obligated'] ?? 0) - ($actItem['disbursed'] ?? 0), 2));
+                                                            $actCafCount = $actItem['caf_tagged_count'] ?? 0;
+                                                            $actPoCount  = $actItem['po_tagged_count'] ?? 0;
                                                         @endphp
                                                         <div class="border rounded mb-3 overflow-hidden">
                                                             {{-- Activity Header Strip with Per-Activity Totals --}}
                                                             <div class="bg-navy-light px-3 py-2 border-bottom d-flex flex-wrap justify-content-between align-items-center" style="gap: 8px;">
                                                                 <div class="font-weight-bold text-dark" style="font-size: 0.78rem; max-width: 48%;">
                                                                     <i class="fas fa-tag text-primary mr-1"></i> {{ $actItem['activity_name'] }}
+                                                                    {{-- @if($actCafCount > 0)
+                                                                        <span class="badge badge-warning text-dark ml-1" style="font-size: 0.62rem;">CAF ({{ $actCafCount }})</span>
+                                                                    @endif
+                                                                    @if($actPoCount > 0)
+                                                                        <span class="badge badge-primary ml-1" style="font-size: 0.62rem;">PO ({{ $actPoCount }})</span>
+                                                                    @endif --}}
                                                                 </div>
                                                                 <div class="d-flex flex-wrap align-items-center text-xs" style="gap: 12px;">
                                                                     <span>Allotted: <strong class="financial-number text-dark">₱{{ number_format($actItem['allotment'], 2) }}</strong></span>
@@ -283,7 +321,7 @@
                                                                         <th class="text-right" style="width: 8.5%;">Net Oblig.</th>
                                                                         <th class="text-right text-danger" style="width: 7%;">NORSA</th>
                                                                         <th class="text-right" style="width: 8.5%;">Disbursed</th>
-                                                                        <th class="text-center" style="width: 9.5%;">Status</th>
+                                                                        <th class="text-center" style="width: 9.5%;">Status &amp; Remarks</th>
                                                                     </tr>
                                                                 </thead>
                                                                 <tbody class="text-xs">
@@ -312,12 +350,39 @@
                                                                                     || \Illuminate\Support\Str::contains(strtolower((string) ($d->remarks ?? $d->notes ?? $d->period_label ?? '')), 'consolidated');
                                                                             });
 
+                                                                            // Procurable Status (Tagged as CAF vs. Tagged as PO)
+                                                                            $procurementTag   = $tx->procurement_tag ?? null;
+                                                                            $procurementBadge = $tx->procurement_badge ?? null;
+                                                                            if (!$isTxCancelled && !$isCosSalary && empty($procurementBadge)) {
+                                                                                $stLower = strtolower((string) ($tx->status ?? ''));
+                                                                                $rmLower = strtolower((string) ($tx->remarks ?? ''));
+                                                                                if (!empty($tx->dtrack_no_new) || \Illuminate\Support\Str::contains($stLower, 'po') || \Illuminate\Support\Str::contains($rmLower, 'tagged as po')) {
+                                                                                    $procurementTag   = 'PO';
+                                                                                    $procurementBadge = 'Tagged as PO';
+                                                                                } elseif (\Illuminate\Support\Str::contains($stLower, 'caf') || \Illuminate\Support\Str::contains($rmLower, 'caf') || ($actCafCount > 0 && empty($tx->obligation_date))) {
+                                                                                    $procurementTag   = 'CAF';
+                                                                                    $procurementBadge = $actCafCount > 1 ? "Tagged as CAF ({$actCafCount})" : 'Tagged as CAF';
+                                                                                } elseif ($actPoCount > 0 && empty($tx->obligation_date)) {
+                                                                                    $procurementTag   = 'PO';
+                                                                                    $procurementBadge = $actPoCount > 1 ? "Tagged as PO ({$actPoCount})" : 'Tagged as PO';
+                                                                                }
+                                                                            }
+
                                                                             $displayStatus = $isTxCancelled ? 'Cancelled' : ($tx->status ?? 'N/A');
+                                                                            if (!$isTxCancelled && !$isCosSalary && !empty($procurementBadge) && in_array(strtolower(trim($displayStatus)), ['', 'routed', 'pending', 'for obligation', 'tagged as caf', 'tagged as po'])) {
+                                                                                $displayStatus = $procurementBadge;
+                                                                            }
+
+                                                                            $isStatusCaf = \Illuminate\Support\Str::contains(strtolower($displayStatus), 'caf');
+                                                                            $isStatusPo  = \Illuminate\Support\Str::contains(strtolower($displayStatus), 'tagged as po') || \Illuminate\Support\Str::startsWith(strtolower($displayStatus), 'po (');
                                                                         @endphp
                                                                         <tr class="{{ $isTxCancelled ? 'row-cancelled' : '' }}">
                                                                             <td class="text-nowrap">
                                                                                 @if($tx->dtrack_no)
                                                                                     <div><span class="badge badge-light text-danger border">{{ $tx->dtrack_no }}</span></div>
+                                                                                @endif
+                                                                                @if(!empty($tx->dtrack_no_new))
+                                                                                    <div class="mt-1"><span class="badge badge-light text-dark border">PO: {{ $tx->dtrack_no_new }}</span></div>
                                                                                 @endif
                                                                                 @if($tx->obligation_serial)
                                                                                     <div class="text-primary financial-number" style="font-size: 0.65rem;">{{ $tx->obligation_serial }}</div>
@@ -342,13 +407,26 @@
                                                                                     <span class="badge px-2 py-1 shadow-sm {{
                                                                                         in_array($displayStatus, ['Disbursed', 'Completed']) ? 'badge-success' :
                                                                                         ($displayStatus == 'Disbursed (with savings)' ? 'badge-info' :
-                                                                                        ($isTxCancelled || $displayStatus == 'Rejected' ? 'badge-danger' : 'badge-secondary')) }}">
+                                                                                        ($isTxCancelled || $displayStatus == 'Rejected' ? 'badge-danger' :
+                                                                                        ($isStatusPo ? 'badge-primary' :
+                                                                                        ($isStatusCaf ? 'badge-warning text-dark' : 'badge-secondary')))) }}">
                                                                                         @if($isTxCancelled)
                                                                                             <i class="fas fa-ban mr-1"></i>
+                                                                                        @elseif($isStatusPo)
+                                                                                            <i class="fas fa-file-contract mr-1"></i>
+                                                                                        @elseif($isStatusCaf)
+                                                                                            <i class="fas fa-tag mr-1"></i>
                                                                                         @endif
                                                                                         {{ $displayStatus }}
                                                                                     </span>
                                                                                 </div>
+                                                                                @if(!$isTxCancelled && !empty($procurementBadge) && $displayStatus !== $procurementBadge)
+                                                                                    <div class="mt-1">
+                                                                                        {{-- <span class="badge px-2 py-0 {{ $procurementTag === 'PO' ? 'badge-primary' : ($procurementTag === 'CAF' ? 'badge-warning text-dark' : 'badge-info') }}" style="font-size: 0.62rem;">
+                                                                                            <i class="fas {{ $procurementTag === 'PO' ? 'fa-file-contract' : 'fa-tag' }} mr-1"></i>{{ $procurementBadge }}
+                                                                                        </span> --}}
+                                                                                    </div>
+                                                                                @endif
                                                                                 @if(!$isTxCancelled && $isCosConsolidated)
                                                                                     <div class="mt-1">
                                                                                         <span class="badge badge-primary px-2 py-0" style="font-size: 0.62rem;">

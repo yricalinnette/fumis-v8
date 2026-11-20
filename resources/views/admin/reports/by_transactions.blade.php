@@ -1,6 +1,10 @@
 @extends('layouts.adminlte')
 
 @section('content')
+@php
+    $hasCustomDateRange = !empty(request('date_from')) || !empty(request('date_to'));
+@endphp
+
 <style>
     .financial-number { font-family: 'Consolas', 'Courier New', Courier, monospace; font-weight: 600; letter-spacing: -0.3px; }
     .card-navy.card-outline { border-top: 3px solid #001f3f; }
@@ -16,7 +20,7 @@
         border-radius: 6px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.08);
     }
-    @media print { .filter-section { display: none !important; } }
+    @media print { .filter-section, .btn-group { display: none !important; } }
 </style>
 
 <div class="container-fluid py-3">
@@ -28,8 +32,17 @@
             </h4>
             <p class="text-muted small mb-0">
                 Financial Performance Analysis for Fiscal Year <strong>{{ request('year', $year ?? date('Y')) }}</strong>
+                @if(request('section')) | Section: <strong>{{ request('section') }}</strong> @endif
                 @if(!empty($selectedQuarters))
                     | Quarters: <strong>Q{{ implode(', Q', (array)$selectedQuarters) }} (Cumulative)</strong>
+                @endif
+                @if($hasCustomDateRange)
+                    | Date Range:
+                    <span class="badge badge-info font-weight-bold px-2 py-1">
+                        {{ request('date_from') ? \Carbon\Carbon::parse(request('date_from'))->format('M d, Y') : 'Start of FY' }}
+                        &ndash;
+                        {{ request('date_to') ? \Carbon\Carbon::parse(request('date_to'))->format('M d, Y') : 'Present' }}
+                    </span>
                 @endif
             </p>
         </div>
@@ -55,13 +68,13 @@
 
     {{-- FILTER & SEARCH TOOLBAR --}}
     <div class="card card-default filter-section collapse show shadow-sm mb-4" id="filterCard">
-        <div class="card-body p-3">
+        <div class="card-body py-2 px-3">
             <form method="GET" action="{{ url()->current() }}" id="filterForm">
-                <div class="row align-items-center">
+                <div class="d-flex flex-wrap flex-xl-nowrap align-items-end" style="gap: 8px;">
                     {{-- Fiscal Year --}}
-                    <div class="col-md-2 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1">Fiscal Year</label>
-                        <select name="year" class="form-control form-control-sm" onchange="this.form.submit()">
+                    <div style="min-width: 92px; flex: 0 0 96px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Fiscal Year</label>
+                        <select name="year" id="trxFilterYear" class="form-control form-control-sm" onchange="this.form.submit()">
                             @foreach(range(date('Y') + 1, 2022) as $y)
                                 <option value="{{ $y }}" {{ ($year ?? date('Y')) == $y ? 'selected' : '' }}>FY {{ $y }}</option>
                             @endforeach
@@ -69,8 +82,8 @@
                     </div>
 
                     {{-- Filter Section --}}
-                    <div class="col-md-2 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1">Filter Section</label>
+                    <div class="flex-grow-1" style="min-width: 165px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Filter Section</label>
                         <select name="section" class="form-control form-control-sm" onchange="this.form.submit()">
                             <option value="">-- All Sections --</option>
                             @foreach($groupedReport as $sec)
@@ -82,9 +95,9 @@
                     </div>
 
                     {{-- Select Quarters (Cumulative) --}}
-                    <div class="col-md-4 mb-2 mb-md-0">
-                        <label class="small font-weight-bold mb-1 d-block">Select Quarters (Cumulative)</label>
-                        <div class="d-flex align-items-center flex-wrap bg-white border rounded px-2 py-1" style="gap: 12px; height: 31px;">
+                    <div style="min-width: 215px; flex: 0 0 auto;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Quarters (Cumulative)</label>
+                        <div class="d-flex align-items-center bg-white border rounded px-2" style="gap: 10px; height: 31px;">
                             @foreach([1 => 'Q1', 2 => 'Q2', 3 => 'Q3', 4 => 'Q4'] as $qNum => $qLabel)
                                 <div class="custom-control custom-checkbox custom-control-inline m-0">
                                     <input type="checkbox" name="quarters[]" value="{{ $qNum }}" id="q_chk_{{ $qNum }}" class="custom-control-input" {{ in_array($qNum, $selectedQuarters ?? []) ? 'checked' : '' }} onchange="this.form.submit()">
@@ -94,13 +107,33 @@
                         </div>
                     </div>
 
+                    {{-- Date Range (From & To) --}}
+                    <div style="min-width: 130px; flex: 0 0 134px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Date From</label>
+                        <input type="date" name="date_from" id="trxDateFrom"
+                               value="{{ request('date_from') }}"
+                               class="form-control form-control-sm px-2">
+                    </div>
+
+                    <div style="min-width: 130px; flex: 0 0 134px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Date To</label>
+                        <input type="date" name="date_to" id="trxDateTo"
+                               value="{{ request('date_to') }}"
+                               class="form-control form-control-sm px-2">
+                    </div>
+
                     {{-- Search Keywords with Search & Reset Buttons --}}
-                    <div class="col-md-4">
-                        <label class="small font-weight-bold mb-1">Search Keywords</label>
+                    <div style="min-width: 205px; flex: 0 1 240px;">
+                        <label class="text-xs font-weight-bold text-muted text-uppercase mb-1 d-block">Search Keywords</label>
                         <div class="input-group input-group-sm">
                             <input type="text" name="search" class="form-control" placeholder="DTrack, OBRN, Payee..." value="{{ $search ?? '' }}">
                             <div class="input-group-append">
-                                <button type="submit" class="btn btn-primary" title="Search"><i class="fas fa-search"></i></button>
+                                @if($hasCustomDateRange)
+                                    <button type="button" id="trxClearDatesBtn" class="btn btn-outline-danger" title="Clear Date Range">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                @endif
+                                <button type="submit" class="btn btn-primary" title="Search / Apply Filters"><i class="fas fa-search"></i></button>
                                 <a href="{{ url()->current() }}" class="btn btn-secondary" title="Reset Filters"><i class="fas fa-undo"></i></a>
                             </div>
                         </div>
@@ -111,8 +144,7 @@
     </div>
 
     {{-- CLEAN MASTER TABLE LAYOUT --}}
-    @foreach($groupedReport as $section)
-        {{-- If section filter is active, skip non-matching sections --}}
+    @forelse($groupedReport as $section)
         @if(request('section') && request('section') !== $section['section_name'])
             @continue
         @endif
@@ -168,7 +200,7 @@
                                             <td class="align-middle font-weight-bold text-dark">
                                                 {{ $act['details']->name }}
                                                 @if($act['is_pooled'])
-                                                    <span class="badge badge-warning text-dark ml-1 d-block mt-1" style="font-size: 0.65rem; width: fit-content;">
+                                                    <span class="badge badge-warning text-dark d-block mt-1" style="font-size: 0.65rem; width: fit-content;">
                                                         POOLED AMOUNT: ₱{{ number_format($act['pooled_amount'], 2) }}
                                                     </span>
                                                 @endif
@@ -187,8 +219,6 @@
                                                         <small class="d-block text-muted" style="font-size: 0.6rem;">
                                                             Proc: ₱{{ number_format($act['procurement_savings'], 2) }} | COS: ₱{{ number_format($act['cos_savings'], 2) }}
                                                         </small>
-                                                    @elseif(($act['procurement_savings'] ?? 0) > 0)
-                                                        {{-- <small class="d-block text-muted" style="font-size: 0.6rem;">Procurement</small> --}}
                                                     @endif
                                                 @else
                                                     -
@@ -224,7 +254,7 @@
                                                                 <th class="text-right border-left-info">Net Obligated</th>
                                                                 <th class="text-right border-left-danger text-danger">NORSA</th>
                                                                 <th class="text-right border-left-success">Disbursed</th>
-                                                                <th class="text-center border-left-primary" style="width: 195px;">Status & Remarks</th>
+                                                                <th class="text-center border-left-primary" style="width: 195px;">Status &amp; Remarks</th>
                                                             </tr>
                                                         </thead>
                                                         <tbody class="text-xs">
@@ -251,55 +281,82 @@
 
                                                                     // COS Salary & Consolidated Salary Resolution
                                                                     $isCosSalary = !empty($tx->is_cos_salary)
-                                                                        || (isset($tx->remarks_salary) && $tx->remarks_salary === 'Imported HR COS Salary/Wages')
+                                                                        || (isset($tx->remarks_salary) &&$tx->remarks_salary === 'Imported HR COS Salary/Wages')
                                                                         || !empty($tx->cos_contract_id)
                                                                         || \Illuminate\Support\Str::contains(strtolower($tx->remarks ?? ''), ['cos', 'salary', 'wages', 'payroll']);
 
-                                                                    $hasCosNorsa = !empty($tx->has_cos_norsa) || ($isCosSalary && $txNorsaAmt > 0);
+                                                                    $hasCosNorsa = !empty($tx->has_cos_norsa) || ($isCosSalary &&$txNorsaAmt > 0);
 
-                                                                    $cosDisbursements  = $tx->cosSalaryDisbursements ?? collect();
+                                                                    $cosDisbursements  =$tx->cosSalaryDisbursements ?? collect();
                                                                     $isCosConsolidated = !empty($tx->is_cos_consolidated) || $cosDisbursements->contains(function ($d) {
                                                                         return ((int) ($d->months_covered ?? $d->months_count ?? 1) > 1)
                                                                             || !empty($d->is_consolidated)
                                                                             || \Illuminate\Support\Str::contains(strtolower((string) ($d->remarks ?? $d->notes ?? $d->period_label ?? '')), 'consolidated');
                                                                     });
 
-                                                                    $displayStatus = $tx->status ?? 'N/A';
-                                                                    if ($isTxCancelled) {
-                                                                        $displayStatus = 'Cancelled';
+                                                                    $displayStatus =$tx->status ?? 'N/A';
+                                                                    if ($isTxCancelled) {$displayStatus = 'Cancelled';
                                                                     } elseif ($isCosSalary) {
-                                                                        $effectiveMonthsPaid = $cosDisbursements->count() > 0
-                                                                            ? (int) $cosDisbursements->sum(function ($d) {
-                                                                                $m = (int) ($d->months_covered ?? $d->months_count ?? 0);
-                                                                                if ($m > 0) return $m;
+                                                                        $effectiveMonthsPaid =$cosDisbursements->count() > 0
+                                                                            ? (int) $cosDisbursements->sum(function ($d) {$m = (int) ($d->months_covered ?? $d->months_count ?? 0);
+                                                                                if ($m > 0) return$m;
                                                                                 return (!empty($d->is_consolidated) || \Illuminate\Support\Str::contains(strtolower((string) ($d->remarks ?? $d->notes ?? '')), 'consolidated')) ? 2 : 1;
                                                                             })
                                                                             : (int) ($tx->disbursed_months ?? 0);
                                                                         $totalContractMonths = (int) ($tx->cosContract->total_months ?? 0);
 
-                                                                        $totalCosDisb = $cosDisbursements->count() > 0
+                                                                        $totalCosDisb =$cosDisbursements->count() > 0
                                                                             ? (float) $cosDisbursements->sum('amount')
                                                                             : (float) ($tx->disbursement_amount ?? 0);
-                                                                        $cosSavingsDiff = round($storedOb - $totalCosDisb, 2);
+                                                                        $cosSavingsDiff = round($storedOb -$totalCosDisb, 2);
 
                                                                         $isCosFullyDisbursed = in_array($displayStatus, ['Completed', 'Disbursed (with savings)'])
-                                                                            || ($tx->cosContract && $tx->cosContract->status === 'Completed')
-                                                                            || ($totalContractMonths > 0 && $effectiveMonthsPaid >= $totalContractMonths)
+                                                                            || ($tx->cosContract &&$tx->cosContract->status === 'Completed')
+                                                                            || ($totalContractMonths > 0 && $effectiveMonthsPaid >=$totalContractMonths)
                                                                             || ($totalContractMonths > 0 && (int) ($tx->disbursed_months ?? 0) >= $totalContractMonths)
-                                                                            || ($totalCosDisb > 0 && $txNorsaAmt > 0 && abs($cosSavingsDiff - $txNorsaAmt) < 0.01);
+                                                                            || ($totalCosDisb > 0 &&$txNorsaAmt > 0 && abs($cosSavingsDiff -$txNorsaAmt) < 0.01);
 
                                                                         if ($isCosFullyDisbursed) {
-                                                                            // COS with NORSA is NOT savings — display as Completed
-                                                                            $displayStatus = (!$hasCosNorsa && $totalCosDisb > 0 && $cosSavingsDiff > 0.009)
+                                                                            $displayStatus = (!$hasCosNorsa && $totalCosDisb > 0 &&$cosSavingsDiff > 0.009)
                                                                                 ? 'Disbursed (with savings)'
                                                                                 : 'Completed';
                                                                         }
                                                                     }
 
+                                                                    // Procurable Status: strictly "Tagged as PO" or "Tagged as CAF" (no item counts), and hidden once Obligated or Disbursed
+                                                                    $statusLowerCheck = strtolower(trim((string)$displayStatus));
+                                                                    $isAlreadyObligOrDisb = !empty($tx->obligation_date)
+                                                                        || !empty($tx->disbursement_date)
+                                                                        || (float) ($tx->obligation_amount ?? 0) > 0
+                                                                        || (float) ($tx->disbursement_amount ?? 0) > 0
+                                                                        || in_array($statusLowerCheck, ['obligated', 'disbursed', 'completed', 'disbursed (with savings)']);
+
+                                                                    if (!$isTxCancelled && !$isCosSalary) {
+                                                                        if ($isAlreadyObligOrDisb) {
+                                                                            if (\Illuminate\Support\Str::contains($statusLowerCheck, ['caf', 'tagged as po']) || \Illuminate\Support\Str::startsWith($statusLowerCheck, 'po (')) {$displayStatus = (!empty($tx->disbursement_date) || (float) ($tx->disbursement_amount ?? 0) > 0) ? 'Disbursed' : 'Obligated';
+                                                                            }
+                                                                        } else {
+                                                                            $rmLower = strtolower((string) ($tx->remarks ?? ''));
+                                                                            $isPo    = ($tx->procurement_tag ?? null) === 'PO'
+                                                                                || !empty($tx->dtrack_no_new)
+                                                                                || \Illuminate\Support\Str::contains($statusLowerCheck, 'po')
+                                                                                || \Illuminate\Support\Str::contains($rmLower, 'tagged as po');
+                                                                            $isCaf   = ($tx->procurement_tag ?? null) === 'CAF'
+                                                                                || \Illuminate\Support\Str::contains($statusLowerCheck, 'caf')
+                                                                                || \Illuminate\Support\Str::contains($rmLower, 'caf');
+
+                                                                            if ($isPo) {$displayStatus = 'Tagged as PO';
+                                                                            } elseif ($isCaf) {$displayStatus = 'Tagged as CAF';
+                                                                            }
+                                                                        }
+                                                                    }
+
+                                                                    $isStatusCaf = !$isAlreadyObligOrDisb && $displayStatus === 'Tagged as CAF';$isStatusPo  = !$isAlreadyObligOrDisb &&$displayStatus === 'Tagged as PO';
+
                                                                     $displayRemarks = $isTxCancelled && !empty($tx->cancellation_remarks)
                                                                         ? $tx->cancellation_remarks
                                                                         : ($isFullNorsaCancel
-                                                                            ? ('Cancelled via Full NORSA' . (!empty($tx->remarks) ? ' — ' . $tx->remarks : ''))
+                                                                            ? ('Cancelled via Full NORSA' . (!empty($tx->remarks) ? ' — ' .$tx->remarks : ''))
                                                                             : ($tx->remarks ?? $tx->manual_remarks ?? null));
                                                                 @endphp
                                                                 <tr class="{{ $isTxCancelled ? 'row-cancelled' : '' }}">
@@ -346,15 +403,21 @@
                                                                             <span class="badge px-2 py-1 shadow-sm {{
                                                                                 in_array($displayStatus, ['Disbursed', 'Completed']) ? 'badge-success' :
                                                                                 ($displayStatus == 'Disbursed (with savings)' ? 'badge-info' :
-                                                                                ($isTxCancelled || $displayStatus == 'Rejected' ? 'badge-danger' : 'badge-secondary')) }}">
+                                                                                ($isTxCancelled ||$displayStatus == 'Rejected' ? 'badge-danger' :
+                                                                                ($isStatusPo ? 'badge-primary' :
+                                                                                ($isStatusCaf ? 'badge-warning text-dark' : 'badge-secondary')))) }}">
                                                                                 @if($isTxCancelled)
                                                                                     <i class="fas fa-ban mr-1"></i>
+                                                                                @elseif($isStatusPo)
+                                                                                    <i class="fas fa-file-contract mr-1"></i>
+                                                                                @elseif($isStatusCaf)
+                                                                                    <i class="fas fa-tag mr-1"></i>
                                                                                 @endif
                                                                                 {{ $displayStatus }}
                                                                             </span>
                                                                         </div>
 
-                                                                        @if(!$isTxCancelled && $isCosConsolidated)
+                                                                        @if(!$isTxCancelled &&$isCosConsolidated)
                                                                             <div class="mt-1">
                                                                                 <span class="badge badge-primary px-2 py-0" style="font-size: 0.62rem;">
                                                                                     <i class="fas fa-layer-group mr-1"></i>Consolidated
@@ -369,7 +432,7 @@
                                                                         @endif
 
                                                                         @if(!empty($displayRemarks))
-                                                                            <div class="mt-1 text-left small border-left pl-2 {{ $isTxCancelled ? 'border-danger text-danger' : ($isCosSalary ? 'border-warning text-dark' : 'border-secondary text-muted') }}" style="font-size: 0.65rem; font-style: italic;">
+                                                                            <div class="mt-1 text-left small border-left pl-2 {{ $isTxCancelled ? 'border-danger text-danger' : ($isCosSalary ? 'border-warning text-dark' : ($isStatusCaf ||$isStatusPo ? 'border-warning text-dark' : 'border-secondary text-muted')) }}" style="font-size: 0.65rem; font-style: italic;">
                                                                                 <strong>{{ $isTxCancelled ? 'Reason' : ($isCosSalary ? 'COS' : 'DTrack') }}:</strong> {{ $displayRemarks }}
                                                                             </div>
                                                                         @endif
@@ -393,24 +456,57 @@
                 </div>
             @endforeach
         </div>
-    @endforeach
+    @empty
+        <div class="alert alert-light border text-center text-muted py-4">
+            No records found for the selected filters.
+        </div>
+    @endforelse
 </div>
 @endsection
 
 @section('scripts')
 <script>
     $(document).ready(function() {
-        // Expand All / Collapse All functionality for cards/tables
         let isExpanded = false;
         $('#expandAllBtn').on('click', function() {
             isExpanded = !isExpanded;
             if (isExpanded) {
-                $('.collapse').collapse('show');
+                $('.collapse:not(#filterCard)').collapse('show');
                 $(this).html('<i class="fas fa-compress-arrows-alt mr-1"></i> Collapse All');
             } else {
-                $('.collapse').collapse('hide');
+                $('.collapse:not(#filterCard)').collapse('hide');
                 $(this).html('<i class="fas fa-expand-arrows-alt mr-1"></i> Expand All');
             }
+        });
+
+        const $dateFrom =$('#trxDateFrom');
+        const $dateTo   =$('#trxDateTo');
+
+        $dateFrom.on('change', function() {
+            const fromVal = $(this).val();
+            if (fromVal) {
+                $dateTo.attr('min', fromVal);
+                if ($dateTo.val() && $dateTo.val() < fromVal) {$dateTo.val(fromVal);
+                }
+            } else {
+                $dateTo.removeAttr('min');
+            }
+        });
+
+        $dateTo.on('change', function() {
+            const toVal = $(this).val();
+            if (toVal) {
+                $dateFrom.attr('max', toVal);
+                if ($dateFrom.val() && $dateFrom.val() > toVal) {$dateFrom.val(toVal);
+                }
+            } else {
+                $dateFrom.removeAttr('max');
+            }
+        });
+
+        $('#trxClearDatesBtn').on('click', function() {
+            $dateFrom.val('').removeAttr('max');
+            $dateTo.val('').removeAttr('min');$('#filterForm').submit();
         });
     });
 </script>
