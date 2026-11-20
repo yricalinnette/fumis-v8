@@ -1675,9 +1675,16 @@ class FundController extends Controller
                             $displayAmt = $poTracker['netOb'];
                         }
 
-                        $this->syncProcurementPoFromRaods($singlePoDtrack, $poTracker, $poSerial, $poCreditor, $poStatus);
-                        $this->syncDisbursementRecords($clickedFund, $poTracker['disbursements'], false);
-                        $this->syncNorsaAdjustments($clickedFund, $poTracker['norsa_entries'] ?? [], $sourceConfig->id);
+                        $updatedParentFunds = $this->syncProcurementPoFromRaods($singlePoDtrack, $poTracker, $poSerial, $poCreditor, $poStatus);
+
+                        // Ensure clickedFund is always included even if already updated in the array
+                        $fundsToSync = collect($updatedParentFunds)->keyBy('id');
+                        $fundsToSync->put($clickedFund->id, $clickedFund->fresh());
+
+                        foreach ($fundsToSync as $targetParentFund) {
+                            $this->syncDisbursementRecords($targetParentFund, $poTracker['disbursements'], false);
+                            $this->syncNorsaAdjustments($targetParentFund, $poTracker['norsa_entries'] ?? [], $sourceConfig->id);
+                        }
 
                         $syncedDetails[] = [
                             'name'   => $sourceConfig->name ?? 'Fund Source',
@@ -2315,7 +2322,7 @@ class FundController extends Controller
 
                         // Check Procurement PO DTrack (procurement_transaction_items -> transaction() / procurement_transactions)
                         if (!$existingFund && !empty($sheetDtrack)) {
-                            $parentFund = $this->syncProcurementPoFromRaods(
+                            $parentFunds = $this->syncProcurementPoFromRaods(
                                 $sheetDtrack,
                                 $tracker,
                                 $sheetSerial,
@@ -2323,10 +2330,7 @@ class FundController extends Controller
                                 $status
                             );
 
-                            if ($parentFund) {
-                                $this->syncDisbursementRecords($parentFund, $tracker['disbursements'], false);
-                                $this->syncNorsaAdjustments($parentFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
-
+                            if (!empty($parentFunds)) {
                                 $matchingBulkRows = [];
                                 foreach ($rows as $rData) {
                                     $rDtrack = isset($rData[0]) ? trim((string) $rData[0]) : '';
@@ -2337,8 +2341,13 @@ class FundController extends Controller
                                     }
                                 }
 
-                                if (!empty($matchingBulkRows)) {
-                                    $this->syncFundDtrackLogs($parentFund, $matchingBulkRows, $rows);
+                                foreach ($parentFunds as $parentFund) {
+                                    $this->syncDisbursementRecords($parentFund, $tracker['disbursements'], false);
+                                    $this->syncNorsaAdjustments($parentFund, $tracker['norsa_entries'] ?? [], $sourceConfig->id);
+
+                                    if (!empty($matchingBulkRows)) {
+                                        $this->syncFundDtrackLogs($parentFund, $matchingBulkRows, $rows);
+                                    }
                                 }
 
                                 continue;
@@ -2458,16 +2467,17 @@ class FundController extends Controller
     }
 
     /**
-     * Helper: Sync matched RAODS PO DTrack into ProcurementTransactionItem -> transaction() (ProcurementTransaction) -> Fund
+     * Helper: Sync matched RAODS PO DTrack into all linked ProcurementTransactionItems -> ProcurementTransactions -> Funds
      */
-    private function syncProcurementPoFromRaods(string $poDtrack, array $tracker, ?string $sheetSerial, ?string $creditorName, string $status): ?Fund
+    private function syncProcurementPoFromRaods(string $poDtrack, array $tracker, ?string $sheetSerial, ?string $creditorName, string $status): array
     {
         $matchedItems = \App\Models\ProcurementTransactionItem::with('transaction')
             ->where('po_dtrack_no', $poDtrack)
             ->get();
 
+        $affectedProcTransactions = collect();
+
         if ($matchedItems->isNotEmpty()) {
-            $procTransaction    = $matchedItems->first()->transaction;
             $totalGroupPoAmount = (float) $matchedItems->sum('po_amount');
             $fallbackTotal      = (float) $matchedItems->sum('item_amount');
 
@@ -2484,90 +2494,110 @@ class FundController extends Controller
                     'disbursement_date'   => $tracker['latestDisbDate'] ?: $item->disbursement_date,
                     'status'              => $status,
                 ]);
+
+                if ($item->transaction) {
+                    $affectedProcTransactions->put($item->transaction->id, $item->transaction);
+                }
             }
         } else {
-            $procTransaction = \App\Models\ProcurementTransaction::where('po_dtrack_no', $poDtrack)->first();
-            if (!$procTransaction) {
-                return null;
+            $directProcTransactions = \App\Models\ProcurementTransaction::where('po_dtrack_no', $poDtrack)->get();
+            if ($directProcTransactions->isEmpty()) {
+                return [];
             }
 
-            $procTransaction->update([
-                'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : $procTransaction->obligation_serial,
-                'obligation_amount'   => $tracker['netOb'],
-                'obligation_date'     => $tracker['latestObDate'] ?: $procTransaction->obligation_date,
-                'disbursement_amount' => $tracker['netDisb'],
-                'disbursement_date'   => $tracker['latestDisbDate'] ?: $procTransaction->disbursement_date,
-                'status'              => $status,
-            ]);
+            $totalDirectPo = (float) $directProcTransactions->sum('po_amount');
+
+            foreach ($directProcTransactions as $procTx) {
+                $weight = $totalDirectPo > 0
+                    ? ((float) $procTx->po_amount / $totalDirectPo)
+                    : (1 / $directProcTransactions->count());
+
+                $procTx->update([
+                    'obligation_serial'   => !empty($sheetSerial) ? $sheetSerial : $procTx->obligation_serial,
+                    'obligation_amount'   => round($tracker['netOb'] * $weight, 2),
+                    'obligation_date'     => $tracker['latestObDate'] ?: $procTx->obligation_date,
+                    'disbursement_amount' => round($tracker['netDisb'] * $weight, 2),
+                    'disbursement_date'   => $tracker['latestDisbDate'] ?: $procTx->disbursement_date,
+                    'status'              => $status,
+                ]);
+
+                $affectedProcTransactions->put($procTx->id, $procTx);
+            }
         }
 
-        if (!$procTransaction) {
-            return null;
+        if ($affectedProcTransactions->isEmpty()) {
+            return [];
         }
 
-        // Roll up all items under this procurement_transaction
-        $allItems = \App\Models\ProcurementTransactionItem::where('procurement_transaction_id', $procTransaction->id)->get();
+        $updatedFunds = [];
 
-        if ($allItems->isNotEmpty()) {
-            $totalObligated = (float) $allItems->sum('obligation_amount');
-            $totalDisbursed = (float) $allItems->sum('disbursement_amount');
-            $uniqueSerials  = $allItems->pluck('obligation_serial')->filter()->unique()->values()->all();
-            $latestObDate   = $allItems->pluck('obligation_date')->filter()->max();
-            $latestDisbDate = $allItems->pluck('disbursement_date')->filter()->max();
+        foreach ($affectedProcTransactions as $procTransaction) {
+            // Roll up all items under this specific procurement_transaction
+            $allItems = \App\Models\ProcurementTransactionItem::where('procurement_transaction_id', $procTransaction->id)->get();
 
-            $totalItemCount     = $allItems->count();
-            $obligatedItemCount = $allItems->where('obligation_amount', '>', 0)->count();
+            if ($allItems->isNotEmpty()) {
+                $totalObligated = (float) $allItems->sum('obligation_amount');
+                $totalDisbursed = (float) $allItems->sum('disbursement_amount');
+                $uniqueSerials  = $allItems->pluck('obligation_serial')->filter()->unique()->values()->all();
+                $latestObDate   = $allItems->pluck('obligation_date')->filter()->max();
+                $latestDisbDate = $allItems->pluck('disbursement_date')->filter()->max();
 
-            if ($totalDisbursed > 0) {
-                $rolledStatus = ($totalObligated > 0 && $totalDisbursed < $totalObligated)
-                    ? 'Disbursed (with savings)'
-                    : 'Disbursed';
-            } elseif ($obligatedItemCount > 0 && $obligatedItemCount < $totalItemCount) {
-                $rolledStatus = 'Partially Obligated';
-            } elseif ($obligatedItemCount > 0) {
-                $rolledStatus = 'Obligated';
+                $totalItemCount     = $allItems->count();
+                $obligatedItemCount = $allItems->where('obligation_amount', '>', 0)->count();
+
+                if ($totalDisbursed > 0) {
+                    $rolledStatus = ($totalObligated > 0 && $totalDisbursed < $totalObligated)
+                        ? 'Disbursed (with savings)'
+                        : 'Disbursed';
+                } elseif ($obligatedItemCount > 0 && $obligatedItemCount < $totalItemCount) {
+                    $rolledStatus = 'Partially Obligated';
+                } elseif ($obligatedItemCount > 0) {
+                    $rolledStatus = 'Obligated';
+                } else {
+                    $rolledStatus = $procTransaction->status;
+                }
+
+                $procTransaction->update([
+                    'obligation_serial'   => !empty($uniqueSerials) ? implode(', ', $uniqueSerials) : $procTransaction->obligation_serial,
+                    'obligation_amount'   => $totalObligated,
+                    'obligation_date'     => $latestObDate ?: $procTransaction->obligation_date,
+                    'disbursement_amount' => $totalDisbursed,
+                    'disbursement_date'   => $latestDisbDate ?: $procTransaction->disbursement_date,
+                    'status'              => $rolledStatus,
+                ]);
             } else {
-                $rolledStatus = $procTransaction->status;
+                $totalObligated = (float) $procTransaction->obligation_amount;
+                $totalDisbursed = (float) $procTransaction->disbursement_amount;
+                $uniqueSerials  = array_filter([$procTransaction->obligation_serial]);
+                $latestObDate   = $procTransaction->obligation_date;
+                $latestDisbDate = $procTransaction->disbursement_date;
+                $rolledStatus   = $procTransaction->status;
             }
 
-            $procTransaction->update([
-                'obligation_serial'   => !empty($uniqueSerials) ? implode(', ', $uniqueSerials) : $procTransaction->obligation_serial,
-                'obligation_amount'   => $totalObligated,
-                'obligation_date'     => $latestObDate ?: $procTransaction->obligation_date,
-                'disbursement_amount' => $totalDisbursed,
-                'disbursement_date'   => $latestDisbDate ?: $procTransaction->disbursement_date,
-                'status'              => $rolledStatus,
-            ]);
-        } else {
-            $totalObligated = (float) $procTransaction->obligation_amount;
-            $totalDisbursed = (float) $procTransaction->disbursement_amount;
-            $uniqueSerials  = array_filter([$procTransaction->obligation_serial]);
-            $latestObDate   = $procTransaction->obligation_date;
-            $latestDisbDate = $procTransaction->disbursement_date;
-            $rolledStatus   = $procTransaction->status;
+            // Roll up to master `funds` row (`fund_transaction_id`)
+            $parentFund = Fund::find($procTransaction->fund_transaction_id);
+            if ($parentFund && strtolower($parentFund->status) !== 'cancelled') {
+                $distinctPoDtracks = $allItems->isNotEmpty()
+                    ? $allItems->pluck('po_dtrack_no')->filter()->unique()->values()
+                    : collect(array_filter([$procTransaction->po_dtrack_no]));
+
+                $parentFund->update([
+                    'dtrack_no_new'       => $distinctPoDtracks->count() === 1 ? $distinctPoDtracks->first() : $parentFund->dtrack_no_new,
+                    'creditor'            => $creditorName ?: $parentFund->creditor,
+                    'obligation_serial'   => !empty($uniqueSerials) ? implode(', ', $uniqueSerials) : $parentFund->obligation_serial,
+                    'obligation_amount'   => $totalObligated,
+                    'obligation_date'     => $latestObDate ?: $parentFund->obligation_date,
+                    'disbursement_amount' => $totalDisbursed,
+                    'disbursement_date'   => $latestDisbDate ?: $parentFund->disbursement_date,
+                    'status'              => $rolledStatus,
+                    'status_date'         => now(),
+                ]);
+
+                $updatedFunds[$parentFund->id] = $parentFund;
+            }
         }
 
-        // Roll up to master `funds` row (`fund_transaction_id`)
-        $parentFund = Fund::find($procTransaction->fund_transaction_id);
-        if ($parentFund && strtolower($parentFund->status) !== 'cancelled') {
-            $distinctPoDtracks = $allItems->isNotEmpty()
-                ? $allItems->pluck('po_dtrack_no')->filter()->unique()->values()
-                : collect(array_filter([$procTransaction->po_dtrack_no]));
-
-            $parentFund->update([
-                'dtrack_no_new'       => $distinctPoDtracks->count() === 1 ? $distinctPoDtracks->first() : $parentFund->dtrack_no_new,
-                'creditor'            => $creditorName ?: $parentFund->creditor,
-                'obligation_serial'   => !empty($uniqueSerials) ? implode(', ', $uniqueSerials) : $parentFund->obligation_serial,
-                'obligation_amount'   => $totalObligated,
-                'obligation_date'     => $latestObDate ?: $parentFund->obligation_date,
-                'disbursement_amount' => $totalDisbursed,
-                'disbursement_date'   => $latestDisbDate ?: $parentFund->disbursement_date,
-                'status'              => $rolledStatus,
-                'status_date'         => now(),
-            ]);
-        }
-
-        return $parentFund;
+        return array_values($updatedFunds);
     }
 
     /**

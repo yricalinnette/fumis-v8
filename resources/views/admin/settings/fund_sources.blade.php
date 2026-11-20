@@ -2,12 +2,15 @@
 
 @section('content')
 <style>
-    /* Force Select2 to match Bootstrap Input Group height and alignment */
+    /* ==========================================================================
+       1. SELECT2 & FORM CONTROL STANDARDIZATION
+       ========================================================================== */
     .select2-container--default .select2-selection--single {
-        border: 1px solid #ced4da !important;
+        border: 1px solid #cbd5e1 !important;
         height: calc(2.25rem + 2px) !important;
         display: flex !important;
         align-items: center !important;
+        border-radius: 0.375rem;
     }
     .input-group > .select2-container--default {
         flex: 1 1 auto !important;
@@ -18,7 +21,7 @@
         border-bottom-left-radius: 0 !important;
     }
     .select2-selection__rendered {
-        color: #495057 !important;
+        color: #334155 !important;
         padding-left: 0.75rem !important;
     }
     .select2-selection__arrow {
@@ -26,9 +29,10 @@
         top: 3px !important;
     }
     .badge {
-        padding: 0.5em 0.8em;
-        font-size: 85%;
-        font-weight: 500;
+        padding: 0.45em 0.75em;
+        font-size: 82%;
+        font-weight: 600;
+        letter-spacing: 0.02em;
     }
     .tooltip {
         z-index: 1060 !important;
@@ -36,368 +40,547 @@
     .fy-toggle-icon {
         transition: transform 0.2s ease-in-out;
     }
+
+    /* ==========================================================================
+       2. MAIN SETTINGS SHELL & PRIMARY TABS
+       ========================================================================== */
+    .fs-shell-card {
+        border: 1px solid #e2e8f0;
+        border-radius: 0.625rem;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+        overflow: hidden;
+    }
+
+    .fs-main-header {
+        background: #f8fafc;
+        border-bottom: 1px solid #e2e8f0;
+        padding: 0.75rem 1.25rem 0 1.25rem;
+    }
+
+    #fundSourceTab .nav-link {
+        color: #64748b;
+        font-weight: 600;
+        font-size: 0.9rem;
+        padding: 0.65rem 1.35rem;
+        border: 1px solid transparent;
+        border-top-left-radius: 0.5rem;
+        border-top-right-radius: 0.5rem;
+        transition: all 0.15s ease;
+    }
+
+    #fundSourceTab .nav-link:hover:not(.active) {
+        color: #0f172a;
+        background-color: rgba(255, 255, 255, 0.65);
+    }
+
+    #fundSourceTab .nav-link.active {
+        color: #0f172a;
+        background-color: #ffffff;
+        border-color: #e2e8f0 #e2e8f0 #ffffff;
+    }
+
+    #fundSourceTab .nav-link#nep-tab-link.active {
+        box-shadow: inset 0 3px 0 #2563eb;
+    }
+
+    #fundSourceTab .nav-link#approved-tab-link.active {
+        box-shadow: inset 0 3px 0 #10b981;
+    }
+
+    /* ==========================================================================
+       3. CONTEXT STRIPS, TOOLBARS & TABLES
+       ========================================================================== */
+    .fs-context-strip {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.5rem;
+        padding: 1rem 1.25rem;
+    }
+
+    .fs-context-strip.nep-strip {
+        border-left: 4px solid #2563eb;
+        background: linear-gradient(90deg, rgba(219, 234, 254, 0.35) 0%, #ffffff 35%);
+    }
+
+    .fs-context-strip.approved-strip {
+        border-left: 4px solid #10b981;
+        background: linear-gradient(90deg, rgba(209, 250, 229, 0.35) 0%, #ffffff 35%);
+    }
+
+    .fs-filter-bar {
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.5rem;
+        padding: 0.65rem 1rem;
+    }
+
+    .fs-table-card {
+        border: 1px solid #cbd5e1;
+        border-radius: 0.5rem;
+        overflow: hidden;
+        background: #ffffff;
+    }
+
+    .fs-table thead th {
+        background-color: #f8fafc;
+        color: #334155;
+        font-size: 0.73rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        border-bottom: 1px solid #cbd5e1;
+        border-top: 0;
+    }
+
+    .fs-table tbody td {
+        font-size: 0.86rem;
+        border-color: #e2e8f0;
+        vertical-align: middle;
+    }
+
+    .fs-table tbody tr.fund-row:hover {
+        background-color: #f8fafc;
+    }
+
+    .fy-header-row {
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%) !important;
+        color: #ffffff;
+        cursor: pointer;
+    }
+
+    .section-header-row {
+        background-color: #f1f5f9 !important;
+    }
+
+    .fs-empty-state {
+        background: #f8fafc;
+        border: 1.5px dashed #cbd5e1;
+        border-radius: 0.625rem;
+        padding: 3rem 1.5rem;
+        text-align: center;
+    }
+
+    .fs-empty-icon {
+        width: 54px;
+        height: 54px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 1rem;
+    }
 </style>
 
 <div class="container-fluid">
     {{-- Notifications --}}
     @if(session('success'))
-        <div class="alert alert-success alert-dismissible">
-            <button type="button" class="close" data-dismiss="alert">×</button>
-            <i class="icon fas fa-check"></i> {{ session('success') }}
+        <div class="alert alert-success alert-dismissible shadow-sm">
+            <button type="button" class="close" data-dismiss="alert">&times;</button>
+            <i class="icon fas fa-check-circle mr-1"></i> {{ session('success') }}
         </div>
     @endif
     
     @if($errors->any())
-        <div class="alert alert-danger alert-dismissible">
-            <button type="button" class="close" data-dismiss="alert">×</button>
-            <ul class="mb-0">@foreach($errors->all() as $error) <li>{{ $error }}</li> @endforeach</ul>
+        <div class="alert alert-danger alert-dismissible shadow-sm">
+            <button type="button" class="close" data-dismiss="alert">&times;</button>
+            <ul class="mb-0 pl-3">@foreach($errors->all() as $error) <li>{{ $error }}</li> @endforeach</ul>
         </div>
     @endif
 
-    <div class="row mb-2">
-        <div class="col-sm-6">
-            <h1 class="m-0 text-dark">Fund Source Settings</h1>
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
+        <div>
+            <h1 class="h4 font-weight-bold text-dark mb-0">Fund Source Settings</h1>
+            <small class="text-muted">Manage National Expenditure Program (NEP) proposals and approved GAA / SAA / CONAP allotments.</small>
         </div>
     </div>
 
     {{-- NAVIGATION TABS --}}
-    <div class="card card-primary card-outline card-tabs shadow-sm">
-        <div class="card-header p-0 pt-1 border-bottom-0">
-            <ul class="nav nav-tabs" id="fundSourceTab" role="tablist">
+    <div class="card fs-shell-card bg-white">
+        <div class="fs-main-header">
+            <ul class="nav nav-tabs border-bottom-0" id="fundSourceTab" role="tablist">
                 <li class="nav-item">
-                    <a class="nav-link active font-weight-bold" id="nep-tab-link" data-toggle="pill" href="#nep-tab-content" role="tab" aria-controls="nep-tab-content" aria-selected="true">
-                        <i class="fas fa-file-invoice-dollar mr-1 text-primary"></i> NEP Funds (Indicative Planning)
-                        <span class="badge badge-primary ml-1">{{ $nepSources->flatten()->count() }}</span>
+                    <a class="nav-link active" id="nep-tab-link" data-toggle="pill" href="#nep-tab-content" role="tab" aria-controls="nep-tab-content" aria-selected="true">
+                        <i class="fas fa-file-invoice-dollar mr-2 text-primary"></i>NEP Funds (Indicative Planning)
                     </a>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link font-weight-bold" id="approved-tab-link" data-toggle="pill" href="#approved-tab-content" role="tab" aria-controls="approved-tab-content" aria-selected="false">
-                        <i class="fas fa-check-circle mr-1 text-success"></i> Approved Funds (Current & Conap)
-                        <span class="badge badge-success ml-1">{{ $approvedSources->flatten()->count() }}</span>
+                    <a class="nav-link" id="approved-tab-link" data-toggle="pill" href="#approved-tab-content" role="tab" aria-controls="approved-tab-content" aria-selected="false">
+                        <i class="fas fa-check-circle mr-2 text-success"></i>Approved Funds (Current &amp; Conap)
                     </a>
                 </li>
             </ul>
         </div>
 
-        <div class="card-body">
+        <div class="card-body p-4">
             <div class="tab-content" id="fundSourceTabContent">
                 
-                {{-- TAB 1: NEP SOURCES --}}
+                {{-- ==================== TAB 1: NEP SOURCES ==================== --}}
                 <div class="tab-pane fade show active" id="nep-tab-content" role="tabpanel" aria-labelledby="nep-tab-link">
-                    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3 pb-3 border-bottom">
-                        <h3 class="card-title font-weight-bold text-dark mb-2 mb-md-0">
-                            <i class="fas fa-database mr-2 text-primary"></i>National Expenditure Program (NEP) Registry
-                        </h3>
-                        
-                        <div class="d-flex align-items-center flex-wrap gap-2">
-                            <select id="filter_nep_section" class="form-control form-control-sm mr-2 mb-2 mb-md-0" style="width: 200px;">
+
+                    {{-- Context Strip --}}
+                    <div class="fs-context-strip nep-strip shadow-sm d-flex flex-wrap justify-content-between align-items-center mb-3">
+                        <div class="pr-md-3">
+                            <div class="d-flex align-items-center mb-1">
+                                <span class="badge badge-primary font-weight-bold px-2 py-1 mr-2">NEP REGISTRY</span>
+                                <h6 class="font-weight-bold text-dark mb-0">National Expenditure Program (Indicative Planning)</h6>
+                            </div>
+                            <p class="text-muted small mb-0">
+                                Encode proposed budget allotments for Indicative WFP planning. Once approved under GAA/SAA, convert them to unlock obligation tracking.
+                            </p>
+                        </div>
+                        <div class="mt-3 mt-md-0">
+                            <button type="button" class="btn btn-primary font-weight-bold shadow-sm px-3" data-toggle="modal" data-target="#modal-add-nep">
+                                <i class="fas fa-plus-circle mr-1"></i> Add New NEP
+                            </button>
+                        </div>
+                    </div>
+
+                    {{-- Filter Toolbar --}}
+                    <div class="fs-filter-bar d-flex flex-wrap justify-content-between align-items-center mb-3">
+                        <span class="small font-weight-bold text-uppercase text-muted mb-2 mb-md-0">
+                            <i class="fas fa-filter mr-1"></i> Filter Records
+                        </span>
+                        <div class="d-flex align-items-center flex-wrap" style="gap: 0.5rem;">
+                            <select id="filter_nep_section" class="form-control form-control-sm" style="width: 210px;">
                                 <option value="">-- All Sections --</option>
                                 @foreach($sections as $sec)
                                     <option value="{{ $sec->id }}">{{ $sec->section_name }}</option>
                                 @endforeach
                             </select>
 
-                            <select id="filter_nep_fy" class="form-control form-control-sm mr-2 mb-2 mb-md-0" style="width: 130px;">
+                            <select id="filter_nep_fy" class="form-control form-control-sm" style="width: 140px;">
                                 <option value="">-- All FY --</option>
                                 @php $currentYear = date('Y'); @endphp
                                 @for($i = $currentYear - 1; $i <= $currentYear + 3; $i++)
-                                    <option value="{{ $i }}">{{ $i }}</option>
+                                    <option value="{{ $i }}">FY {{ $i }}</option>
                                 @endfor
                             </select>
 
-                            <button type="button" class="btn btn-outline-secondary btn-sm mb-2 mb-md-0 mr-2" id="reset_nep_filters" title="Reset Filters">
-                                <i class="fas fa-sync-alt"></i>
-                            </button>
-
-                            <button type="button" class="btn btn-primary btn-sm rounded-pill px-3 shadow-sm mb-2 mb-md-0" data-toggle="modal" data-target="#modal-add-nep">
-                                <i class="fas fa-plus-circle mr-1"></i> Add New NEP
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="reset_nep_filters" title="Reset Filters">
+                                <i class="fas fa-sync-alt mr-1"></i> Reset
                             </button>
                         </div>
                     </div>
 
-                    <div class="table-responsive p-0">
-                        <table class="table table-hover mb-0" id="nepTable" style="border-collapse: separate; border-spacing: 0;">
-                            <thead class="bg-light">
-                                <tr>
-                                    <th class="border-0 py-3 pl-4 text-uppercase small font-weight-bold" style="width: 30%;">Budget Line / Fund Name</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">Sync Status</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-right">Original Allotment</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">Pooled Funds</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">Adjusted Allotment</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">FY</th> 
-                                    <th class="border-0 py-3 pr-4 text-uppercase small font-weight-bold text-center">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @forelse($nepSources as $fiscalYear => $yearSources)
-                                    <tr class="fy-header-row bg-navy text-white" data-fy-header="{{ $fiscalYear }}" style="background-color: #001f3f !important; cursor: pointer;">
-                                        <td colspan="7" class="py-2 pl-4 font-weight-bold text-uppercase" style="letter-spacing: 1px;">
-                                            <div class="d-flex justify-content-between align-items-center pr-3">
-                                                <span><i class="fas fa-calendar-alt mr-2 text-primary"></i> Fiscal Year: {{ $fiscalYear }}</span>
-                                                <i class="fas fa-chevron-down fy-toggle-icon"></i>
-                                            </div>
-                                        </td>
+                    <div class="fs-table-card shadow-sm">
+                        <div class="table-responsive p-0">
+                            <table class="table table-hover fs-table mb-0" id="nepTable">
+                                <thead>
+                                    <tr>
+                                        <th class="py-3 pl-4" style="width: 32%;">Budget Line / Fund Name</th>
+                                        <th class="py-3 text-center">Sync Status</th>
+                                        <th class="py-3 text-right">Original Allotment</th>
+                                        <th class="py-3 text-center">Pooled Funds</th>
+                                        <th class="py-3 text-right">Adjusted Allotment</th>
+                                        <th class="py-3 text-center">FY</th> 
+                                        <th class="py-3 pr-4 text-center">Actions</th>
                                     </tr>
-
-                                    @foreach($yearSources->groupBy('section_id') as $sectionId => $groupedSources)
-                                        @php
-                                            $section = $sections->firstWhere('id', $sectionId);
-                                            $sectionName = $section->section_name ?? 'Unassigned / General';
-                                        @endphp
-                                        <tr class="section-header-row" data-section-header="{{ $sectionId }}" data-fy="{{ $fiscalYear }}" style="background-color: #f8f9fa;">
-                                            <td colspan="7" class="py-2 pl-4 border-bottom border-top">
-                                                <div class="d-flex align-items-center">
-                                                    <i class="fas fa-folder-open text-primary mr-2"></i>
-                                                    <span class="text-dark font-weight-bold text-uppercase" style="font-size: 0.8rem; letter-spacing: 1px;">{{ $sectionName }}</span>
-                                                    <span class="badge badge-pill badge-secondary ml-2 section-count-badge" style="font-size: 0.7rem; opacity: 0.8;">{{ $groupedSources->count() }}</span>
+                                </thead>
+                                <tbody>
+                                    @forelse($nepSources as $fiscalYear => $yearSources)
+                                        <tr class="fy-header-row" data-fy-header="{{ $fiscalYear }}">
+                                            <td colspan="7" class="py-2 pl-4 font-weight-bold text-uppercase" style="letter-spacing: 0.06em; font-size: 0.82rem;">
+                                                <div class="d-flex justify-content-between align-items-center pr-3">
+                                                    <span><i class="fas fa-calendar-alt mr-2 text-info"></i> Fiscal Year {{ $fiscalYear }}</span>
+                                                    <i class="fas fa-chevron-down fy-toggle-icon"></i>
                                                 </div>
                                             </td>
                                         </tr>
-                                        @foreach($groupedSources as $source)
+
+                                        @foreach($yearSources->groupBy('section_id') as $sectionId => $groupedSources)
                                             @php
-                                                $totalPooled = $source->activities->sum('pooled_amount');
-                                                $netAmount = $source->total_amount - $totalPooled;
-                                                $isConverted = ($source->funding_source === 'NEP-Current');
+                                                $section = $sections->firstWhere('id', $sectionId);
+                                                $sectionName = $section->section_name ?? 'Unassigned / General';
                                             @endphp
-                                            <tr class="fund-row" data-section="{{ $source->section_id }}" data-fy="{{ $source->fiscal_year }}">
-                                                <td class="align-middle pl-5 border-top-0">
-                                                    <div class="d-flex flex-column">
-                                                        <span class="text-muted mb-1" style="font-size: 10px; font-weight: 600; text-transform: uppercase;">
-                                                            {{ $source->budgetLineItem->budget_line_item_name ?? 'N/A' }}
-                                                        </span>
-                                                        <div class="d-flex align-items-center">
-                                                            <span class="text-dark font-weight-bold mr-2" style="font-size: 0.95rem;">{{ $source->name }}</span>
-                                                            
-                                                            {{-- Status Tagging in NEP Table --}}
-                                                            @if($isConverted)
-                                                                <span class="badge badge-success px-2 py-1 shadow-sm" style="font-size: 10px;" data-toggle="tooltip" title="Converted to Approved Fund (NEP-Current)">
-                                                                    <i class="fas fa-check-circle mr-1"></i> Converted (NEP-Current)
-                                                                </span>
-                                                            @else
-                                                                <span class="badge badge-primary px-2 py-1" style="font-size: 10px;">NEP (Indicative)</span>
-                                                            @endif
-                                                        </div>
-                                                    </div>
-                                                </td>
-                                                <td class="align-middle text-center border-top-0">
-                                                    @if($source->spreadsheet_id)
-                                                        <a href="https://docs.google.com/spreadsheets/d/{{ $source->spreadsheet_id }}" target="_blank" class="btn btn-xs btn-outline-success rounded-pill px-2" style="font-size: 11px; font-weight: 600;">
-                                                            <i class="fas fa-file-excel mr-1"></i> Linked
-                                                        </a>
-                                                    @else
-                                                        <span class="badge badge-light text-muted border py-1 px-2 rounded-pill" style="font-size: 10px;"><i class="fas fa-keyboard mr-1"></i> Manual</span>
-                                                    @endif
-                                                </td>
-                                                <td class="align-middle text-right font-weight-500 border-top-0">₱{{ number_format($source->total_amount, 2) }}</td>
-                                                <td class="align-middle text-center border-top-0">
-                                                    @if($totalPooled > 0)
-                                                        <span class="text-danger font-weight-500" style="font-size: 0.9rem;"><i class="fas fa-arrow-down mr-1 small"></i>₱{{ number_format($totalPooled, 2) }}</span>
-                                                    @else
-                                                        <span class="text-muted small">—</span>
-                                                    @endif
-                                                </td>
-                                                <td class="align-middle text-center border-top-0">
-                                                    <span class="text-primary font-weight-bold" style="font-size: 1.05rem;">₱{{ number_format($netAmount, 2) }}</span>
-                                                </td>
-                                                <td class="align-middle text-center border-top-0">
-                                                    <span class="badge badge-dark py-1 px-2" style="font-weight: 400;">{{ $source->fiscal_year }}</span>
-                                                </td> 
-                                                <td class="align-middle text-center border-top-0 pr-4">
-                                                    <div class="btn-group shadow-sm">
-                                                        @if(!$isConverted)
-                                                            <button type="button" class="btn btn-sm btn-white border btn-convert-source" 
-                                                                data-id="{{ $source->id }}" data-funding_source="{{ $source->funding_source }}" data-source_type="{{ $source->source_type }}" data-name="{{ str_replace('NEP ', '', $source->name) }}" data-budget_line_item_id="{{ $source->budget_line_item_id }}" data-fiscal_year="{{ $source->fiscal_year }}" data-allotment_class="{{ $source->allotment_class }}" data-total_amount="{{ $source->total_amount }}" data-section_id="{{ $source->section_id }}" data-spreadsheet_id="{{ $source->spreadsheet_id }}" data-sheet_name="{{ $source->sheet_name }}" data-toggle="tooltip" title="Convert to Approved Fund">
-                                                                <i class="fas fa-exchange-alt text-success"></i>
-                                                            </button>
-                                                            <button type="button" class="btn btn-sm btn-white border btn-edit-source" 
-                                                                data-id="{{ $source->id }}" 
-                                                                data-funding_source="{{ $source->funding_source }}" 
-                                                                data-source_type="{{ $source->source_type }}" 
-                                                                data-name="{{ $source->name }}" 
-                                                                data-budget_line_item_id="{{ $source->budget_line_item_id }}" 
-                                                                data-fiscal_year="{{ $source->fiscal_year }}" 
-                                                                data-allotment_class="{{ $source->allotment_class }}" 
-                                                                data-total_amount="{{ $source->total_amount }}" 
-                                                                data-section_id="{{ $source->section_id }}" 
-                                                                data-spreadsheet_id="{{ $source->spreadsheet_id }}" 
-                                                                data-sheet_name="{{ $source->sheet_name }}" 
-                                                                data-saadate="{{ optional($source->saa_date)->format('Y-m-d') }}"
-                                                                data-reference_number="{{ $source->reference_number }}" 
-                                                                data-fund_code="{{ $source->fund_code }}" 
-                                                                data-approp_code="{{ $source->approp_code }}" 
-                                                                data-url="{{ route('settings.fund_sources.update', $source->id) }}"
-                                                                data-toggle="tooltip" title="Edit">
-                                                                <i class="fas fa-edit text-info"></i>
-                                                            </button>
-                                                            <button type="button" class="btn btn-sm btn-white border delete-source-btn" data-id="{{ $source->id }}" data-name="{{ $source->name }}" data-count="{{ $source->activities->count() }}" data-toggle="tooltip" title="Delete">
-                                                                <i class="fas fa-trash-alt text-danger"></i>
-                                                            </button>
-                                                        @else
-                                                            <span class="badge badge-light border text-muted px-2 py-1" style="font-size: 11px;" data-toggle="tooltip" title="Managed under Approved Funds tab">
-                                                                <i class="fas fa-lock mr-1"></i> Locked (Approved)
-                                                            </span>
-                                                        @endif
+                                            <tr class="section-header-row" data-section-header="{{ $sectionId }}" data-fy="{{ $fiscalYear }}">
+                                                <td colspan="7" class="py-2 pl-4 border-bottom border-top">
+                                                    <div class="d-flex align-items-center">
+                                                        <i class="fas fa-folder-open text-primary mr-2"></i>
+                                                        <span class="text-dark font-weight-bold text-uppercase" style="font-size: 0.78rem; letter-spacing: 0.05em;">{{ $sectionName }}</span>
                                                     </div>
                                                 </td>
                                             </tr>
+                                            @foreach($groupedSources as $source)
+                                                @php
+                                                    $totalPooled = $source->activities->sum('pooled_amount');
+                                                    $netAmount = $source->total_amount - $totalPooled;
+                                                    $isConverted = ($source->funding_source === 'NEP-Current');
+                                                @endphp
+                                                <tr class="fund-row" data-section="{{ $source->section_id }}" data-fy="{{ $source->fiscal_year }}">
+                                                    <td class="pl-5">
+                                                        <div class="d-flex flex-column">
+                                                            <span class="text-muted mb-1" style="font-size: 10.5px; font-weight: 600; text-transform: uppercase;">
+                                                                {{ $source->budgetLineItem->budget_line_item_name ?? 'N/A' }}
+                                                            </span>
+                                                            <div class="d-flex align-items-center flex-wrap" style="gap: 0.4rem;">
+                                                                <span class="text-dark font-weight-bold" style="font-size: 0.92rem;">{{ $source->name }}</span>
+                                                                
+                                                                @if($isConverted)
+                                                                    <span class="badge badge-success px-2 py-1" style="font-size: 10px;" data-toggle="tooltip" title="Converted to Approved Fund (NEP-Current)">
+                                                                        <i class="fas fa-check-circle mr-1"></i>Converted (NEP-Current)
+                                                                    </span>
+                                                                @else
+                                                                    <span class="badge badge-primary px-2 py-1" style="font-size: 10px;">NEP (Indicative)</span>
+                                                                @endif
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                    <td class="text-center">
+                                                        @if($source->spreadsheet_id)
+                                                            <a href="https://docs.google.com/spreadsheets/d/{{ $source->spreadsheet_id }}" target="_blank" class="btn btn-xs btn-outline-success rounded-pill px-2 font-weight-bold" style="font-size: 11px;">
+                                                                <i class="fas fa-file-excel mr-1"></i> Linked
+                                                            </a>
+                                                        @else
+                                                            <span class="badge badge-light text-muted border py-1 px-2 rounded-pill" style="font-size: 10px;"><i class="fas fa-keyboard mr-1"></i> Manual</span>
+                                                        @endif
+                                                    </td>
+                                                    <td class="text-right font-weight-bold text-secondary text-nowrap">₱{{ number_format($source->total_amount, 2) }}</td>
+                                                    <td class="text-center text-nowrap">
+                                                        @if($totalPooled > 0)
+                                                            <span class="text-danger font-weight-bold" style="font-size: 0.85rem;"><i class="fas fa-arrow-down mr-1 small"></i>₱{{ number_format($totalPooled, 2) }}</span>
+                                                        @else
+                                                            <span class="text-muted small">&mdash;</span>
+                                                        @endif
+                                                    </td>
+                                                    <td class="text-right text-nowrap">
+                                                        <span class="text-primary font-weight-bold" style="font-size: 0.98rem;">₱{{ number_format($netAmount, 2) }}</span>
+                                                    </td>
+                                                    <td class="text-center">
+                                                        <span class="badge badge-dark py-1 px-2">{{ $source->fiscal_year }}</span>
+                                                    </td> 
+                                                    <td class="text-center pr-4">
+                                                        <div class="btn-group shadow-sm">
+                                                            @if(!$isConverted)
+                                                                <button type="button" class="btn btn-xs btn-white border btn-convert-source px-2 py-1" 
+                                                                    data-id="{{ $source->id }}" data-funding_source="{{ $source->funding_source }}" data-source_type="{{ $source->source_type }}" data-name="{{ str_replace('NEP ', '', $source->name) }}" data-budget_line_item_id="{{ $source->budget_line_item_id }}" data-fiscal_year="{{ $source->fiscal_year }}" data-allotment_class="{{ $source->allotment_class }}" data-total_amount="{{ $source->total_amount }}" data-section_id="{{ $source->section_id }}" data-spreadsheet_id="{{ $source->spreadsheet_id }}" data-sheet_name="{{ $source->sheet_name }}" data-toggle="tooltip" title="Convert to Approved Fund">
+                                                                    <i class="fas fa-exchange-alt text-success"></i>
+                                                                </button>
+                                                                <button type="button" class="btn btn-xs btn-white border btn-edit-source px-2 py-1" 
+                                                                    data-id="{{ $source->id }}" 
+                                                                    data-funding_source="{{ $source->funding_source }}" 
+                                                                    data-source_type="{{ $source->source_type }}" 
+                                                                    data-name="{{ $source->name }}" 
+                                                                    data-budget_line_item_id="{{ $source->budget_line_item_id }}" 
+                                                                    data-fiscal_year="{{ $source->fiscal_year }}" 
+                                                                    data-allotment_class="{{ $source->allotment_class }}" 
+                                                                    data-total_amount="{{ $source->total_amount }}" 
+                                                                    data-section_id="{{ $source->section_id }}" 
+                                                                    data-spreadsheet_id="{{ $source->spreadsheet_id }}" 
+                                                                    data-sheet_name="{{ $source->sheet_name }}" 
+                                                                    data-saadate="{{ optional($source->saa_date)->format('Y-m-d') }}"
+                                                                    data-reference_number="{{ $source->reference_number }}" 
+                                                                    data-fund_code="{{ $source->fund_code }}" 
+                                                                    data-approp_code="{{ $source->approp_code }}" 
+                                                                    data-url="{{ route('settings.fund_sources.update', $source->id) }}"
+                                                                    data-toggle="tooltip" title="Edit">
+                                                                    <i class="fas fa-edit text-info"></i>
+                                                                </button>
+                                                                <button type="button" class="btn btn-xs btn-white border delete-source-btn px-2 py-1" data-id="{{ $source->id }}" data-name="{{ $source->name }}" data-count="{{ $source->activities->count() }}" data-toggle="tooltip" title="Delete">
+                                                                    <i class="fas fa-trash-alt text-danger"></i>
+                                                                </button>
+                                                            @else
+                                                                <span class="badge badge-light border text-muted px-2 py-1" style="font-size: 11px;" data-toggle="tooltip" title="Managed under Approved Funds tab">
+                                                                    <i class="fas fa-lock mr-1"></i>Locked (Approved)
+                                                                </span>
+                                                            @endif
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            @endforeach
                                         @endforeach
-                                    @endforeach
-                                @empty
-                                    <tr><td colspan="7" class="text-center py-4 text-muted">No NEP fund sources found.</td></tr>
-                                @endforelse
-                                <tr id="no_nep_results" style="display: none;">
-                                    <td colspan="7" class="text-center py-4 text-muted font-italic">No records match the selected filters.</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                                    @empty
+                                        <tr>
+                                            <td colspan="7" class="p-4">
+                                                <div class="fs-empty-state border-0 bg-transparent py-3">
+                                                    <div class="fs-empty-icon bg-primary text-white">
+                                                        <i class="fas fa-file-invoice-dollar fa-lg"></i>
+                                                    </div>
+                                                    <h6 class="font-weight-bold text-dark mb-1">No NEP Fund Sources Found</h6>
+                                                    <p class="text-muted small mb-3">Click <strong>"Add New NEP"</strong> above to encode indicative allotments.</p>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    @endforelse
+                                    <tr id="no_nep_results" style="display: none;">
+                                        <td colspan="7" class="text-center py-4 text-muted font-italic">No records match the selected filters.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
-                {{-- TAB 2: APPROVED FUNDS (Current, NEP-Current & Conap) --}}
+                {{-- ==================== TAB 2: APPROVED FUNDS (Current, NEP-Current & Conap) ==================== --}}
                 <div class="tab-pane fade" id="approved-tab-content" role="tabpanel" aria-labelledby="approved-tab-link">
-                    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3 pb-3 border-bottom">
-                        <h3 class="card-title font-weight-bold text-dark mb-2 mb-md-0">
-                            <i class="fas fa-check-circle mr-2 text-success"></i>Approved Funds Registry (Current, NEP-Current & Conap)
-                        </h3>
-                        
-                        <div class="d-flex align-items-center flex-wrap gap-2">
-                            <select id="filter_approved_category" class="form-control form-control-sm mr-2 mb-2 mb-md-0" style="width: 170px;">
+
+                    {{-- Context Strip --}}
+                    <div class="fs-context-strip approved-strip shadow-sm d-flex flex-wrap justify-content-between align-items-center mb-3">
+                        <div class="pr-md-3">
+                            <div class="d-flex align-items-center mb-1">
+                                <span class="badge badge-success font-weight-bold px-2 py-1 mr-2">ACTIVE ALLOTMENTS</span>
+                                <h6 class="font-weight-bold text-dark mb-0">Approved Funds Registry (Current, NEP-Current &amp; Conap)</h6>
+                            </div>
+                            <p class="text-muted small mb-0">
+                                Active GAA, SAA, and Continuing Appropriations available for Final WFP activity allocation, obligation, and disbursement.
+                            </p>
+                        </div>
+                        <div class="mt-3 mt-md-0">
+                            <button type="button" class="btn btn-success font-weight-bold shadow-sm px-3" data-toggle="modal" data-target="#modal-add-approved">
+                                <i class="fas fa-plus-circle mr-1"></i> Add Approved Fund
+                            </button>
+                        </div>
+                    </div>
+
+                    {{-- Filter Toolbar --}}
+                    <div class="fs-filter-bar d-flex flex-wrap justify-content-between align-items-center mb-3">
+                        <span class="small font-weight-bold text-uppercase text-muted mb-2 mb-md-0">
+                            <i class="fas fa-filter mr-1"></i> Filter Records
+                        </span>
+                        <div class="d-flex align-items-center flex-wrap" style="gap: 0.5rem;">
+                            <select id="filter_approved_category" class="form-control form-control-sm" style="width: 170px;">
                                 <option value="">-- All Categories --</option>
                                 <option value="Current">Current</option>
                                 <option value="NEP-Current">NEP-Current</option>
                                 <option value="Conap">Conap</option>
                             </select>
 
-                            <select id="filter_approved_section" class="form-control form-control-sm mr-2 mb-2 mb-md-0" style="width: 200px;">
+                            <select id="filter_approved_section" class="form-control form-control-sm" style="width: 210px;">
                                 <option value="">-- All Sections --</option>
                                 @foreach($sections as $sec)
                                     <option value="{{ $sec->id }}">{{ $sec->section_name }}</option>
                                 @endforeach
                             </select>
 
-                            <select id="filter_approved_fy" class="form-control form-control-sm mr-2 mb-2 mb-md-0" style="width: 130px;">
+                            <select id="filter_approved_fy" class="form-control form-control-sm" style="width: 140px;">
                                 <option value="">-- All FY --</option>
                                 @php $currentYear = date('Y'); @endphp
                                 @for($i = $currentYear - 1; $i <= $currentYear + 3; $i++)
-                                    <option value="{{ $i }}">{{ $i }}</option>
+                                    <option value="{{ $i }}">FY {{ $i }}</option>
                                 @endfor
                             </select>
 
-                            <button type="button" class="btn btn-outline-secondary btn-sm mb-2 mb-md-0 mr-2" id="reset_approved_filters" title="Reset Filters">
-                                <i class="fas fa-sync-alt"></i>
-                            </button>
-
-                            <button type="button" class="btn btn-success btn-sm rounded-pill px-3 shadow-sm mb-2 mb-md-0" data-toggle="modal" data-target="#modal-add-approved">
-                                <i class="fas fa-plus-circle mr-1"></i> Add Approved Fund
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="reset_approved_filters" title="Reset Filters">
+                                <i class="fas fa-sync-alt mr-1"></i> Reset
                             </button>
                         </div>
                     </div>
 
-                    <div class="table-responsive p-0">
-                        <table class="table table-hover mb-0" id="approvedTable" style="border-collapse: separate; border-spacing: 0;">
-                            <thead class="bg-light">
-                                <tr>
-                                    <th class="border-0 py-3 pl-4 text-uppercase small font-weight-bold" style="width: 26%;">Budget Line / Fund Name</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-center" style="width: 14%;">Funding Source</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-center" style="width: 10%;">Sync Status</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-right">Original Allotment</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">Pooled Funds</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">Adjusted Allotment</th>
-                                    <th class="border-0 py-3 text-uppercase small font-weight-bold text-center">FY</th> 
-                                    <th class="border-0 py-3 pr-4 text-uppercase small font-weight-bold text-center">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @forelse($approvedSources as $fiscalYear => $yearSources)
-                                    <tr class="fy-header-row bg-navy text-white" data-fy-header="{{ $fiscalYear }}" style="background-color: #001f3f !important; cursor: pointer;">
-                                        <td colspan="8" class="py-2 pl-4 font-weight-bold text-uppercase" style="letter-spacing: 1px;">
-                                            <div class="d-flex justify-content-between align-items-center pr-3">
-                                                <span><i class="fas fa-calendar-alt mr-2 text-success"></i> Fiscal Year: {{ $fiscalYear }}</span>
-                                                <i class="fas fa-chevron-down fy-toggle-icon"></i>
-                                            </div>
-                                        </td>
+                    <div class="fs-table-card shadow-sm">
+                        <div class="table-responsive p-0">
+                            <table class="table table-hover fs-table mb-0" id="approvedTable">
+                                <thead>
+                                    <tr>
+                                        <th class="py-3 pl-4" style="width: 28%;">Budget Line / Fund Name</th>
+                                        <th class="py-3 text-center" style="width: 13%;">Funding Source</th>
+                                        <th class="py-3 text-center" style="width: 11%;">Sync Status</th>
+                                        <th class="py-3 text-right">Original Allotment</th>
+                                        <th class="py-3 text-center">Pooled Funds</th>
+                                        <th class="py-3 text-right">Adjusted Allotment</th>
+                                        <th class="py-3 text-center">FY</th> 
+                                        <th class="py-3 pr-4 text-center">Actions</th>
                                     </tr>
-
-                                    @foreach($yearSources->groupBy('section_id') as $sectionId => $groupedSources)
-                                        @php
-                                            $section = $sections->firstWhere('id', $sectionId);
-                                            $sectionName = $section->section_name ?? 'Unassigned / General';
-                                        @endphp
-                                        <tr class="section-header-row" data-section-header="{{ $sectionId }}" data-fy="{{ $fiscalYear }}" style="background-color: #f8f9fa;">
-                                            <td colspan="8" class="py-2 pl-4 border-bottom border-top">
-                                                <div class="d-flex align-items-center">
-                                                    <i class="fas fa-folder-open text-success mr-2"></i>
-                                                    <span class="text-dark font-weight-bold text-uppercase" style="font-size: 0.8rem; letter-spacing: 1px;">{{ $sectionName }}</span>
-                                                    <span class="badge badge-pill badge-secondary ml-2 section-count-badge" style="font-size: 0.7rem; opacity: 0.8;">{{ $groupedSources->count() }}</span>
+                                </thead>
+                                <tbody>
+                                    @forelse($approvedSources as $fiscalYear => $yearSources)
+                                        <tr class="fy-header-row" data-fy-header="{{ $fiscalYear }}">
+                                            <td colspan="8" class="py-2 pl-4 font-weight-bold text-uppercase" style="letter-spacing: 0.06em; font-size: 0.82rem;">
+                                                <div class="d-flex justify-content-between align-items-center pr-3">
+                                                    <span><i class="fas fa-calendar-alt mr-2 text-success"></i> Fiscal Year {{ $fiscalYear }}</span>
+                                                    <i class="fas fa-chevron-down fy-toggle-icon"></i>
                                                 </div>
                                             </td>
                                         </tr>
-                                        @foreach($groupedSources as $source)
+
+                                        @foreach($yearSources->groupBy('section_id') as $sectionId => $groupedSources)
                                             @php
-                                                $totalPooled = $source->activities->sum('pooled_amount');
-                                                $netAmount = $source->total_amount - $totalPooled;
+                                                $section = $sections->firstWhere('id', $sectionId);
+                                                $sectionName = $section->section_name ?? 'Unassigned / General';
                                             @endphp
-                                            <tr class="fund-row" data-section="{{ $source->section_id }}" data-fy="{{ $source->fiscal_year }}" data-category="{{ $source->funding_source }}">
-                                                <td class="align-middle pl-5 border-top-0">
-                                                    <div class="d-flex flex-column">
-                                                        <span class="text-muted mb-1" style="font-size: 10px; font-weight: 600; text-transform: uppercase;">{{ $source->budgetLineItem->budget_line_item_name ?? 'N/A' }}</span>
-                                                        <span class="text-dark font-weight-bold" style="font-size: 0.95rem;">{{ $source->name }}</span>
-                                                    </div>
-                                                </td>
-                                                <td class="align-middle text-center border-top-0">
-                                                    @if($source->funding_source === 'Conap')
-                                                        <span class="badge badge-warning text-dark px-2 py-1" style="font-size: 11px; font-weight: 600;">Conap</span>
-                                                    @elseif($source->funding_source === 'NEP-Current')
-                                                        <span class="badge badge-success px-2 py-1" style="font-size: 11px; font-weight: 600;">NEP-Current</span>
-                                                    @else
-                                                        <span class="badge badge-info px-2 py-1" style="font-size: 11px; font-weight: 600;">Current</span>
-                                                    @endif
-                                                </td>
-                                                <td class="align-middle text-center border-top-0">
-                                                    @if($source->spreadsheet_id)
-                                                        <a href="https://docs.google.com/spreadsheets/d/{{ $source->spreadsheet_id }}" target="_blank" class="btn btn-xs btn-outline-success rounded-pill px-2" style="font-size: 11px; font-weight: 600;">
-                                                            <i class="fas fa-file-excel mr-1"></i> Linked
-                                                        </a>
-                                                    @else
-                                                        <span class="badge badge-light text-muted border py-1 px-2 rounded-pill" style="font-size: 10px;"><i class="fas fa-keyboard mr-1"></i> Manual</span>
-                                                    @endif
-                                                </td>
-                                                <td class="align-middle text-right font-weight-500 border-top-0">₱{{ number_format($source->total_amount, 2) }}</td>
-                                                <td class="align-middle text-center border-top-0">
-                                                    @if($totalPooled > 0)
-                                                        <span class="text-danger font-weight-500" style="font-size: 0.9rem;"><i class="fas fa-arrow-down mr-1 small"></i>₱{{ number_format($totalPooled, 2) }}</span>
-                                                    @else
-                                                        <span class="text-muted small">—</span>
-                                                    @endif
-                                                </td>
-                                                <td class="align-middle text-center border-top-0">
-                                                    <span class="text-success font-weight-bold" style="font-size: 1.05rem;">₱{{ number_format($netAmount, 2) }}</span>
-                                                </td>
-                                                <td class="align-middle text-center border-top-0">
-                                                    <span class="badge badge-dark py-1 px-2" style="font-weight: 400;">{{ $source->fiscal_year }}</span>
-                                                </td> 
-                                                <td class="align-middle text-center border-top-0 pr-4">
-                                                    <div class="btn-group shadow-sm">
-                                                        <button type="button" class="btn btn-sm btn-white border btn-edit-source" 
-                                                            data-id="{{ $source->id }}" data-funding_source="{{ $source->funding_source }}" data-source_type="{{ $source->source_type }}" data-name="{{ $source->name }}" data-budget_line_item_id="{{ $source->budget_line_item_id }}" data-fiscal_year="{{ $source->fiscal_year }}" data-allotment_class="{{ $source->allotment_class }}" data-total_amount="{{ $source->total_amount }}" data-section_id="{{ $source->section_id }}" data-spreadsheet_id="{{ $source->spreadsheet_id }}" data-sheet_name="{{ $source->sheet_name }}" data-saa_date="{{ $source->saa_date }}" data-reference_number="{{ $source->reference_number }}" data-fund_code="{{ $source->fund_code }}" data-approp_code="{{ $source->approp_code }}" data-toggle="tooltip" title="Edit">
-                                                            <i class="fas fa-edit text-info"></i>
-                                                        </button>
-                                                        <button type="button" class="btn btn-sm btn-white border delete-source-btn" data-id="{{ $source->id }}" data-name="{{ $source->name }}" data-count="{{ $source->activities->count() }}" data-toggle="tooltip" title="Delete">
-                                                            <i class="fas fa-trash-alt text-danger"></i>
-                                                        </button>
+                                            <tr class="section-header-row" data-section-header="{{ $sectionId }}" data-fy="{{ $fiscalYear }}">
+                                                <td colspan="8" class="py-2 pl-4 border-bottom border-top">
+                                                    <div class="d-flex align-items-center">
+                                                        <i class="fas fa-folder-open text-success mr-2"></i>
+                                                        <span class="text-dark font-weight-bold text-uppercase" style="font-size: 0.78rem; letter-spacing: 0.05em;">{{ $sectionName }}</span>
                                                     </div>
                                                 </td>
                                             </tr>
+                                            @foreach($groupedSources as $source)
+                                                @php
+                                                    $totalPooled = $source->activities->sum('pooled_amount');
+                                                    $netAmount = $source->total_amount - $totalPooled;
+                                                @endphp
+                                                <tr class="fund-row" data-section="{{ $source->section_id }}" data-fy="{{ $source->fiscal_year }}" data-category="{{ $source->funding_source }}">
+                                                    <td class="pl-5">
+                                                        <div class="d-flex flex-column">
+                                                            <span class="text-muted mb-1" style="font-size: 10.5px; font-weight: 600; text-transform: uppercase;">{{ $source->budgetLineItem->budget_line_item_name ?? 'N/A' }}</span>
+                                                            <span class="text-dark font-weight-bold" style="font-size: 0.92rem;">{{ $source->name }}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td class="text-center">
+                                                        @if($source->funding_source === 'Conap')
+                                                            <span class="badge badge-warning text-dark px-2 py-1" style="font-size: 11px;">Conap</span>
+                                                        @elseif($source->funding_source === 'NEP-Current')
+                                                            <span class="badge badge-success px-2 py-1" style="font-size: 11px;">NEP-Current</span>
+                                                        @else
+                                                            <span class="badge badge-info px-2 py-1" style="font-size: 11px;">Current</span>
+                                                        @endif
+                                                    </td>
+                                                    <td class="text-center">
+                                                        @if($source->spreadsheet_id)
+                                                            <a href="https://docs.google.com/spreadsheets/d/{{ $source->spreadsheet_id }}" target="_blank" class="btn btn-xs btn-outline-success rounded-pill px-2 font-weight-bold" style="font-size: 11px;">
+                                                                <i class="fas fa-file-excel mr-1"></i> Linked
+                                                            </a>
+                                                        @else
+                                                            <span class="badge badge-light text-muted border py-1 px-2 rounded-pill" style="font-size: 10px;"><i class="fas fa-keyboard mr-1"></i> Manual</span>
+                                                        @endif
+                                                    </td>
+                                                    <td class="text-right font-weight-bold text-secondary text-nowrap">₱{{ number_format($source->total_amount, 2) }}</td>
+                                                    <td class="text-center text-nowrap">
+                                                        @if($totalPooled > 0)
+                                                            <span class="text-danger font-weight-bold" style="font-size: 0.85rem;"><i class="fas fa-arrow-down mr-1 small"></i>₱{{ number_format($totalPooled, 2) }}</span>
+                                                        @else
+                                                            <span class="text-muted small">&mdash;</span>
+                                                        @endif
+                                                    </td>
+                                                    <td class="text-right text-nowrap">
+                                                        <span class="text-success font-weight-bold" style="font-size: 0.98rem;">₱{{ number_format($netAmount, 2) }}</span>
+                                                    </td>
+                                                    <td class="text-center">
+                                                        <span class="badge badge-dark py-1 px-2">{{ $source->fiscal_year }}</span>
+                                                    </td> 
+                                                    <td class="text-center pr-4">
+                                                        <div class="btn-group shadow-sm">
+                                                            <button type="button" class="btn btn-xs btn-white border btn-edit-source px-2 py-1" 
+                                                                data-id="{{ $source->id }}" data-funding_source="{{ $source->funding_source }}" data-source_type="{{ $source->source_type }}" data-name="{{ $source->name }}" data-budget_line_item_id="{{ $source->budget_line_item_id }}" data-fiscal_year="{{ $source->fiscal_year }}" data-allotment_class="{{ $source->allotment_class }}" data-total_amount="{{ $source->total_amount }}" data-section_id="{{ $source->section_id }}" data-spreadsheet_id="{{ $source->spreadsheet_id }}" data-sheet_name="{{ $source->sheet_name }}" data-saa_date="{{ $source->saa_date }}" data-reference_number="{{ $source->reference_number }}" data-fund_code="{{ $source->fund_code }}" data-approp_code="{{ $source->approp_code }}" data-toggle="tooltip" title="Edit">
+                                                                <i class="fas fa-edit text-info"></i>
+                                                            </button>
+                                                            <button type="button" class="btn btn-xs btn-white border delete-source-btn px-2 py-1" data-id="{{ $source->id }}" data-name="{{ $source->name }}" data-count="{{ $source->activities->count() }}" data-toggle="tooltip" title="Delete">
+                                                                <i class="fas fa-trash-alt text-danger"></i>
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            @endforeach
                                         @endforeach
-                                    @endforeach
-                                @empty
-                                    <tr><td colspan="8" class="text-center py-4 text-muted">No approved fund sources found.</td></tr>
-                                @endforelse
-                                <tr id="no_approved_results" style="display: none;">
-                                    <td colspan="8" class="text-center py-4 text-muted font-italic">No records match the selected filters.</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                                    @empty
+                                        <tr>
+                                            <td colspan="8" class="p-4">
+                                                <div class="fs-empty-state border-0 bg-transparent py-3">
+                                                    <div class="fs-empty-icon bg-success text-white">
+                                                        <i class="fas fa-check-circle fa-lg"></i>
+                                                    </div>
+                                                    <h6 class="font-weight-bold text-dark mb-1">No Approved Fund Sources Found</h6>
+                                                    <p class="text-muted small mb-0">Click <strong>"Add Approved Fund"</strong> above or convert an existing NEP fund source.</p>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    @endforelse
+                                    <tr id="no_approved_results" style="display: none;">
+                                        <td colspan="8" class="text-center py-4 text-muted font-italic">No records match the selected filters.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
@@ -490,7 +673,7 @@
 
                     {{-- GOOGLE SHEET INTEGRATION SECTION --}}
                     <div class="bg-light p-3 border rounded mt-3">
-                        <h6 class="font-weight-bold text-muted small uppercase mb-3"><i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration</h6>
+                        <h6 class="font-weight-bold text-muted small text-uppercase mb-3"><i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration</h6>
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="form-group mb-md-0">
@@ -618,7 +801,7 @@
 
                     {{-- GOOGLE SHEET INTEGRATION SECTION --}}
                     <div class="bg-light p-3 border rounded mt-3">
-                        <h6 class="font-weight-bold text-muted small uppercase mb-3"><i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration</h6>
+                        <h6 class="font-weight-bold text-muted small text-uppercase mb-3"><i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration</h6>
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="form-group mb-md-0">
@@ -651,12 +834,12 @@
             <form id="convert-source-form" method="POST">
                 @csrf 
                 <div class="modal-header bg-success text-white">
-                    <h4 class="modal-title"><i class="fas fa-exchange-alt mr-2"></i>Approve & Convert NEP Fund</h4>
+                    <h4 class="modal-title"><i class="fas fa-exchange-alt mr-2"></i>Approve &amp; Convert NEP Fund</h4>
                     <button type="button" class="close text-white" data-dismiss="modal">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-info py-2 small">
-                        <i class="fas fa-info-circle mr-1"></i> Converting this record will shift it into the **Approved Funds** list as <strong>NEP-Current</strong> while retaining its full historical footprint inside the NEP registry.
+                        <i class="fas fa-info-circle mr-1"></i> Converting this record will shift it into the <strong>Approved Funds</strong> list as <strong>NEP-Current</strong> while retaining its full historical footprint inside the NEP registry.
                     </div>
 
                     <div class="row">
@@ -737,7 +920,7 @@
                         </div>
                         <div class="col-md-6">
                             <div class="form-group">
-                                <label>Responsible Section <span class="text-danger">*</span></label>
+                                <label class="font-weight-bold">Responsible Section <span class="text-danger">*</span></label>
                                 <select name="section_id" id="convert_section_id" class="form-control border-success" required>
                                     <option value="">-- Select Section --</option>
                                     @foreach($sections as $section)
@@ -753,14 +936,14 @@
                 </div>
                 <div class="modal-footer justify-content-between bg-light">
                     <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-success shadow-sm"><i class="fas fa-check-circle mr-1"></i> Confirm & Approve Fund</button>
+                    <button type="submit" class="btn btn-success shadow-sm"><i class="fas fa-check-circle mr-1"></i> Confirm &amp; Approve Fund</button>
                 </div>
             </form>
         </div>
     </div>
 </div>
 
-{{-- EDIT MODAL (Updated with NEP-Current and SAA fields) --}}
+{{-- EDIT MODAL --}}
 <div class="modal fade" id="modal-edit-source">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -850,7 +1033,7 @@
                         </div>
                         <div class="col-md-6">
                             <div class="form-group">
-                                <label>Responsible Section <span class="text-danger">*</span></label>
+                                <label class="font-weight-bold">Responsible Section <span class="text-danger">*</span></label>
                                 <select name="section_id" id="edit_section_id" class="form-control border-info" required>
                                     <option value="">-- Select Section --</option>
                                     @foreach($sections as $section)
@@ -896,7 +1079,7 @@
 
                     {{-- GOOGLE SHEET INTEGRATION SECTION --}}
                     <div class="bg-light p-3 border rounded mt-3">
-                        <h6 class="font-weight-bold text-muted small uppercase mb-3"><i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration</h6>
+                        <h6 class="font-weight-bold text-muted small text-uppercase mb-3"><i class="fab fa-google-drive mr-1"></i> Optional: Google Sheet Integration</h6>
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="form-group mb-md-0">
@@ -1136,7 +1319,6 @@
             $('#edit_spreadsheet_id').val(data.spreadsheet_id);
             $('#edit_sheet_name').val(data.sheet_name);
 
-            // Extract and clean the SAA date (strips out " 00:00:00" time if present)
             let rawDate = data.saa_date || data.saadate || data.saaDate || '';
             if (rawDate) {
                 rawDate = rawDate.toString().split(' ')[0];

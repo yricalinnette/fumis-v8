@@ -38,21 +38,36 @@ class SettingsController extends Controller
     public function index()
     {
         $currentYear = (int) date('Y');
-        $nextYear = $currentYear + 1;
+        $nextYear    = $currentYear + 1;
+        $user        = auth()->user();
 
         // 1. Fetch section names for mapping (from common database)
         $sectionNames = \DB::connection('db_common')
             ->table('tbl_section')
             ->pluck('secname', 'secid');
 
+        // Resolve logged-in user's section ID and section name
+        $localDetail = \DB::table('employee_details')->where('user_id', $user->id)->first();
+        $userSecId   = ($localDetail && $localDetail->dbedid)
+            ? \DB::connection('db_common')->table('tbl_emp_details')
+                ->where('dbedid', $localDetail->dbedid)
+                ->value('secid')
+            : null;
+
+        $userSecName = $userSecId ? ($sectionNames[$userSecId] ?? '') : '';
+
+        // Grant full visibility to Admin, Budget Unit, and Planning Unit
+        $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section')
+            || ($user->is_admin ?? false)
+            || ($user->id == 1)
+            || ($user->username === 'admin')
+            || stripos($userSecName, 'budget') !== false
+            || stripos($userSecName, 'planning') !== false;
+
         // 2. Build the Fund Sources Query (Fetch ALL years so Indicative & Final sources load)
-        $isAdminOrBudget = \Illuminate\Support\Facades\Gate::allows('budget-section');
-        $fundSourcesQuery = \App\Models\SourceOfFund::with('activities'); // <-- REMOVED where('fiscal_year', $currentYear)
+        $fundSourcesQuery = \App\Models\SourceOfFund::with('activities');
 
         if (!$isAdminOrBudget) {
-            $localDetail = \DB::table('employee_details')->where('user_id', auth()->id())->first();
-            $userSecId = $localDetail ? \DB::connection('db_common')->table('tbl_emp_details')
-                ->where('dbedid', $localDetail->dbedid)->value('secid') : null;
             $fundSourcesQuery->where('section_id', $userSecId ?? 0);
         }
 
@@ -64,31 +79,83 @@ class SettingsController extends Controller
             return $source;
         })->groupBy('section_display_name');
 
-        // 4. Helper Data for Modals/Forms
-        // Final WFP: Current year only
-        $finalSources = \App\Models\SourceOfFund::where('fiscal_year', $currentYear)
-            ->orderBy('name', 'asc')
-            ->get();
+        // 4. Helper Data for Modals/Forms (Scoped per section unless Admin / Budget / Planning)
+        // Final WFP: Approved sources for current year only
+        $finalSourcesQuery = \App\Models\SourceOfFund::where('fiscal_year', $currentYear)
+            ->whereIn('funding_source', ['NEP-Current', 'GAA', 'Current', 'Conap'])
+            ->orderBy('name', 'asc');
+
+        if (!$isAdminOrBudget) {
+            $finalSourcesQuery->where('section_id', $userSecId ?? 0);
+        }
+        $finalSources = $finalSourcesQuery->get();
 
         // Indicative WFP: Restrict strictly to NEP fund sources for the modal
-        $indicativeSources = \App\Models\SourceOfFund::where('funding_source', 'NEP')
+        $indicativeSourcesQuery = \App\Models\SourceOfFund::where('funding_source', 'NEP')
             ->orderBy('fiscal_year', 'desc')
-            ->orderBy('name', 'asc')
-            ->get();
+            ->orderBy('name', 'asc');
 
-        $template = \App\Models\ImportTemplate::first();
+        if (!$isAdminOrBudget) {
+            $indicativeSourcesQuery->where('section_id', $userSecId ?? 0);
+        }
+        $indicativeSources = $indicativeSourcesQuery->get();
+
+        $template  = \App\Models\ImportTemplate::first();
         $uacsCodes = \App\Models\UacsCode::orderBy('uacs_code', 'asc')->get();
-        
-        // Fetch ALL active Budget Line Items so both Indicative and Final WFP modals have full access
-        $budgetLineItems = \App\Models\BudgetLineItem::where('is_active', 1)
+
+        // Budget Line Items: Budget & Planning see all; Sections see only Budget Line Items linked to their assigned fund sources
+        $budgetLineItemsQuery = \App\Models\BudgetLineItem::where('is_active', 1)
+            ->orderBy('budget_line_item_name', 'asc');
+
+        if (!$isAdminOrBudget) {
+            $allowedLineItemIds = \App\Models\SourceOfFund::where('section_id', $userSecId ?? 0)
+                ->whereNotNull('budget_line_item_id')
+                ->pluck('budget_line_item_id')
+                ->unique()
+                ->toArray();
+
+            $hasSectionCol = \Illuminate\Support\Facades\Schema::hasColumn('budget_line_items', 'section_id');
+
+            $budgetLineItemsQuery->where(function ($q) use ($allowedLineItemIds, $hasSectionCol, $userSecId) {
+                if (!empty($allowedLineItemIds)) {
+                    $q->whereIn('id', $allowedLineItemIds);
+                } else {
+                    $q->whereRaw('1 = 0');
+                }
+
+                if ($hasSectionCol && $userSecId) {
+                    $q->orWhere('section_id', $userSecId);
+                }
+            });
+        }
+
+        $budgetLineItems = $budgetLineItemsQuery->get();
+
+        // Modal-specific Budget Line Items (so Final modal only lists lines with approved sources, Indicative only NEP)
+        $finalLineItemIds      = $finalSources->pluck('budget_line_item_id')->filter()->unique()->toArray();
+        $indicativeLineItemIds = $indicativeSources->pluck('budget_line_item_id')->filter()->unique()->toArray();
+
+        $finalBudgetLineItems = \App\Models\BudgetLineItem::where('is_active', 1)
+            ->whereIn('id', $finalLineItemIds)
             ->orderBy('budget_line_item_name', 'asc')
             ->get();
-        
-        $activities = Activity::with('source')
+
+        $indicativeBudgetLineItems = \App\Models\BudgetLineItem::where('is_active', 1)
+            ->whereIn('id', $indicativeLineItemIds)
+            ->orderBy('budget_line_item_name', 'asc')
+            ->get();
+
+        // Activities (scoped to visible fund sources)
+        $activitiesQuery = Activity::with('source')
             ->join('source_of_funds', 'activities.source_of_fund_id', '=', 'source_of_funds.id')
             ->select('activities.*')
-            ->orderBy('source_of_funds.fiscal_year', 'desc')
-            ->get();
+            ->orderBy('source_of_funds.fiscal_year', 'desc');
+
+        if (!$isAdminOrBudget) {
+            $activitiesQuery->where('source_of_funds.section_id', $userSecId ?? 0);
+        }
+
+        $activities = $activitiesQuery->get();
 
         // 5. Connect to SPMS API / Sync Objectives
         $isSpmsOnline = env('SPMS_ONLINE', true); 
@@ -133,10 +200,7 @@ class SettingsController extends Controller
 
         $key = config('app.db_common_key') ?? env('DB_COMMON_ENCRYPTION_KEY');
 
-        $userSectionId = DB::table('employee_details as local_emp')
-            ->join('db_common.tbl_emp_details as common_emp', 'local_emp.dbedid', '=', 'common_emp.dbedid')
-            ->where('local_emp.user_id', auth()->id())
-            ->value('common_emp.secid');
+        $userSectionId = $userSecId;
 
         $signatoryQuery = DB::table('wfp_signatories')
             ->leftJoin('db_common.tbl_section', 'wfp_signatories.section_id', '=', 'tbl_section.secid')
@@ -171,6 +235,8 @@ class SettingsController extends Controller
             'template', 
             'currentYear', 
             'budgetLineItems', 
+            'finalBudgetLineItems',
+            'indicativeBudgetLineItems',
             'fundSources',
             'uacsCodes',
             'objectives',
@@ -449,7 +515,7 @@ class SettingsController extends Controller
         $nepSource = SourceOfFund::findOrFail($id);
 
         $validated = $request->validate([
-            'funding_source'      => 'required|in:NEP-Current,Conap', // Updated allowed target types
+            'funding_source'      => 'required|in:NEP-Current,Conap',
             'source_type'         => 'required|in:GAA,SAA',
             'section_id'          => 'required|integer',
             'name'                => ['required', 'string', 'max:255'],
@@ -484,7 +550,12 @@ class SettingsController extends Controller
 
             $nepSource->update($data);
 
-            return redirect()->back()->with('success', 'NEP fund successfully approved and transitioned to NEP-Current!');
+            // Carry over any existing indicative activities under this source to Final WFP
+            Activity::where('source_of_fund_id', $nepSource->id)
+                ->where('is_converted', 0)
+                ->update(['is_converted' => 1]);
+
+            return redirect()->back()->with('success', "NEP fund successfully approved and transitioned to {$data['funding_source']}!");
         } catch (\Exception $e) {
             return back()->withErrors(['error' => "Conversion failed: " . $e->getMessage()]);
         }
@@ -834,7 +905,7 @@ class SettingsController extends Controller
             'objective'           => $isEdit ? 'nullable|string' : 'required|string',
             'budget_line_item_id' => $isEdit ? 'nullable|exists:budget_line_items,id' : 'required|exists:budget_line_items,id', 
             'source_of_fund_id'   => $isEdit ? 'nullable|exists:source_of_funds,id' : 'required|exists:source_of_funds,id',
-            'uacs_code_id'        => 'required|exists:uacs_codes,id', // Always required so UACS can be updated
+            'uacs_code_id'        => 'required|exists:uacs_codes,id',
             'name'                => $isEdit ? 'nullable|string' : 'required|string',
             'budget_amount'       => $isEdit ? 'nullable|numeric|min:0' : 'required|numeric|min:0',
             'start_date'          => 'required|date',
@@ -854,9 +925,7 @@ class SettingsController extends Controller
 
         // PREPARE BOOLEAN & STATUS VALUES
         $isForProcurement = $request->boolean('is_for_procurement');
-        
-        // Determine status: 0 for Indicative WFP, 1 for Final WFP
-        $isConverted = ($request->input('wfp_type') === 'final') ? 1 : 0;
+        $isConverted      = ($request->input('wfp_type') === 'final') ? 1 : 0;
 
         // AUTO-SAVE CUSTOM TYPED OBJECTIVE TO DATABASE
         if ($request->filled('objective')) {
@@ -872,7 +941,7 @@ class SettingsController extends Controller
 
         // 2. Validate selected quarter targets
         $selectedQuarters = $request->target_quarters ?? [];
-        $physicalTargets = [];
+        $physicalTargets  = [];
 
         foreach ($selectedQuarters as $q) {
             $targetValue = $request->targets[$q] ?? null;
@@ -884,11 +953,12 @@ class SettingsController extends Controller
             $physicalTargets[$q] = (float) $targetValue;
         }
 
-        // --- SHARED: FETCH USER AND SECTION INFO ---
-        $userId = auth()->id();
-        $secid = null;
+        // --- SHARED: FETCH USER, SECTION & ROLE INFO ---
+        $user   = auth()->user();
+        $userId = $user->id;
+        $secid  = null;
 
-        if (auth()->user()->username === 'admin') {
+        if ($user->username === 'admin' || ($user->is_admin ?? false) || $userId == 1) {
             $secid = 0; 
         } else {
             $localDetail = \DB::table('employee_details')
@@ -903,20 +973,34 @@ class SettingsController extends Controller
             }
         }
 
-        if (is_null($secid) && auth()->user()->username !== 'admin') {
+        if (is_null($secid) && $user->username !== 'admin') {
             return back()->withInput()->withErrors(['error' => 'Your account is not correctly linked to a DOH Section.']);
         }
+
+        $userSecName = $secid
+            ? (\DB::connection('db_common')->table('tbl_section')->where('secid', $secid)->value('secname') ?? '')
+            : '';
+
+        $canAccessAllSections = \Illuminate\Support\Facades\Gate::allows('budget-section')
+            || ($user->is_admin ?? false)
+            || ($userId == 1)
+            || ($user->username === 'admin')
+            || stripos($userSecName, 'budget') !== false
+            || stripos($userSecName, 'planning') !== false;
 
         // 3. Handle Store / Update Logic
         if ($isEdit) {
             $activity = Activity::findOrFail($request->id);
             
-            // Fix: Use newly submitted source_of_fund_id if available, otherwise fallback to existing
             $targetSourceId = $request->input('source_of_fund_id', $activity->source_of_fund_id);
-            $fundSource = SourceOfFund::findOrFail($targetSourceId);
+            $fundSource     = SourceOfFund::findOrFail($targetSourceId);
+
+            if (!$canAccessAllSections && (int) $fundSource->section_id !== (int) $secid) {
+                return back()->withInput()->withErrors(['error' => 'Unauthorized: This fund source is not assigned to your section/unit.']);
+            }
             
             $hasTransactions = $activity->transactions()->exists(); 
-            $isLocked = $activity->is_locked ?? false;
+            $isLocked        = $activity->is_locked ?? false;
 
             // BUDGET VALIDATION FOR EDIT
             if (!$isLocked && !$hasTransactions && $request->filled('budget_amount')) {
@@ -926,9 +1010,9 @@ class SettingsController extends Controller
                     ->where('id', '!=', $activity->id)
                     ->sum('budget_adjusted');
 
-                $pooledFunds = method_exists($fundSource, 'pooledFunds') ? $fundSource->pooledFunds()->sum('amount') : ($fundSource->pooled_amount ?? 0);
+                $pooledFunds             = method_exists($fundSource, 'pooledFunds') ? $fundSource->pooledFunds()->sum('amount') : ($fundSource->pooled_amount ?? 0);
                 $adjustedAllottedBudget = $fundSource->total_amount - $pooledFunds;
-                $remainingBalance = $adjustedAllottedBudget - $totalSpentByOthers;
+                $remainingBalance        = $adjustedAllottedBudget - $totalSpentByOthers;
 
                 if ($newAmount > $remainingBalance) {
                     $errorMessage = "You have exceeded the adjusted allotted budget for {$fundSource->name}. Available Balance: ₱" . number_format($remainingBalance, 2) . ". To realign or replan activities, please set the amount to zero \"0\" first on the new activity to be added, then go to the Budget Realignment tab to adjust the amount for realignment.";
@@ -937,15 +1021,13 @@ class SettingsController extends Controller
                 }
             }
 
-            // Fetch UACS record for both locked and unlocked updates
-            $uacsId = $request->input('uacs_code_id', $activity->uacs_code_id);
+            $uacsId     = $request->input('uacs_code_id', $activity->uacs_code_id);
             $uacsRecord = \App\Models\UacsCode::findOrFail($uacsId);
 
-            // HANDLE THE ACTUAL UPDATE
             if ($hasTransactions || $isLocked) {
                 $activity->update([
                     'user_id'            => $userId,
-                    'section_id'         => $secid,
+                    'section_id'         => $fundSource->section_id ?? $secid,
                     'uacs_code_id'       => $uacsRecord->id,
                     'uacs_code'          => $uacsRecord->uacs_code,
                     'start_date'         => $validated['start_date'],
@@ -958,7 +1040,7 @@ class SettingsController extends Controller
             } else {
                 $activity->update([
                     'user_id'             => $userId,
-                    'section_id'          => $secid,
+                    'section_id'          => $fundSource->section_id ?? $secid,
                     'budget_line_item_id' => $request->budget_line_item_id,
                     'source_of_fund_id'   => $request->source_of_fund_id,
                     'objective'           => $request->objective,
@@ -979,13 +1061,18 @@ class SettingsController extends Controller
         } else {
             // BUDGET VALIDATION FOR NEW ACTIVITY CREATION
             $fundSource = SourceOfFund::findOrFail($request->source_of_fund_id);
+
+            if (!$canAccessAllSections && (int) $fundSource->section_id !== (int) $secid) {
+                return back()->withInput()->withErrors(['error' => 'Unauthorized: This fund source is not assigned to your section/unit.']);
+            }
+
             $newAmount = (float) $request->budget_amount;
 
             $totalExistingBudget = Activity::where('source_of_fund_id', $fundSource->id)->sum('budget_adjusted');
             
-            $pooledFunds = method_exists($fundSource, 'pooledFunds') ? $fundSource->pooledFunds()->sum('amount') : ($fundSource->pooled_amount ?? 0);
+            $pooledFunds             = method_exists($fundSource, 'pooledFunds') ? $fundSource->pooledFunds()->sum('amount') : ($fundSource->pooled_amount ?? 0);
             $adjustedAllottedBudget = $fundSource->total_amount - $pooledFunds;
-            $remainingBalance = $adjustedAllottedBudget - $totalExistingBudget;
+            $remainingBalance        = $adjustedAllottedBudget - $totalExistingBudget;
 
             if ($newAmount > $remainingBalance) {
                 $errorMessage = "You have exceeded the adjusted allotted budget for {$fundSource->name} (Available Adjusted Balance: ₱" . number_format($remainingBalance, 2) . "). To realign or replan activities, please set the amount to zero \"0\" first on the new activity, then go to the Budget Realignment tab to adjust the amount for realignment.";
@@ -998,7 +1085,7 @@ class SettingsController extends Controller
 
             Activity::create([
                 'user_id'             => $userId,
-                'section_id'          => $secid,
+                'section_id'          => $fundSource->section_id ?? $secid,
                 'budget_line_item_id' => $request->budget_line_item_id,
                 'source_of_fund_id'   => $request->source_of_fund_id,
                 'objective'           => $request->objective,
@@ -1006,7 +1093,7 @@ class SettingsController extends Controller
                 'uacs_code'           => $uacsRecord->uacs_code,
                 'name'                => $request->name,
                 'is_for_procurement'  => $isForProcurement, 
-                'is_converted'        => $isConverted, // 0 = Indicative WFP, 1 = Final WFP
+                'is_converted'        => $isConverted,
                 'budget'              => $request->budget_amount,
                 'budget_adjusted'     => $request->budget_amount,
                 'start_date'          => $validated['start_date'],
@@ -1016,7 +1103,9 @@ class SettingsController extends Controller
                 'classification'      => $request->classification,
             ]);
 
-            $msg = 'Indicative activity created successfully!';
+            $msg = $isConverted
+                ? 'Final WFP activity created successfully!'
+                : 'Indicative activity created successfully!';
         }
 
         return back()->with('success', $msg);
@@ -1060,7 +1149,7 @@ class SettingsController extends Controller
         ]);
 
         try {
-            $approvedStatuses = ['NEP-Current', 'GAA', 'Current'];
+            $approvedStatuses = ['nep-current', 'gaa', 'current', 'conap'];
             $convertedCount = 0;
             $skippedCount = 0;
 
@@ -1072,8 +1161,9 @@ class SettingsController extends Controller
 
             foreach ($activities as $activity) {
                 $fundSource = $activity->source;
+                $sourceStatus = strtolower(trim((string) ($fundSource->funding_source ?? '')));
 
-                if ($fundSource && in_array($fundSource->funding_source, $approvedStatuses)) {
+                if ($fundSource && in_array($sourceStatus, $approvedStatuses)) {
                     $activity->update(['is_converted' => 1]);
                     $convertedCount++;
                 } else {
